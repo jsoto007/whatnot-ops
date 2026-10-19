@@ -1,0 +1,28 @@
+/* The only place colours, radii, spacing and motion values live. */
+:root {
+  --navy: #002244;
+  --navy-2: #001833;
+  --navy-3: #0b3a66;
+  --green: #69be28;
+  --grey: #a5acaf;
+  --blue: #4fc3f7;
+  --red: #ff8a80;
+
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --text: #0f172a;
+  --text-muted: #475569;
+  --border: #e2e8f0;
+
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --radius-l: 14px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --motion: 160ms ease;
+}
