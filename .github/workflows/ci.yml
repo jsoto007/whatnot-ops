@@ -45,6 +45,26 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  extension:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: extension } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .node-version, cache: npm, cache-dependency-path: extension/package-lock.json }
+      - uses: actions/setup-python@v5
+        with: { python-version-file: .python-version }
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with: { name: extension-playwright-report, path: extension/playwright-report }
+
   e2e:
     runs-on: ubuntu-latest
     needs: [api, web]

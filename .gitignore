@@ -18,3 +18,6 @@ extension/dist/
 .DS_Store
 .idea/
 .vscode/
+extension/dist-test/
+extension/test-results/
+extension/playwright-report/
