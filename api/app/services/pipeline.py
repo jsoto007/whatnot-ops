@@ -155,6 +155,9 @@ def create_sale(show: Show, ev: ParsedEvent, *, sku: Sku | None) -> Sale:
     )
     db.session.add(sale)
     db.session.flush()
+    from . import orders
+
+    orders.attach(sale)
     if sku is None:
         sale.flagged = True
         sale.status_reason = "item not recognised"
@@ -242,8 +245,8 @@ def set_sale_status(
                 actor=actor,
                 reason=reason,
             )
-        elif sale.status is SaleStatus.paid:
-            # Paid stock already left; cancelling after payment is a restock decision, flag it.
+        elif sale.status in (SaleStatus.paid, SaleStatus.fulfilled):
+            # Paid stock already left (maybe shipped); cancelling now is a restock decision.
             sale.flagged = True
     elif new_status is SaleStatus.paid:
         if sale.status is not SaleStatus.reserved:
@@ -265,6 +268,10 @@ def set_sale_status(
             )
     sale.status = new_status
     sale.status_reason = reason
+    if sale.order is not None:
+        from . import orders
+
+        orders.refresh(sale.order)
     for item in db.session.scalars(
         select(ReviewItem).where(
             ReviewItem.sale_id == sale.id, ReviewItem.status == ReviewStatus.open

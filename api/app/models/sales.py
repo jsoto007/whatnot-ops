@@ -99,6 +99,9 @@ class Sale(db.Model):
         SALE_STATUS_ENUM, nullable=False, default=SaleStatus.detected
     )
     status_reason: Mapped[str | None] = mapped_column(String(240))
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), index=True)
+    external_order_id: Mapped[str | None] = mapped_column(String(80))
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     flagged: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
@@ -110,6 +113,8 @@ class Sale(db.Model):
     show: Mapped[Show] = relationship()
     sku: Mapped[Sku | None] = relationship()
     event: Mapped[ParsedEvent | None] = relationship()
+    order: Mapped["Order | None"] = relationship(back_populates="sales")  # noqa: F821
+    order: Mapped["Order | None"] = relationship(back_populates="sales")  # noqa: F821
 
 
 class ReviewStatus(enum.StrEnum):

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type Show } from '../../lib/api'
+import { Reconcile } from './Reconcile'
 
 const fmtDate = (iso: string) => new Date(iso + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
 const KIND_LABEL: Record<string, string> = {
@@ -20,7 +21,7 @@ export function ShowDetail() {
   const { id = '' } = useParams()
   const { can } = useAuth()
   const qc = useQueryClient()
-  const [tab, setTab] = useState<'sales' | 'events' | 'messages'>('sales')
+  const [tab, setTab] = useState<'sales' | 'payments' | 'events' | 'messages'>('sales')
   const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats }>(`/api/shows/${id}`) })
   const parse = useMutation({
     mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/parse`),
@@ -51,13 +52,14 @@ export function ShowDetail() {
       </div>
       {show.data && <Stats stats={show.data.stats} total={show.data.show.messageCount} />}
       <div className="tabs" role="tablist">
-        {(['sales', 'events', 'messages'] as const).map((t) => (
+        {(['sales', 'payments', 'events', 'messages'] as const).map((t) => (
           <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
             {t[0]!.toUpperCase() + t.slice(1)}
           </button>
         ))}
       </div>
       {tab === 'sales' && <SalesTab showId={id} />}
+      {tab === 'payments' && (can('orders.reconcile') ? <Reconcile showId={id} /> : <p className="card muted">Only owners and managers can reconcile payments.</p>)}
       {tab === 'events' && <EventsTab showId={id} />}
       {tab === 'messages' && <MessagesTab showId={id} />}
     </section>

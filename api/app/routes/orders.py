@@ -1,0 +1,163 @@
+import uuid
+
+from flask import Blueprint, g, jsonify, request
+from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
+
+from .. import serializers
+from ..auth import require
+from ..db import db
+from ..models import Order, OrderStatus, ParsedEvent, Sale, Show
+from ..services import audit, orders, reconcile
+from ..services.inventory import Actor, InventoryError
+from ..services.orders import OrderError
+from ..services.reconcile import ReconcileError
+
+bp = Blueprint("orders", __name__)
+
+
+@bp.errorhandler(OrderError)
+@bp.errorhandler(ReconcileError)
+@bp.errorhandler(InventoryError)
+def order_error(e):
+    db.session.rollback()
+    return jsonify({"error": str(e)}), e.status
+
+
+def _loaded():
+    return select(Order).options(
+        selectinload(Order.show),
+        selectinload(Order.sales).selectinload(Sale.sku),
+        selectinload(Order.sales).selectinload(Sale.event).selectinload(ParsedEvent.message),
+        selectinload(Order.sales).selectinload(Sale.show),
+    )
+
+
+def _order_or_404(order_id: int) -> Order | None:
+    o = db.session.scalar(_loaded().where(Order.id == order_id))
+    return o if o and o.organization_id == g.u.organization_id else None
+
+
+@bp.get("")
+@require("orders.view")
+def list_orders():
+    q = _loaded().where(Order.organization_id == g.u.organization_id)
+    status = request.args.get("status")
+    if status == "queue":
+        q = q.where(Order.status.in_((OrderStatus.paid, OrderStatus.picking, OrderStatus.packed)))
+    elif status:
+        q = q.where(Order.status == OrderStatus(status))
+    if show_id := request.args.get("show", type=int):
+        q = q.where(Order.show_id == show_id)
+    if buyer := (request.args.get("buyer") or "").strip().lower():
+        q = q.where(func.lower(Order.buyer_username) == buyer)
+    rows = db.session.scalars(q.order_by(Order.status, Order.id).limit(500)).all()
+    return jsonify({"orders": [serializers.order(o, with_sales=status != "all") for o in rows]})
+
+
+@bp.get("/<int:order_id>")
+@require("orders.view")
+def get_order(order_id: int):
+    o = _order_or_404(order_id)
+    if o is None:
+        return jsonify({"error": "order not found"}), 404
+    return jsonify({"order": serializers.order(o)})
+
+
+@bp.post("/<int:order_id>/status")
+@require("orders.fulfill")
+def set_status(order_id: int):
+    o = _order_or_404(order_id)
+    if o is None:
+        return jsonify({"error": "order not found"}), 404
+    d = request.get_json(silent=True) or {}
+    try:
+        status = OrderStatus(d.get("status", ""))
+    except ValueError:
+        return jsonify({"error": "unknown status"}), 400
+    orders.advance(o, status, actor_label=g.u.email, tracking=d.get("tracking"))
+    if "notes" in d:
+        o.notes = (d.get("notes") or "").strip() or None
+    audit.record(
+        g.u.organization_id,
+        "order.status",
+        user=g.u,
+        target_type="order",
+        target_id=o.id,
+        details={"status": status.value},
+    )
+    db.session.commit()
+    return jsonify({"order": serializers.order(_order_or_404(o.id))})
+
+
+@bp.patch("/<int:order_id>")
+@require("orders.fulfill")
+def update_order(order_id: int):
+    o = _order_or_404(order_id)
+    if o is None:
+        return jsonify({"error": "order not found"}), 404
+    d = request.get_json(silent=True) or {}
+    if "notes" in d:
+        o.notes = (d.get("notes") or "").strip() or None
+    if "tracking" in d:
+        o.tracking = (d.get("tracking") or "").strip() or None
+    db.session.commit()
+    return jsonify({"order": serializers.order(o)})
+
+
+@bp.get("/buyers/<path:username>")
+@require("orders.view")
+def buyer_history(username: str):
+    rows = db.session.scalars(
+        _loaded()
+        .where(
+            Order.organization_id == g.u.organization_id,
+            func.lower(Order.buyer_username) == username.lower(),
+        )
+        .order_by(Order.id.desc())
+    ).all()
+    return jsonify({"buyer": username, "orders": [serializers.order(o) for o in rows]})
+
+
+@bp.get("/shows/<int:show_id>/pick-list")
+@require("orders.view")
+def pick_list(show_id: int):
+    show = db.session.get(Show, show_id)
+    if show is None or show.organization_id != g.u.organization_id:
+        return jsonify({"error": "show not found"}), 404
+    return jsonify({"items": orders.pick_list(show)})
+
+
+@bp.post("/shows/<int:show_id>/reconcile")
+@require("orders.reconcile")
+def reconcile_show(show_id: int):
+    show = db.session.get(Show, show_id)
+    if show is None or show.organization_id != g.u.organization_id:
+        return jsonify({"error": "show not found"}), 404
+    d = request.get_json(silent=True) or {}
+    text = d.get("csv") or ""
+    if not text.strip():
+        return jsonify({"error": "paste or upload the payment CSV"}), 400
+    p = reconcile.plan(show, reconcile.parse_csv(text))
+    if d.get("apply"):
+        import_id = uuid.uuid4().hex[:12]
+        reconcile.apply(show, p, actor=Actor.user(g.u), user=g.u, import_id=import_id)
+        audit.record(
+            g.u.organization_id,
+            "payments.reconciled",
+            user=g.u,
+            target_type="show",
+            target_id=show.id,
+            details=p.summary,
+        )
+        db.session.commit()
+    else:
+        db.session.rollback()
+    return jsonify(
+        {
+            "rows": [serializers.reconcile_row(r) for r in p.rows],
+            "uncovered": p.uncovered,
+            "summary": p.summary,
+            "applied": bool(d.get("apply")),
+        }
+    )

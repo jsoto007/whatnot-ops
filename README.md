@@ -9,7 +9,7 @@ rules. Done so far: Phase 0 (scaffold), Phase 1 (self-healing extension
 capture), Phase 2 (extension → API ingest), Phase 3 (accounts, roles,
 invites, device keys from the UI), Phase 4 (products and the inventory
 ledger), Phase 5 (rule-based parser, sales, review queue, job worker), Phase 6 (AI
-supervisor).
+supervisor), Phase 7 (orders, payment reconciliation, fulfilment).
 
 ## Layout
 
@@ -92,6 +92,26 @@ The rules are checked against `api/tests/fixtures/chat_corpus.jsonl`, which
 is **synthetic** until real shows are captured; `tests/test_rules.py`
 prints precision/recall per kind. "Parse now" on a show re-evaluates only
 lines that led nowhere; existing sales are never rewritten by rules.
+
+## Orders and fulfilment
+
+Every sale attaches to its buyer's **order** for that show (one per buyer
+per show). An order is `open` until every standing item is paid, then
+`paid` (verified), then a person moves it `picking → packed → shipped`
+(shipping marks the items fulfilled and takes a tracking number). Orders
+with nothing left are `cancelled`.
+
+Payment truth comes from Whatnot's order export: on a show's **Payments**
+tab upload the CSV (columns like Buyer / Username, Product / Item, Status,
+Order ID, Sold Price). Preview shows what each row will do: paid rows mark
+the matching sale paid and **commit** the stock (it leaves the shelf),
+cancelled / refunded rows release it, rows with no matching sale and sales
+the file did not cover go to Review. Re-applying the same file changes
+nothing.
+
+**Orders → To fulfil** is the queue of verified orders; the **Pick list**
+for a show totals the quantities per SKU across those orders; an order page
+is the packing slip (print it) with the buyer's history in other shows.
 
 ## AI supervisor
 

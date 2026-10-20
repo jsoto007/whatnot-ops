@@ -202,6 +202,9 @@ export interface Sale {
   status: SaleStatus
   statusReason: string | null
   flagged: boolean
+  orderId: number | null
+  externalOrderId: string | null
+  paidAt: string | null
   seq: number | null
   rawText: string | null
   createdAt: string
@@ -236,4 +239,43 @@ export interface AiStatus {
   failedToday: number
   lastError: string | null
   openProposals: number
+}
+
+// ---------- orders / fulfilment (Phase 7) ----------
+export type OrderStatus = 'open' | 'paid' | 'picking' | 'packed' | 'shipped' | 'cancelled'
+export interface Order {
+  id: number
+  showId: number
+  showDate: string
+  buyer: string
+  status: OrderStatus
+  verified: boolean
+  items: number
+  totalCents: number
+  notes: string | null
+  tracking: string | null
+  pickedAt: string | null
+  packedAt: string | null
+  shippedAt: string | null
+  createdAt: string
+  sales: Sale[] | null
+}
+export interface PickItem {
+  skuId: number
+  code: string
+  product: string
+  variant: string
+  quantity: number
+  orders: number
+}
+export interface ReconcileRow {
+  buyer: string
+  item: string
+  quantity: number
+  priceCents: number | null
+  status: string
+  externalId: string | null
+  action: 'mark_paid' | 'cancel' | 'unchanged' | 'unmatched' | 'skip'
+  saleId: number | null
+  note: string | null
 }

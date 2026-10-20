@@ -169,6 +169,9 @@ def sale(s) -> dict:
         "status": s.status.value,
         "statusReason": s.status_reason,
         "flagged": s.flagged,
+        "orderId": s.order_id,
+        "externalOrderId": s.external_order_id,
+        "paidAt": s.paid_at.isoformat() if s.paid_at else None,
         "seq": s.event.message.seq if s.event else None,
         "rawText": s.event.message.raw_text if s.event else None,
         "createdAt": s.created_at.isoformat(),
@@ -202,4 +205,43 @@ def review_item(r, context) -> dict:
         ],
         "sale": sale(r.sale) if r.sale else None,
         "createdAt": r.created_at.isoformat(),
+    }
+
+
+def order(o, *, with_sales: bool = True) -> dict:
+    from .services.orders import verified
+
+    standing = [
+        s for s in o.sales if s.status.value in ("detected", "reserved", "paid", "fulfilled")
+    ]
+    return {
+        "id": o.id,
+        "showId": o.show_id,
+        "showDate": o.show.show_date.isoformat(),
+        "buyer": o.buyer_username,
+        "status": o.status.value,
+        "verified": verified(o),
+        "items": sum(s.quantity for s in standing),
+        "totalCents": sum((s.price_cents or 0) * s.quantity for s in standing),
+        "notes": o.notes,
+        "tracking": o.tracking,
+        "pickedAt": o.picked_at.isoformat() if o.picked_at else None,
+        "packedAt": o.packed_at.isoformat() if o.packed_at else None,
+        "shippedAt": o.shipped_at.isoformat() if o.shipped_at else None,
+        "createdAt": o.created_at.isoformat(),
+        "sales": [sale(s) for s in o.sales] if with_sales else None,
+    }
+
+
+def reconcile_row(r) -> dict:
+    return {
+        "buyer": r.buyer,
+        "item": r.item,
+        "quantity": r.quantity,
+        "priceCents": r.price_cents,
+        "status": r.status,
+        "externalId": r.external_id,
+        "action": r.action,
+        "saleId": r.sale_id,
+        "note": r.note,
     }
