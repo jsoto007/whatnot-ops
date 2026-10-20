@@ -64,6 +64,9 @@ commands.
   fails for lack of stock. `available` goes negative and `Sku.short` is how
   many to buy; Inventory, the dashboard and the Excel sheet show it. Counts
   (adjust / import) may land below what is held, but never below zero.
+- **Receiving and counts** live in `services/stock.py` (`receive()`,
+  `count()`, `levels()`, `activity()`); both take a client request id so a
+  retried form moves nothing twice. Keep the Inventory page's numbers there.
 - **Secrets** only from env; never printed, logged or committed. `.env` is
   gitignored.
 - **Parser.** Classification rules live only in `api/app/services/rules.py`

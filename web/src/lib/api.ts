@@ -161,6 +161,33 @@ export interface Movement {
   reservedAfter: number
   at: string
 }
+/** A ledger row as the Inventory page reads it: which item, and for sales which buyer and show. */
+export interface Activity extends Movement {
+  skuId: number
+  skuCode: string
+  productName: string
+  sale: { buyer: string; showId: number; showDate: string } | null
+}
+/** /api/inventory row: the SKU plus what the table needs to decide what to do next. */
+export interface StockLevel extends Sku {
+  productName: string
+  sold: number
+  lastReceivedAt: string | null
+  lastCountedAt: string | null
+}
+export interface ReceiveResult {
+  receiptId: string
+  alreadyApplied: boolean
+  units: number
+  lines: { skuId: number; code: string; product: string; quantity: number; onHand: number; created: boolean }[]
+}
+export interface CountResult {
+  countId: string
+  changed: number
+  unchanged: number
+  net: number
+  lines: { skuId: number; code: string; before: number; after: number; delta: number }[]
+}
 export interface ImportRow {
   item: string
   quantity: number

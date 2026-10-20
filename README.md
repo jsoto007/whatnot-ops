@@ -70,12 +70,30 @@ Products have one or more SKUs; each SKU keeps `on_hand` and `reserved`
 `release` (cancelled / payment failed), `commit` (paid: leaves stock). A
 movement with a source (`sale 42`) is unique per SKU and kind, so replaying
 an event moves nothing, and the SKU row is locked for the duration of each
-movement, so parallel sales can never reserve more than is available.
+movement, so parallel sales never lose each other's updates.
 
-**Inventory → Import the inventory sheet** takes the team's CSV (an `Item`
-column plus `Current Stock` or `Start of Show Inventory`): preview shows
-what would be created or set, apply does it. Aliases on the Products page
-map the names used in chat ("red", "ultra pack") to SKUs for the parser.
+The **Inventory** page is built around the team's two physical jobs:
+
+- **Receive stock** — a delivery with any number of lines; a line is an
+  existing item or a brand-new one (name, SKU code, price, alert line)
+  created as it is received. All-or-nothing, and the form's id makes a
+  double-submit or retry a no-op (`receive:<id>:<line>` movements).
+- **Count stock** — type what is on the shelf for any items; the sheet shows
+  each difference before saving, blank rows are skipped, and only changed
+  items write an `adjust` (`count:<id>:<sku>`).
+
+Click an item for its panel: on shelf / held / available / sold, a quick
+add or remove with a reason (Received, Found, Damaged, Giveaway…), its
+low-stock alert line, and its full history in words ("Sold 2 to kat.c ·
+Oct 18 show", "Paid by kat.c"). Filters (Buy more / Low / Out / In stock),
+search across names, SKUs and chat names, and a recent-activity feed sit on
+the page itself. The logic is `api/app/services/stock.py`; every change still
+goes through `inventory.move()`.
+
+**Import sheet** takes the team's CSV (an `Item` column plus `Current Stock`
+or `Start of Show Inventory`): preview shows what would be created or set,
+apply does it. Aliases on the Products page map the names used in chat
+("red", "ultra pack") to SKUs for the parser.
 
 ## From chat to sales (the parser)
 

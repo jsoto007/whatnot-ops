@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { cell } from './stock'
 
 const PW = 'correct-horse-battery'
 const run = Date.now().toString(36)
@@ -13,7 +14,7 @@ async function signup(page: Page) {
   await expect(page).toHaveURL(/\/app$/)
 }
 
-test('products, aliases, adjustments, history and sheet import', async ({ page }) => {
+test('products, receiving, the item panel, a shelf count and the sheet import', async ({ page }) => {
   await signup(page)
 
   await page.getByRole('link', { name: 'Products' }).click()
@@ -27,18 +28,65 @@ test('products, aliases, adjustments, history and sheet import', async ({ page }
   await page.getByLabel('New alias for RED').press('Enter')
   await expect(page.locator('.chip', { hasText: /^red/ })).toBeVisible()
 
+  // Receive a delivery: 5 of the known item plus a brand-new item created on the way in.
   await page.getByRole('link', { name: 'Inventory' }).click()
-  const row = page.getByTestId('level-RED')
-  await expect(row).toContainText('Red bundle')
-  await page.getByLabel('Adjust RED').fill('+5')
-  await page.getByLabel('Reason for RED').fill('initial count')
-  await row.getByRole('button', { name: 'Apply' }).click()
-  await expect(row.locator('td').nth(2)).toHaveText('5')
-  await page.getByLabel('Adjust RED').fill('-7')
-  await row.getByRole('button', { name: 'Apply' }).click()
-  await expect(row).toContainText('below zero') // 5 on the shelf: a count can't go under 0
-  await row.getByRole('button', { name: 'History' }).click()
-  await expect(page.locator('.table.small')).toContainText('initial count')
+  await expect(page.getByTestId('level-RED')).toContainText('Red bundle')
+  await page.getByRole('button', { name: 'Receive stock', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Receive stock' })
+  const item = dialog.getByLabel('Item, line 1')
+  await item.selectOption((await item.locator('option', { hasText: '· RED (' }).getAttribute('value'))!)
+  await dialog.getByLabel('Quantity, line 1').fill('5')
+  await dialog.getByRole('button', { name: 'New item' }).click()
+  await dialog.getByLabel('New item name, line 2').fill('Holo slab')
+  await dialog.getByLabel('SKU code, line 2').fill('HOLO')
+  await dialog.getByLabel('Price, line 2').fill('15')
+  await dialog.getByLabel('Low-stock alert at, line 2').fill('2')
+  await dialog.getByLabel('Quantity, line 2').fill('8')
+  await dialog.getByLabel('Note (supplier, invoice, box)').fill('initial count')
+  await expect(page.getByTestId('receive-total')).toHaveText('2 items · 13 units')
+  await page.getByTestId('receive-submit').click()
+  await expect(page.getByRole('status')).toContainText('Received 13 units')
+  await expect(page.getByRole('status')).toContainText('8 Holo slab (new)')
+  await expect(cell(page, 'RED', 'on-hand')).toHaveText('5')
+  await expect(cell(page, 'HOLO', 'on-hand')).toHaveText('8')
+
+  // The item panel: removing more than the shelf holds is refused; a reasoned removal is recorded.
+  await page.getByTestId('level-RED').getByRole('button', { name: 'Red bundle' }).click()
+  const panel = page.getByRole('dialog', { name: 'Red bundle' })
+  await panel.getByRole('button', { name: 'Remove', exact: true }).click()
+  await panel.getByLabel('How many to remove').fill('7')
+  await panel.getByRole('button', { name: 'Remove 7' }).click()
+  await expect(panel.getByRole('alert')).toContainText('below zero')
+  await panel.getByLabel('How many to remove').fill('2')
+  await panel.getByRole('button', { name: 'Damaged' }).click()
+  await panel.getByRole('button', { name: 'Remove 2' }).click()
+  await expect(panel.getByTestId('panel-on-hand')).toHaveText('3')
+  await expect(panel.getByTestId('item-history')).toContainText('Removed 2 · Damaged')
+  await expect(panel.getByTestId('item-history')).toContainText('Received 5 · initial count')
+  await panel.getByLabel('Warn me when available drops to').fill('3')
+  await panel.getByRole('button', { name: 'Save' }).click()
+  await expect(page.getByRole('status')).toContainText('alerts at 3')
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(cell(page, 'RED', 'available')).toContainText('low')
+  await page.getByRole('tab', { name: /^Low/ }).click()
+  await expect(page.getByTestId('level-HOLO')).toHaveCount(0)
+  await page.getByRole('tab', { name: /^All/ }).click()
+  await page.getByLabel('Search inventory').fill('holo')
+  await expect(page.getByTestId('level-RED')).toHaveCount(0)
+  await page.getByLabel('Search inventory').fill('')
+
+  // A shelf count: only typed rows count; the difference shows before saving.
+  await page.getByRole('button', { name: 'Count stock' }).click()
+  const count = page.getByRole('dialog', { name: 'Count stock' })
+  await count.getByLabel('Counted RED').fill('1')
+  await count.getByLabel('Counted HOLO').fill('8')
+  await expect(count.locator('tr', { hasText: 'Red bundle' })).toContainText('−2')
+  await expect(count.locator('tr', { hasText: 'Holo slab' })).toContainText('matches')
+  await page.getByTestId('count-submit').click()
+  await expect(page.getByRole('status')).toContainText('1 item changed (net −2)')
+  await expect(cell(page, 'RED', 'on-hand')).toHaveText('1')
+  await expect(page.getByTestId('activity')).toContainText('Counted: shelf set to 1')
 
   // Sheet import: preview first, nothing changes; then apply.
   await page.getByTestId('toggle-import').click()
@@ -50,8 +98,8 @@ test('products, aliases, adjustments, history and sheet import', async ({ page }
   await page.getByRole('button', { name: 'Preview' }).click()
   await expect(page.getByTestId('import-summary')).toContainText('1 set')
   await expect(page.getByTestId('import-summary')).toContainText('1 create')
-  await expect(row.locator('td').nth(2)).toHaveText('5')
+  await expect(cell(page, 'RED', 'on-hand')).toHaveText('1')
   await page.getByTestId('apply-import').click()
-  await expect(page.getByTestId('level-RED').locator('td').nth(2)).toHaveText('9')
-  await expect(page.getByTestId('level-ULTRA-PACK').locator('td').nth(2)).toHaveText('4')
+  await expect(cell(page, 'RED', 'on-hand')).toHaveText('9')
+  await expect(cell(page, 'ULTRA-PACK', 'on-hand')).toHaveText('4')
 })

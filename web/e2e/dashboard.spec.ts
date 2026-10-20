@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { cell, receive } from './stock'
 
 const PW = 'correct-horse-battery'
 const run = Date.now().toString(36)
@@ -35,10 +36,8 @@ test('dashboard tiles, show analytics and the Excel report agree', async ({ page
   await page.getByLabel('SKU code (optional)').fill('RED')
   await page.getByLabel('Price (USD, optional)').fill('25')
   await page.getByRole('button', { name: 'Add product' }).click()
-  await page.getByRole('link', { name: 'Inventory' }).click()
-  await page.getByLabel('Adjust RED').fill('+4')
-  await page.getByTestId('level-RED').getByRole('button', { name: 'Apply' }).click()
-  await expect(page.getByTestId('level-RED').locator('td').nth(2)).toHaveText('4')
+  await receive(page, 'RED', 4)
+  await expect(cell(page, 'RED', 'on-hand')).toHaveText('4')
   await page.getByRole('link', { name: 'Settings' }).click()
   await page.getByLabel('Laptop name').fill('Laptop')
   await page.getByRole('button', { name: 'Create key' }).click()

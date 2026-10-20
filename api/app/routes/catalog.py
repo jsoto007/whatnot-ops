@@ -7,8 +7,8 @@ from sqlalchemy.orm import selectinload
 from .. import serializers
 from ..auth import require
 from ..db import db
-from ..models import InventoryMovement, Product, Sku
-from ..services import audit, catalog, inventory
+from ..models import Product, Sku
+from ..services import audit, catalog, inventory, stock
 from ..services.catalog import CatalogError
 from ..services.inventory import Actor, InventoryError
 
@@ -118,27 +118,76 @@ def remove_alias(alias_id: int):
 @bp.get("/inventory")
 @require("inventory.view")
 def levels():
-    rows = db.session.execute(
-        select(Sku, Product.name)
-        .join(Product, Product.id == Sku.product_id)
-        .where(Sku.organization_id == g.u.organization_id)
-        .options(selectinload(Sku.aliases))
-        .order_by(Product.name, Sku.code)
-    ).all()
-    return jsonify({"skus": [{**serializers.sku(s), "productName": pname} for s, pname in rows]})
+    return jsonify({"skus": stock.levels(g.u.organization_id)})
 
 
 @bp.get("/inventory/<int:sku_id>/movements")
 @require("inventory.view")
 def movements(sku_id: int):
     catalog.get_sku(g.u.organization_id, sku_id)
-    rows = db.session.scalars(
-        select(InventoryMovement)
-        .where(InventoryMovement.sku_id == sku_id)
-        .order_by(InventoryMovement.id.desc())
-        .limit(200)
-    ).all()
-    return jsonify({"movements": [serializers.movement(m) for m in rows]})
+    return jsonify({"movements": stock.activity(g.u.organization_id, sku_id=sku_id, limit=200)})
+
+
+@bp.get("/inventory/activity")
+@require("inventory.view")
+def activity():
+    limit = request.args.get("limit", type=int) or 30
+    return jsonify({"movements": stock.activity(g.u.organization_id, limit=limit)})
+
+
+@bp.post("/inventory/receive")
+@require("inventory.write")
+def receive():
+    d = _body()
+    r = stock.receive(
+        g.u.organization_id,
+        d.get("lines"),
+        note=d.get("note"),
+        receipt_id=d.get("receiptId"),
+        actor=Actor.user(g.u),
+    )
+    if not r["alreadyApplied"]:
+        audit.record(
+            g.u.organization_id,
+            "inventory.received",
+            user=g.u,
+            target_type="receipt",
+            target_id=r["receiptId"],
+            details={
+                "units": r["units"],
+                "lines": [[x["code"], x["quantity"]] for x in r["lines"]],
+                "note": d.get("note"),
+            },
+        )
+    db.session.commit()
+    return jsonify(r), 200 if r["alreadyApplied"] else 201
+
+
+@bp.post("/inventory/count")
+@require("inventory.write")
+def count():
+    d = _body()
+    r = stock.count(
+        g.u.organization_id,
+        d.get("lines"),
+        note=d.get("note"),
+        count_id=d.get("countId"),
+        actor=Actor.user(g.u),
+    )
+    if r["changed"]:
+        audit.record(
+            g.u.organization_id,
+            "inventory.counted",
+            user=g.u,
+            target_type="count",
+            target_id=r["countId"],
+            details={
+                "changed": [[x["code"], x["before"], x["after"]] for x in r["lines"] if x["delta"]],
+                "note": d.get("note"),
+            },
+        )
+    db.session.commit()
+    return jsonify(r)
 
 
 @bp.post("/inventory/<int:sku_id>/adjust")

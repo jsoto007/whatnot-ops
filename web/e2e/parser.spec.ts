@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { cell, receive } from './stock'
 
 const PW = 'correct-horse-battery'
 const run = Date.now().toString(36)
@@ -34,10 +35,8 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   await page.getByLabel('Product name').fill('Red bundle')
   await page.getByLabel('SKU code (optional)').fill('RED')
   await page.getByRole('button', { name: 'Add product' }).click()
-  await page.getByRole('link', { name: 'Inventory' }).click()
-  await page.getByLabel('Adjust RED').fill('+3')
-  await page.getByTestId('level-RED').getByRole('button', { name: 'Apply' }).click()
-  await expect(page.getByTestId('level-RED').locator('td').nth(2)).toHaveText('3')
+  await receive(page, 'RED', 3)
+  await expect(cell(page, 'RED', 'on-hand')).toHaveText('3')
 
   // A device key, then "the extension" posts a batch through the real ingest API.
   await page.getByRole('link', { name: 'Settings' }).click()
@@ -85,8 +84,8 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
 
   // Stock: nothing reserved (lani808 released by the AI, pokemom by the rules); 3 available.
   await page.getByRole('link', { name: 'Inventory' }).click()
-  await expect(page.getByTestId('level-RED').locator('td').nth(3)).toHaveText('0')
-  await expect(page.getByTestId('level-RED').locator('td').nth(4)).toContainText('3')
+  await expect(cell(page, 'RED', 'held')).toHaveText('0')
+  await expect(cell(page, 'RED', 'available')).toContainText('3')
 
   // The AI's action is in the activity log and the Settings page shows the provider.
   await page.getByRole('link', { name: 'Settings' }).click()
@@ -102,7 +101,7 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   await page.getByRole('button', { name: 'Use this SKU' }).click()
   await expect(page.getByText('Nothing waiting', { exact: true })).toBeVisible()
   await page.getByRole('link', { name: 'Inventory' }).click()
-  await expect(page.getByTestId('level-RED').locator('td').nth(3)).toHaveText('1')
+  await expect(cell(page, 'RED', 'held')).toHaveText('1')
   await page.getByRole('link', { name: 'Products' }).click()
   await expect(page.locator('.chip', { hasText: 'mystery box' })).toBeVisible()
 
@@ -114,20 +113,21 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   })
   expect(more.ok()).toBe(true)
   await page.getByRole('link', { name: 'Inventory' }).click()
-  const red = page.getByTestId('level-RED')
-  await expect(red.locator('td').nth(3)).toHaveText('5')
-  await expect(red.locator('td').nth(4)).toContainText('-2')
-  await expect(red.locator('td').nth(4)).toContainText('buy 2')
+  await expect(cell(page, 'RED', 'held')).toHaveText('5')
+  await expect(cell(page, 'RED', 'available')).toContainText('-2')
+  await expect(cell(page, 'RED', 'available')).toContainText('buy 2')
   await expect(page.getByTestId('to-buy')).toHaveText('1 oversold, buy 2 more')
   await page.getByRole('link', { name: /^Review/ }).click()
   await expect(page.getByText('Nothing waiting', { exact: true })).toBeVisible()
   await page.getByRole('link', { name: 'Dashboard' }).click()
   await expect(page.locator('.attn-row', { hasText: 'Buy 2 more Red bundle' })).toBeVisible()
 
-  // Buying 5 fills the 2 owed and leaves 3 to sell.
+  // "Receive what's owed" pre-fills the 2; receiving 5 instead leaves 3 to sell.
   await page.getByRole('link', { name: 'Inventory' }).click()
-  await page.getByLabel('Adjust RED').fill('+5')
-  await red.getByRole('button', { name: 'Apply' }).click()
-  await expect(red.locator('td').nth(4)).toHaveText('3')
+  await page.getByRole('button', { name: 'Receive what’s owed' }).click()
+  await expect(page.getByLabel('Quantity, line 1')).toHaveValue('2')
+  await page.getByLabel('Quantity, line 1').fill('5')
+  await page.getByTestId('receive-submit').click()
+  await expect(cell(page, 'RED', 'available')).toHaveText('3')
   await expect(page.getByTestId('to-buy')).toHaveCount(0)
 })

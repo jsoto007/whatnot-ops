@@ -242,8 +242,8 @@ function attentionRows(a: Attention, can: (p: string) => boolean, lowStock: Over
     const units = oversold.reduce((n, s) => n + s.short, 0)
     rows.push(
       oversold.length === 1
-        ? { key: 'oversold', icon: 'inventory', tone: 'red', title: `Buy ${first.short} more ${first.product}`, sub: `Oversold: ${first.sold} sold, ${plural(first.short, 'order item', 'order items')} not on the shelf yet`, to: '/app/inventory', verb: 'Restock', primary: true }
-        : { key: 'oversold', icon: 'inventory', tone: 'red', title: `${oversold.length} products oversold · buy ${units} more`, sub: oversold.slice(0, 3).map((s) => `${s.short} ${s.product}`).join(' · '), to: '/app/inventory', verb: 'Restock', primary: true },
+        ? { key: 'oversold', icon: 'inventory', tone: 'red', title: `Buy ${first.short} more ${first.product}`, sub: `Oversold: ${first.sold} sold, ${plural(first.short, 'order item', 'order items')} not on the shelf yet`, to: '/app/inventory?filter=buy', verb: 'Restock', primary: true }
+        : { key: 'oversold', icon: 'inventory', tone: 'red', title: `${oversold.length} products oversold · buy ${units} more`, sub: oversold.slice(0, 3).map((s) => `${s.short} ${s.product}`).join(' · '), to: '/app/inventory?filter=buy', verb: 'Restock', primary: true },
     )
   }
   const low = lowStock.filter((s) => !s.short)
@@ -251,8 +251,8 @@ function attentionRows(a: Attention, can: (p: string) => boolean, lowStock: Over
     const first = low[0]!
     rows.push(
       low.length === 1
-        ? { key: 'stock', icon: 'inventory', tone: 'red', title: `${first.product} is down to ${first.available}`, sub: `At or below its low-stock line of ${first.lowAt} · ${first.sold} sold`, to: '/app/inventory', verb: 'Restock' }
-        : { key: 'stock', icon: 'inventory', tone: 'red', title: `${low.length} products are running low`, sub: low.slice(0, 3).map((s) => `${s.product} (${s.available})`).join(' · '), to: '/app/inventory', verb: 'Restock' },
+        ? { key: 'stock', icon: 'inventory', tone: 'red', title: `${first.product} is down to ${first.available}`, sub: `At or below its low-stock line of ${first.lowAt} · ${first.sold} sold`, to: '/app/inventory?filter=low', verb: 'Restock' }
+        : { key: 'stock', icon: 'inventory', tone: 'red', title: `${low.length} products are running low`, sub: low.slice(0, 3).map((s) => `${s.product} (${s.available})`).join(' · '), to: '/app/inventory?filter=low', verb: 'Restock' },
     )
   }
   return rows
