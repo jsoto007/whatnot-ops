@@ -25,6 +25,7 @@ def db_host(url: str) -> str:
 class Config:
     def __init__(self, *, testing: bool = False) -> None:
         self.APP_ENV = os.environ.get("APP_ENV", "development")
+        testing = testing or self.APP_ENV == "test"
         self.TESTING = testing
         self.SECRET_KEY = os.environ.get("SECRET_KEY", "")
         url = os.environ.get("TEST_DATABASE_URL" if testing else "DATABASE_URL", "")

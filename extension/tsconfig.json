@@ -11,8 +11,9 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    "resolveJsonModule": true,
     "noEmit": true,
-    "types": ["chrome", "vitest/globals"]
+    "types": ["chrome", "vitest/globals", "node"]
   },
-  "include": ["src", "tests", "build.mjs"]
+  "include": ["src", "tests", "build.mjs", "../shared/*.json"]
 }

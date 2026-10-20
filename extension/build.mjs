@@ -14,6 +14,7 @@ await build({
     content: 'src/content/index.ts',
     background: 'src/background.ts',
     search: 'src/search/index.ts',
+    options: 'src/options/index.ts',
   },
   bundle: true,
   format: 'iife',
@@ -29,5 +30,5 @@ if (test) {
   manifest.content_scripts[0].matches.push('http://127.0.0.1/*', 'http://localhost/*')
 }
 writeFileSync(`${out}/manifest.json`, JSON.stringify(manifest, null, 2))
-for (const f of ['search.html', 'icon16.png', 'icon48.png', 'icon128.png']) cpSync(f, `${out}/${f}`)
+for (const f of ['search.html', 'options.html', 'icon16.png', 'icon48.png', 'icon128.png']) cpSync(f, `${out}/${f}`)
 console.log(`built ${out}/`)

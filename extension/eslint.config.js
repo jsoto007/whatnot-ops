@@ -8,6 +8,7 @@ export default tseslint.config(
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.ts'],
     languageOptions: { ecmaVersion: 2022, globals: { ...globals.browser, ...globals.webextensions } },
+    rules: { '@typescript-eslint/no-unused-vars': ['error', { ignoreRestSiblings: true, argsIgnorePattern: '^_' }] },
   },
   {
     files: ['build.mjs', 'e2e/**/*.ts'],

@@ -12,6 +12,17 @@ export type Request =
   | { cmd: 'getSession' }
   | { cmd: 'clearSession' }
   | { cmd: 'openSearch' }
+  | { cmd: 'openOptions' }
+  | { cmd: 'getUploadStatus' }
+  | { cmd: 'flushUploads' }
+
+export interface UploadStatus {
+  configured: boolean
+  pending: number
+  uploaded: number
+  lastError?: string
+  lastSentAt?: number
+}
 
 export type SessionReply = { show: ShowMeta; rows: CapturedRow[] } | null
 

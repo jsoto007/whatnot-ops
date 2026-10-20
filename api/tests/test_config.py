@@ -17,3 +17,10 @@ def test_postgres_scheme_is_normalised_to_psycopg(monkeypatch):
 def test_db_host_never_includes_credentials():
     url = "postgresql+psycopg://user:secret@db.example.com:6543/x"
     assert db_host(url) == "db.example.com:6543/x"
+
+
+def test_app_env_test_selects_the_test_database(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/dev")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://localhost/testdb")
+    assert Config().SQLALCHEMY_DATABASE_URI.endswith("/testdb")

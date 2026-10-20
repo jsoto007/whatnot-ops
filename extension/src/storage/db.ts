@@ -6,22 +6,42 @@ import { showDate } from '../shared/showDate'
 export const DB_NAME = 'chat-scraper'
 export const MAX_SHOWS = 30
 
+/** A row as stored: `uploaded` is 0 until the API accepted it (IndexedDB cannot index booleans). */
+export type StoredRow = CapturedRow & { uploaded: 0 | 1 }
+
 interface CsDB extends DBSchema {
   shows: { key: string; value: ShowMeta; indexes: { 'by-started': string } }
-  rows: { key: string; value: CapturedRow; indexes: { 'by-show-seq': [string, number] } }
+  rows: {
+    key: string
+    value: StoredRow
+    indexes: { 'by-show-seq': [string, number]; 'by-uploaded': [number, string, number] }
+  }
   kv: { key: string; value: unknown }
 }
 
+export const DB_VERSION = 2
 let dbp: Promise<IDBPDatabase<CsDB>> | null = null
 
 export function getDb(): Promise<IDBPDatabase<CsDB>> {
-  dbp ??= openDB<CsDB>(DB_NAME, 1, {
-    upgrade(db) {
-      const shows = db.createObjectStore('shows', { keyPath: 'id' })
-      shows.createIndex('by-started', 'startedAt')
-      const rows = db.createObjectStore('rows', { keyPath: 'id' })
-      rows.createIndex('by-show-seq', ['showId', 'seq'])
-      db.createObjectStore('kv')
+  dbp ??= openDB<CsDB>(DB_NAME, DB_VERSION, {
+    async upgrade(db, oldVersion, _new, tx) {
+      if (oldVersion < 1) {
+        const shows = db.createObjectStore('shows', { keyPath: 'id' })
+        shows.createIndex('by-started', 'startedAt')
+        const rows = db.createObjectStore('rows', { keyPath: 'id' })
+        rows.createIndex('by-show-seq', ['showId', 'seq'])
+        db.createObjectStore('kv')
+      }
+      if (oldVersion < 2) {
+        const rows = tx.objectStore('rows')
+        rows.createIndex('by-uploaded', ['uploaded', 'showId', 'seq'])
+        // Rows saved before uploads existed are pending.
+        let cur = await rows.openCursor()
+        while (cur) {
+          if (cur.value.uploaded === undefined) await cur.update({ ...cur.value, uploaded: 0 })
+          cur = await cur.continue()
+        }
+      }
     },
   })
   return dbp
@@ -40,7 +60,7 @@ export async function putRows(show: ShowRef, rows: CapturedRow[]): Promise<ShowM
   const tx = db.transaction(['rows', 'shows'], 'readwrite')
   const rowStore = tx.objectStore('rows')
   for (const r of rows) {
-    if ((await rowStore.getKey(r.id)) === undefined) await rowStore.add(r)
+    if ((await rowStore.getKey(r.id)) === undefined) await rowStore.add({ ...r, uploaded: 0 })
   }
   const count = await rowStore.index('by-show-seq').count(showRange(show.id))
   const prev = await tx.objectStore('shows').get(show.id)
@@ -59,7 +79,43 @@ export async function putRows(show: ShowRef, rows: CapturedRow[]): Promise<ShowM
 
 export async function getRows(showId: string): Promise<CapturedRow[]> {
   const db = await getDb()
-  return db.getAllFromIndex('rows', 'by-show-seq', showRange(showId))
+  const stored = await db.getAllFromIndex('rows', 'by-show-seq', showRange(showId))
+  return stored.map(({ uploaded: _u, ...row }) => row)
+}
+
+// ---------- upload outbox ----------
+const pendingRange = IDBKeyRange.bound([0, '', 0], [0, '\uffff', Number.MAX_SAFE_INTEGER])
+
+/** Oldest pending rows first (by show, then seq), up to `limit`. */
+export async function pendingRows(limit: number): Promise<CapturedRow[]> {
+  const db = await getDb()
+  const out: CapturedRow[] = []
+  let cur = await db.transaction('rows').store.index('by-uploaded').openCursor(pendingRange)
+  while (cur && out.length < limit) {
+    const { uploaded: _u, ...row } = cur.value
+    out.push(row)
+    cur = await cur.continue()
+  }
+  return out
+}
+
+export async function pendingCount(): Promise<number> {
+  return (await getDb()).countFromIndex('rows', 'by-uploaded', pendingRange)
+}
+
+export async function uploadedCount(): Promise<number> {
+  const db = await getDb()
+  return db.countFromIndex('rows', 'by-uploaded', IDBKeyRange.bound([1, '', 0], [1, '\uffff', Number.MAX_SAFE_INTEGER]))
+}
+
+export async function markUploaded(ids: string[]): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction('rows', 'readwrite')
+  for (const id of ids) {
+    const r = await tx.store.get(id)
+    if (r && !r.uploaded) await tx.store.put({ ...r, uploaded: 1 })
+  }
+  await tx.done
 }
 
 export async function getShow(showId: string): Promise<ShowMeta | undefined> {
