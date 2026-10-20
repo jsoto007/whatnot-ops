@@ -280,3 +280,8 @@ code.sku { margin-left: 8px; }
   .attn { flex-wrap: wrap; }
   .attn .btn { margin-left: 46px; }
 }
+
+/* A tab strip or chip row inside a toolbar must scroll, never widen the page. */
+.toolbar > * { min-width: 0; max-width: 100%; }
+.tabs { max-width: 100%; overflow-x: auto; }
+.chips.filter { max-width: 100%; }
