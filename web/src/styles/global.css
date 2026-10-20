@@ -1,0 +1,18 @@
+@import './tokens.css';
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { margin: 0; min-height: 100%; }
+body { background: var(--bg); color: var(--text); font: var(--font); }
+a { color: var(--navy-3); }
+.app-header {
+  background: var(--navy); color: #fff; border-bottom: 3px solid var(--green);
+  padding: var(--space-3) var(--space-6); display: flex; align-items: center; gap: var(--space-4);
+}
+.app-header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.app-main { max-width: 1100px; margin: 0 auto; padding: var(--space-6); }
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-m);
+  padding: var(--space-4) var(--space-6);
+}
+.status-ok { color: var(--green); font-weight: 600; }
+.status-bad { color: var(--red); font-weight: 600; }

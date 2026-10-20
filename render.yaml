@@ -1,0 +1,53 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# One Python web service builds the React app and serves it through Flask
+# (api/app/spa.py), so there is no CORS and session cookies are same-origin.
+#
+# Before syncing:
+#   • The database is on a paid plan on purpose: free Postgres expires after
+#     30 days. Check workspace billing before debugging a failed deploy.
+#   • Changing envVars here and merging to main redeploys production.
+#   • Verify on the first deploy that Render's Python runtime provides Node for
+#     the web build (NODE_VERSION below); if not, switch to a Docker runtime.
+
+databases:
+  - name: whatnot-ops-db
+    plan: basic-256mb
+    databaseName: whatnot_ops
+    user: whatnot_ops
+
+services:
+  - type: web
+    name: whatnot-ops
+    runtime: python
+    plan: starter
+    buildCommand: >-
+      cd web && npm ci && npm run build && cd ../api
+      && pip install -r requirements.txt
+    startCommand: cd api && flask --app wsgi.py db upgrade && gunicorn --chdir api wsgi:app
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: NODE_VERSION
+        value: 22.14.0
+      - key: APP_ENV
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: whatnot-ops-db
+          property: connectionString
+      # Add in the dashboard when ready (never commit values):
+      #   MAILGUN_API_KEY, MAILGUN_DOMAIN, EMAIL_FROM      transactional email (Phase 3)
+      #   JEV_API_KEY, JEV_API_URL, ANTHROPIC_API_KEY      AI supervisor (Phase 6)
+
+  # Background worker for parsing, AI and exports — enabled in Phase 5.
+  # - type: worker
+  #   name: whatnot-ops-worker
+  #   runtime: python
+  #   plan: starter
+  #   buildCommand: cd api && pip install -r requirements.txt
+  #   startCommand: cd api && python -m app.worker
+  #   envVars: (same as web)

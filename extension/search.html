@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat Search</title>
+<link rel="icon" href="icon48.png">
+<style>
+  :root { --navy: #002244; --navy2: #001833; --navy3: #0B3A66; --green: #69BE28; --grey: #A5ACAF; --blue: #4FC3F7; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--navy2); color: #fff; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { background: var(--navy); border-bottom: 3px solid var(--green); padding: 14px 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header img { width: 32px; height: 32px; }
+  h1 { font-size: 20px; margin: 0; flex: 1; font-weight: 600; }
+  .live { font-size: 12px; color: var(--green); display: none; align-items: center; gap: 6px; }
+  .live.on { display: flex; }
+  .live i { width: 9px; height: 9px; border-radius: 50%; background: var(--green); animation: p 1.4s infinite; }
+  @keyframes p { 50% { opacity: .3; } }
+  main { max-width: 900px; margin: 0 auto; padding: 18px 20px 60px; }
+  .bar { display: grid; grid-template-columns: 1fr 2fr auto; gap: 10px; margin-bottom: 10px; }
+  @media (max-width: 640px) { .bar { grid-template-columns: 1fr; } }
+  select, input[type=search] { width: 100%; height: 40px; border: 1px solid var(--navy3); background: var(--navy); color: #fff; border-radius: 8px; padding: 0 10px; font: inherit; }
+  input[type=search]:focus, select:focus { outline: 2px solid var(--green); outline-offset: 0; }
+  button { height: 40px; border: 0; border-radius: 8px; padding: 0 14px; font: 600 14px system-ui, sans-serif; cursor: pointer; background: var(--navy3); color: #fff; white-space: nowrap; }
+  button.go { background: var(--green); color: var(--navy); }
+  button:hover { filter: brightness(1.15); }
+  .tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; font-size: 13px; color: var(--grey); }
+  .tools label { display: flex; align-items: center; gap: 6px; }
+  .tools select { height: 32px; width: auto; }
+  .tools button { height: 32px; font-size: 13px; }
+  .spacer { flex: 1; }
+  .summary { font-size: 13px; color: var(--grey); margin-bottom: 12px; }
+  .summary b { color: var(--green); }
+  .hit { background: var(--navy); border: 1px solid var(--navy3); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+  .hit-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 12px; color: var(--grey); }
+  .hit-head button { height: 28px; font-size: 12px; padding: 0 10px; }
+  .line { display: grid; grid-template-columns: 96px 1fr; gap: 10px; padding: 2px 6px; border-radius: 4px; font-size: 14px; color: var(--grey); word-break: break-word; }
+  .line .t { font-variant-numeric: tabular-nums; font-size: 12px; padding-top: 2px; }
+  .line.m { color: #fff; background: var(--navy3); border-left: 3px solid var(--green); }
+  mark { background: var(--green); color: var(--navy); border-radius: 3px; padding: 0 2px; }
+  .empty { text-align: center; color: var(--grey); padding: 50px 10px; }
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--green); color: var(--navy); font-weight: 600; padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.on { opacity: 1; }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <img src="icon48.png" alt="">
+  <h1>Chat Search</h1>
+  <span class="live" id="live"><i></i>Live: updating as chat comes in</span>
+</header>
+<main>
+  <div class="bar">
+    <select id="show" aria-label="Show"></select>
+    <input type="search" id="q" placeholder="Buyer name or word, e.g. lani808" aria-label="Search" autofocus>
+    <button class="go" id="go">Search</button>
+  </div>
+  <div class="tools">
+    <label>Lines around each match
+      <select id="ctx"><option>0</option><option>1</option><option selected>2</option><option>3</option><option>5</option></select>
+    </label>
+    <span class="spacer"></span>
+    <button id="load">Load a .txt file</button>
+    <button id="dl">Download this show</button>
+    <button id="del">Delete this show</button>
+    <input type="file" id="file" accept=".txt,text/plain">
+  </div>
+  <div class="summary" id="summary"></div>
+  <div id="results"></div>
+</main>
+<div class="toast" id="toast">Copied</div>
+<script src="search.js"></script>
+</body>
+</html>
