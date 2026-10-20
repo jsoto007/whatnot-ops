@@ -37,7 +37,10 @@ export function Review() {
       <h2>Review</h2>
       <p className="muted">{q.data.items.length} open</p>
       {q.data.items.length === 0 ? (
-        <p className="card muted">Nothing waiting. Rules handled everything they saw.</p>
+        <div className="empty">
+          <b>Nothing waiting</b>
+          The rules handled everything they saw.
+        </div>
       ) : (
         q.data.items.map((it) => <Item key={it.id} item={it} skus={skus} onDone={refresh} />)
       )}

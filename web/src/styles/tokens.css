@@ -1,18 +1,40 @@
-/* The only place colours, radii, spacing and motion values live. */
+/* The only place colours, radii, spacing, type and motion values live. */
 :root {
-  --navy: #002244;
-  --navy-2: #001833;
-  --navy-3: #0b3a66;
+  /* brand */
+  --navy: #0b1f3a;
+  --navy-2: #071428;
+  --navy-3: #16365f;
+  --navy-soft: #1f3f6d;
   --green: #69be28;
-  --grey: #a5acaf;
-  --blue: #4fc3f7;
-  --red: #ff8a80;
+  --green-dark: #4f9a18;
+  --blue: #2f80ed;
+  --amber: #d97706;
+  --red: #dc2626;
 
-  --bg: #f5f7fa;
+  /* surfaces + ink */
+  --bg: #f4f6fa;
   --surface: #ffffff;
+  --surface-2: #f8fafc;
   --text: #0f172a;
-  --text-muted: #475569;
-  --border: #e2e8f0;
+  --text-muted: #5b6b82;
+  --text-faint: #8a97aa;
+  --border: #e3e8ef;
+  --border-strong: #c9d2de;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.06);
+
+  /* status tints */
+  --tint-green: #e8f6dc;
+  --tint-green-ink: #2f6a0c;
+  --tint-blue: #e3eefc;
+  --tint-blue-ink: #1b4f9c;
+  --tint-amber: #fdf1d6;
+  --tint-amber-ink: #8a4b06;
+  --tint-red: #fde4e4;
+  --tint-red-ink: #9b1c1c;
+  --tint-violet: #ece8fb;
+  --tint-violet-ink: #4c2ea0;
+  --tint-grey: #eceff4;
+  --tint-grey-ink: #475569;
 
   --radius-s: 6px;
   --radius-m: 10px;
@@ -23,6 +45,9 @@
   --space-4: 16px;
   --space-6: 24px;
   --space-8: 32px;
-  --font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font: 14px/1.5 var(--font-family);
   --motion: 160ms ease;
+  --sidebar-w: 232px;
+  --content-max: 1440px;
 }

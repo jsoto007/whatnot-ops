@@ -9,13 +9,21 @@ export function Shows() {
   const q = useQuery({ queryKey: ['shows'], queryFn: () => apiGet<{ shows: Show[] }>('/api/shows') })
   return (
     <section>
-      <h2>Shows</h2>
+      <div className="page-head">
+        <div>
+          <h2>Shows</h2>
+          <div className="sub">Every show the extension has captured, newest first</div>
+        </div>
+      </div>
       {q.isPending ? (
         <p className="muted">Loading…</p>
       ) : q.isError ? (
         <p className="form-error">Could not load shows.</p>
       ) : q.data.shows.length === 0 ? (
-        <p className="card muted">No shows yet. Start the Chat Scraper extension on a live show and it will appear here.</p>
+        <div className="empty">
+          <b>No shows yet</b>
+          Start the Chat Scraper extension on a live show and it will appear here.
+        </div>
       ) : (
         <table className="table">
           <thead>

@@ -23,7 +23,10 @@ export function Inventory() {
       </p>
       {write && <Import onDone={refresh} />}
       {q.data.skus.length === 0 ? (
-        <p className="card muted">Nothing in stock yet. Import the inventory sheet or add products.</p>
+        <div className="empty">
+          <b>Nothing in stock yet</b>
+          Import the inventory sheet above, or add products first.
+        </div>
       ) : (
         <table className="table" data-testid="levels">
           <thead>

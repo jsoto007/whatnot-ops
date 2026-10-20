@@ -21,6 +21,10 @@ def _org(name: str) -> Organization:
 
 
 def register_cli(app: Flask) -> None:
+    from .seed_demo import register as register_seed_demo
+
+    register_seed_demo(app)
+
     @app.cli.group()
     def devices():
         """Extension device keys."""

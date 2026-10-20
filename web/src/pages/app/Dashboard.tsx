@@ -6,27 +6,36 @@ const fmtDate = (iso: string) => new Date(iso + 'T12:00:00').toLocaleDateString(
 
 export function Tiles({ t, totals }: { t?: ShowTiles; totals?: Record<string, number> }) {
   const v = (k: keyof ShowTiles) => (t ? (t[k] as number) : (totals?.[k] ?? 0))
-  const tile = (label: string, value: number | string, id: string, note?: string) => (
-    <div className="tile" data-testid={`tile-${id}`}>
+  const tile = (label: string, value: number | string, id: string, opts: { note?: string; accent?: string } = {}) => (
+    <div className={'tile' + (opts.accent ? ' accent-' + opts.accent : '')} data-testid={`tile-${id}`}>
       <div className="tile-value">{value}</div>
       <div className="tile-label">{label}</div>
-      {note && <div className="muted small">{note}</div>}
+      {opts.note && <div className="muted small">{opts.note}</div>}
     </div>
   )
+  const review = v('openReviews')
+  const fulfil = v('toFulfil')
   return (
-    <div className="tiles">
-      {tile('Items sold', v('itemsSold'), 'items')}
-      {tile('Buyers', v('buyers'), 'buyers')}
-      {tile('Paid revenue', money(v('revenuePaidCents')), 'paid', v('revenuePendingCents') ? `${money(v('revenuePendingCents'))} awaiting payment` : undefined)}
-      {tile('Red', v('red'), 'red')}
-      {tile('Bundles', v('bundles'), 'bundles')}
-      {tile('Ultra / Mega', `${v('ultra')} · ${v('mega')}`, 'ultramega', `U ${v('ultra')} · M ${v('mega')}`)}
-      {tile('Gifts', v('gifts'), 'gifts')}
-      {tile('No-picks', v('noPicks'), 'nopicks')}
-      {tile('Cancelled / failed', v('cancelled'), 'cancelled')}
-      {tile('To fulfil', v('toFulfil'), 'tofulfil')}
-      {tile('Needs review', v('openReviews'), 'review')}
-    </div>
+    <>
+      <div className="tiles primary">
+        {tile('Items sold', v('itemsSold'), 'items')}
+        {tile('Buyers', v('buyers'), 'buyers')}
+        {tile('Paid revenue', money(v('revenuePaidCents')), 'paid', {
+          accent: 'green',
+          note: v('revenuePendingCents') ? `${money(v('revenuePendingCents'))} awaiting payment` : 'nothing awaiting payment',
+        })}
+        {tile('To fulfil', fulfil, 'tofulfil', { accent: fulfil ? 'blue' : undefined, note: fulfil ? 'paid orders not shipped' : 'queue is clear' })}
+        {tile('Needs review', review, 'review', { accent: review ? 'amber' : undefined, note: review ? 'decisions waiting' : 'nothing waiting' })}
+      </div>
+      <div className="tally" aria-label="Show tally">
+        {tile('Red', v('red'), 'red')}
+        {tile('Bundles', v('bundles'), 'bundles')}
+        {tile('Ultra / Mega', `${v('ultra')} · ${v('mega')}`, 'ultramega', { note: `U ${v('ultra')} · M ${v('mega')}` })}
+        {tile('Gifts', v('gifts'), 'gifts')}
+        {tile('No-picks', v('noPicks'), 'nopicks')}
+        {tile('Cancelled / failed', v('cancelled'), 'cancelled', { accent: v('cancelled') ? 'red' : undefined })}
+      </div>
+    </>
   )
 }
 
@@ -92,15 +101,17 @@ export function Dashboard() {
   const live = d.shows.find((s) => s.live)
   return (
     <section>
-      <div className="product-head">
-        <h2>Dashboard</h2>
+      <div className="page-head">
+        <div>
+          <h2>Dashboard</h2>
+          <div className="sub">All shows · {d.totals.shows} show{d.totals.shows === 1 ? '' : 's'}</div>
+        </div>
         {live && (
           <Link to={`/app/shows/${live.showId}`} className="live-pill" data-testid="live-pill">
-            ● Live: {fmtDate(live.date)} show, {live.messages} messages
+            Live: {fmtDate(live.date)} show, {live.messages} messages
           </Link>
         )}
       </div>
-      <p className="muted small">All shows · {d.totals.shows} show{d.totals.shows === 1 ? '' : 's'}</p>
       <Tiles totals={d.totals} />
       {d.lowStock.length > 0 && (
         <p className="card" data-testid="low-stock">
@@ -109,7 +120,10 @@ export function Dashboard() {
       )}
       <h3>Shows</h3>
       {d.shows.length === 0 ? (
-        <p className="card muted">No shows yet. Start the Chat Scraper extension on a live show.</p>
+        <div className="empty">
+          <b>No shows yet</b>
+          Start the Chat Scraper extension on a live show and it will appear here within seconds.
+        </div>
       ) : (
         <table className="table" data-testid="shows-table">
           <thead>

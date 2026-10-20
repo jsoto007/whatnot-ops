@@ -3,7 +3,7 @@ SHELL := /bin/bash
 PY := .venv/bin
 E2E_PORT ?= 5055
 
-.PHONY: install db-create db-url api web worker check test lint e2e build-web migrate ext-e2e smoke
+.PHONY: install db-create db-url api web worker check test lint e2e build-web migrate ext-e2e smoke seed-demo
 
 install:
 	cd api && python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt
@@ -21,8 +21,12 @@ db-create: db-url
 migrate: db-url
 	cd api && FLASK_APP=wsgi.py $(PY)/flask db upgrade
 
+# Demo data for looking at the app locally (refused in production).
+seed-demo: db-url
+	cd api && JOBS_INLINE=1 FLASK_APP=wsgi.py $(PY)/flask seed-demo
+
 api: db-url
-	cd api && JOBS_INLINE=1 FLASK_APP=wsgi.py $(PY)/flask run --port 5000 --debug
+	cd api && JOBS_INLINE=1 FLASK_APP=wsgi.py $(PY)/flask run --port 5050 --debug
 
 # Background worker (parsing, exports). `make api` runs jobs inline instead.
 worker: db-url

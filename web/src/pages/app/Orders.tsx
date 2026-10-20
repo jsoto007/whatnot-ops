@@ -28,7 +28,12 @@ export function Orders() {
   }
   return (
     <section>
-      <h2>Orders</h2>
+      <div className="page-head">
+        <div>
+          <h2>Orders</h2>
+          <div className="sub">One order per buyer per show · pick, pack and ship the verified ones</div>
+        </div>
+      </div>
       <div className="toolbar">
         <div className="tabs" role="tablist">
           {[
@@ -61,9 +66,10 @@ export function Orders() {
       ) : q.isError ? (
         <p className="form-error">Could not load orders.</p>
       ) : q.data.orders.length === 0 ? (
-        <p className="card muted">
-          {view === 'queue' ? 'Nothing to fulfil: orders appear here once their payments are reconciled.' : 'No orders here.'}
-        </p>
+        <div className="empty">
+          <b>{view === 'queue' ? 'Nothing to fulfil' : 'No orders here'}</b>
+          {view === 'queue' ? 'Orders appear here once their payments are reconciled on the show\'s Payments tab.' : ''}
+        </div>
       ) : (
         <table className="table" data-testid="orders">
           <thead>
