@@ -26,6 +26,10 @@ export function ShowDetail() {
     mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/parse`),
     onSuccess: () => qc.invalidateQueries(),
   })
+  const aiAudit = useMutation({
+    mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/ai-audit`),
+    onSuccess: () => qc.invalidateQueries(),
+  })
   return (
     <section>
       <p>
@@ -34,9 +38,15 @@ export function ShowDetail() {
       <div className="product-head">
         <h2>{show.data ? fmtDate(show.data.show.date) + ' show' : 'Show'}</h2>
         {can('review.act') && (
-          <button className="btn" onClick={() => parse.mutate()} disabled={parse.isPending} data-testid="parse-now">
-            {parse.isPending ? 'Parsing…' : 'Parse now'}
-          </button>
+          <span className="row-actions">
+            <button className="btn" onClick={() => parse.mutate()} disabled={parse.isPending} data-testid="parse-now">
+              {parse.isPending ? 'Parsing…' : 'Parse now'}
+            </button>
+            <button className="btn" onClick={() => aiAudit.mutate()} disabled={aiAudit.isPending} data-testid="ai-audit" title="Ask the AI supervisor to check this show">
+              {aiAudit.isPending ? 'Auditing…' : 'Run AI audit'}
+            </button>
+            {aiAudit.isError && <span className="form-error small">{(aiAudit.error as Error).message}</span>}
+          </span>
         )}
       </div>
       {show.data && <Stats stats={show.data.stats} total={show.data.show.messageCount} />}

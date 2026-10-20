@@ -227,3 +227,13 @@ export interface ParseStats {
   openReviews: number
   job: { id: number; status: string; error: string | null } | null
 }
+
+// ---------- AI supervisor (Phase 6) ----------
+export interface AiStatus {
+  provider: string
+  enabled: boolean
+  callsToday: number
+  failedToday: number
+  lastError: string | null
+  openProposals: number
+}

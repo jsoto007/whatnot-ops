@@ -70,6 +70,43 @@ def register_cli(app: Flask) -> None:
         db.session.commit()
         click.echo(f"owner {email} created for '{organization.name}'")
 
+    @app.cli.command("ai-eval")
+    def ai_eval():
+        """Replay the rules corpus through the configured AI provider and report agreement."""
+        import json
+        from pathlib import Path
+
+        from ..services.ai import get_provider
+        from ..services.supervisor import CLASSIFY_SCHEMA
+
+        provider = get_provider()
+        if provider is None:
+            raise click.ClickException("AI_PROVIDER is not set")
+        corpus = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "chat_corpus.jsonl"
+        rows = [json.loads(line) for line in corpus.read_text().splitlines() if line.strip()]
+        agree = total = 0
+        for r in rows:
+            expected = {
+                "sale": "sale",
+                "cancel": "cancel",
+                "payment_failed": "payment_failed",
+                "gift": "gift",
+            }.get(r["kind"], "chatter")
+            d = provider.decide(
+                task=(
+                    "classify_line: Decide what this chat line means for the shop's sales. "
+                    "The host is host_shop."
+                ),
+                input=json.dumps({"line": {"user": r["u"], "text": r["b"]}}),
+                schema=CLASSIFY_SCHEMA,
+            )
+            got = d.fields.get("kind")
+            total += 1
+            agree += got == expected
+            mark = "ok " if got == expected else "MISS"
+            click.echo(f"{mark} {r['b']!r}: expected {expected}, got {got} ({d.confidence:.2f})")
+        click.echo(f"agreement: {agree}/{total} = {agree / total:.0%} on the SYNTHETIC corpus")
+
     @app.cli.command("e2e-seed")
     def e2e_seed():
         """Test only: a device whose key is $E2E_DEVICE_KEY. Refused in production."""

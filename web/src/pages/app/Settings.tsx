@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/useAuth'
 import { Field, Form } from '../../components/Form'
-import { api, apiGet, type AuditEntry, type Device, type Organization } from '../../lib/api'
+import { api, apiGet, type AiStatus, type AuditEntry, type Device, type Organization } from '../../lib/api'
 
 export function Settings() {
   const { me, can } = useAuth()
@@ -76,6 +76,7 @@ export function Settings() {
         </p>
       )}
 
+      {can('review.act') && <Ai />}
       {can('audit.view') && <Audit />}
     </section>
   )
@@ -98,6 +99,27 @@ function HostUsername() {
       </Field>
       <span className="muted small">Chat lines from this account count as confirmations ("sold to…", "cancelled…").</span>
     </Form>
+  )
+}
+
+function Ai() {
+  const q = useQuery({ queryKey: ['ai-status'], queryFn: () => apiGet<AiStatus>('/api/review/ai-status') })
+  if (!q.data) return null
+  const s = q.data
+  return (
+    <>
+      <h3>AI supervisor</h3>
+      <p className="muted small" data-testid="ai-status">
+        {s.enabled ? (
+          <>
+            Provider <b>{s.provider}</b> · {s.callsToday} calls today{s.failedToday ? `, ${s.failedToday} failed` : ''} · {s.openProposals} open suggestions
+            {s.lastError && <span className="form-error"> · last error: {s.lastError}</span>}
+          </>
+        ) : (
+          <>Off. Set AI_PROVIDER (jev or claude) and the matching key on the server to enable suggestions and show audits.</>
+        )}
+      </p>
+    </>
   )
 }
 

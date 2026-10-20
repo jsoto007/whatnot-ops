@@ -95,3 +95,5 @@ tr.low td { background: #fffbeb; }
 .review .chat.small .chat-line { grid-template-columns: 50px 120px 1fr; font-size: 13px; }
 .chat-line.hit { background: #fef3c7; }
 .field.check { flex-direction: row; align-items: center; gap: 6px; }
+.proposal { background: #eef2ff; border-left: 3px solid var(--navy-3); padding: 6px 10px; border-radius: var(--radius-s); }
+.row-actions { display: flex; gap: var(--space-2); align-items: center; }

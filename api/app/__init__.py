@@ -29,7 +29,7 @@ def create_app(config: Config | None = None) -> Flask:
     migrate.init_app(app, db, directory=os.path.join(os.path.dirname(__file__), "..", "migrations"))
 
     from . import models  # noqa: F401 - register tables with SQLAlchemy/Alembic
-    from .services import pipeline  # noqa: F401 - registers job handlers
+    from .services import pipeline, supervisor  # noqa: F401 - registers job handlers
 
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(ingest_bp, url_prefix="/api")

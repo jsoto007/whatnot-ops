@@ -74,8 +74,14 @@ commands.
 - **Migrations.** `flask db migrate` prints the generated path — rename
   *that* file (never `ls -t`), and when a downgrade drops tables that use
   Postgres enums, drop the enum types too (see 0004).
-- **AI** (Phase 6) only proposes; every applied change goes through the same
-  service functions and audit log as a human action.
+- **AI** only proposes. Providers implement `ai/base.py::AiProvider` and are
+  chosen by `AI_PROVIDER` (`claude` via the official `anthropic` SDK with
+  `output_config.format` structured output, `jev`, `fake` for tests). What may
+  be applied without a person is only `ai/policy.py`; applied changes go
+  through `supervisor.apply_proposal()` → the same pipeline/inventory
+  functions as a human action, actor `ai`, audited. Never call a provider
+  outside `supervisor.ask()` (it logs `ai_calls`). Tests use `FakeProvider`;
+  no test may reach a real vendor.
 - Commits only when asked, on a feature branch; stage by path.
 
 ## Commands

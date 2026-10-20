@@ -103,6 +103,28 @@ def parse_now(show_id: int):
     return jsonify(_stats(show))
 
 
+@bp.post("/<int:show_id>/ai-audit")
+@require("review.act")
+def ai_audit(show_id: int):
+    show = _show_or_404(show_id)
+    if show is None:
+        return jsonify({"error": "show not found"}), 404
+    from ..services import supervisor
+
+    if not supervisor.status(g.u.organization_id)["enabled"]:
+        return jsonify({"error": "AI is not configured (AI_PROVIDER)"}), 409
+    supervisor.schedule_audit(show, delay_s=0)
+    audit.record(
+        g.u.organization_id,
+        "show.ai_audit_requested",
+        user=g.u,
+        target_type="show",
+        target_id=show.id,
+    )
+    db.session.commit()
+    return jsonify(_stats(show))
+
+
 @bp.get("/<int:show_id>/events")
 @require("shows.view")
 def events(show_id: int):

@@ -9,6 +9,19 @@ const REASON_LABEL: Record<string, string> = {
   ambiguous_sale: 'Which sale?',
   low_confidence: 'Not sure',
   no_open_sale: 'No open sale to cancel',
+  cancel_sale: 'AI: looks cancelled',
+  payment_failed: 'AI: payment problem',
+  missing_sale: 'AI: possible missed sale',
+  duplicate_sale: 'AI: possible duplicate',
+  other: 'AI: something to check',
+}
+const ACTION_LABEL: Record<string, string> = {
+  assign_sku: 'Assign the suggested SKU',
+  cancel_sale: 'Cancel the sale',
+  cancel: 'Cancel the sale',
+  payment_failed: 'Mark payment failed',
+  classify_sale: 'Record it as a sale',
+  dismiss: 'Ignore this line',
 }
 
 export function Review() {
@@ -55,6 +68,14 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
         )}
       </div>
       <p>{item.summary}</p>
+      {!!item.proposal?.action && item.proposal.action !== 'none' && (
+        <p className="proposal" data-testid="proposal">
+          <b>AI suggests:</b> {ACTION_LABEL[String(item.proposal.action)] ?? String(item.proposal.action)}
+          {typeof item.proposal.confidence === 'number' && <span className="muted"> · {Math.round(Number(item.proposal.confidence) * 100)}% sure</span>}
+          {item.proposal.reasoning ? <span className="muted small"> — {String(item.proposal.reasoning)}</span> : null}
+          {item.proposal.summary ? <span className="muted small"> — {String(item.proposal.summary)}</span> : null}
+        </p>
+      )}
       {item.context.length > 0 && (
         <div className="chat small">
           {item.context.map((c) => (
@@ -98,6 +119,11 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
               </button>
             ))}
           </>
+        )}
+        {!!item.proposal?.action && item.proposal.action !== 'none' && item.proposal.action !== 'dismiss' && (
+          <button className="btn primary" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'apply_proposal' })} data-testid="apply-proposal">
+            Apply suggestion
+          </button>
         )}
         <button className="btn" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'dismiss' })}>
           Ignore
