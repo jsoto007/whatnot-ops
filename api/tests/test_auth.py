@@ -379,3 +379,13 @@ def test_production_closes_signups_once_a_user_exists(client, app, monkeypatch):
         assert client.get("/api/auth/me").get_json()["signupsOpen"] is False
     finally:
         app.config["APP_ENV"] = "test"
+
+
+def test_owner_sets_the_host_username(client):
+    signup(client)
+    h = csrf(client)
+    r = client.patch("/api/team/organization", json={"hostUsername": "@MyShopLive"}, headers=h)
+    assert r.status_code == 200 and r.get_json()["organization"]["hostUsername"] == "MyShopLive"
+    assert client.get("/api/auth/me").get_json()["organization"]["hostUsername"] == "MyShopLive"
+    r = client.patch("/api/team/organization", json={"hostUsername": ""}, headers=h)
+    assert r.get_json()["organization"]["hostUsername"] is None

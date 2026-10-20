@@ -77,3 +77,21 @@ a { color: var(--navy-3); }
 .adjust input:nth-child(2) { width: 140px; }
 tr.low td { background: #fffbeb; }
 .import { margin-bottom: var(--space-4); }
+
+/* ---------- show detail / review ---------- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--space-2); margin: var(--space-3) 0; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-m); padding: var(--space-2) var(--space-3); }
+.tile-value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tile-label { font-size: 12px; color: var(--text-muted); }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: var(--space-3); }
+.tabs button { border: 0; background: none; padding: 8px 14px; font: 600 14px system-ui, sans-serif; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; }
+.tabs button.active { color: var(--navy-3); border-bottom-color: var(--green); }
+.status { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; background: #e2e8f0; }
+.status.reserved { background: #dbeafe; color: #1e40af; }
+.status.paid, .status.fulfilled { background: #dcfce7; color: #166534; }
+.status.cancelled, .status.payment_failed { background: #fee2e2; color: #991b1b; }
+.status.detected { background: #fef3c7; color: #92400e; }
+.review { margin-bottom: var(--space-3); }
+.review .chat.small .chat-line { grid-template-columns: 50px 120px 1fr; font-size: 13px; }
+.chat-line.hit { background: #fef3c7; }
+.field.check { flex-direction: row; align-items: center; gap: 6px; }

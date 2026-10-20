@@ -1,0 +1,368 @@
+from datetime import UTC
+
+import pytest
+from sqlalchemy import select
+
+from app.db import db
+from app.models import (
+    Job,
+    JobStatus,
+    Organization,
+    ParsedEvent,
+    ReviewItem,
+    ReviewStatus,
+    Sale,
+    Show,
+    Sku,
+)
+from app.services import catalog, inventory, jobs, pipeline
+from app.services.inventory import MovementKind
+
+SHOW = "2026-10-19T20:00:00.000Z"
+
+
+@pytest.fixture
+def world(app):
+    """An org with RED (3 on hand), a show, and a helper to add chat lines."""
+    from datetime import datetime
+
+    from app.models import ChatMessage
+
+    with app.app_context():
+        org = Organization(name="Shop", slug="shop", host_username="host_shop")
+        db.session.add(org)
+        db.session.flush()
+        red = catalog.create_product(
+            org.id, "Red bundle", skus=[{"code": "RED", "priceCents": 2500}]
+        ).skus[0]
+        inventory.move(red.id, MovementKind.restock, 3, source_type="test", source_id="seed")
+        show = Show(
+            organization_id=org.id,
+            show_key=SHOW,
+            started_at=datetime.fromisoformat(SHOW.replace("Z", "+00:00")),
+            show_date=datetime.now(UTC).date(),
+        )
+        db.session.add(show)
+        db.session.commit()
+        ids = {"org": org.id, "red": red.id, "show": show.id}
+
+    def say(app, lines):
+        with app.app_context():
+            n = db.session.scalar(select(db.func.count()).select_from(ChatMessage)) or 0
+            for i, (u, b) in enumerate(lines, start=n + 1):
+                db.session.add(
+                    ChatMessage(
+                        show_id=ids["show"],
+                        client_id=f"{i:016x}",
+                        seq=i,
+                        username=u,
+                        body=b,
+                        raw_text=f"{u} {b}".strip(),
+                        captured_at=datetime.now(UTC),
+                    )
+                )
+            db.session.commit()
+
+    ids["say"] = say
+    return ids
+
+
+def run(app, show_id, **kw):
+    with app.app_context():
+        stats = pipeline.process_show(show_id, **kw)
+        db.session.commit()
+        return stats
+
+
+def level(app, sku_id):
+    with app.app_context():
+        s = db.session.get(Sku, sku_id)
+        return s.on_hand, s.reserved
+
+
+def sales(app, show_id):
+    with app.app_context():
+        return [
+            (s.buyer_username, s.status.value, s.sku.code if s.sku else None, s.quantity)
+            for s in db.session.scalars(
+                select(Sale).where(Sale.show_id == show_id).order_by(Sale.id)
+            )
+        ]
+
+
+def open_reviews(app):
+    with app.app_context():
+        return [
+            (r.reason, r.sale_id)
+            for r in db.session.scalars(
+                select(ReviewItem)
+                .where(ReviewItem.status == ReviewStatus.open)
+                .order_by(ReviewItem.id)
+            )
+        ]
+
+
+def test_sales_reserve_stock_and_cancellations_release_it(app, world):
+    world["say"](
+        app,
+        [
+            ("", "Auction #1: Red bundle"),
+            ("lani808", "mine"),
+            ("", "lani808 won the auction for $25"),
+            ("", "pokemom_22 won Red bundle x2"),
+            ("", "cancelled for pokemom_22"),
+        ],
+    )
+    stats = run(app, world["show"])
+    assert (stats.parsed, stats.sales) == (5, 2)
+    assert sales(app, world["show"]) == [
+        ("lani808", "reserved", "RED", 1),
+        ("pokemom_22", "cancelled", "RED", 2),
+    ]
+    assert level(app, world["red"]) == (3, 1)
+    with app.app_context():
+        kinds = [
+            e.kind.value for e in db.session.scalars(select(ParsedEvent).order_by(ParsedEvent.id))
+        ]
+        assert kinds == ["listing", "claim", "sale", "sale", "cancel"]
+        first = db.session.scalar(select(Sale).order_by(Sale.id))
+        assert (
+            first.item_text == "Red bundle" and first.price_cents == 2500
+        )  # item from the listing context
+    # Running again changes nothing.
+    stats = run(app, world["show"])
+    assert stats.parsed == 0
+    assert level(app, world["red"]) == (3, 1)
+
+
+def test_unmatched_item_goes_to_review_and_assigning_a_sku_reserves_and_remembers(app, world):
+    world["say"](app, [("", "cardguy bought mystery box for $10")])
+    run(app, world["show"])
+    assert sales(app, world["show"]) == [("cardguy", "detected", None, 1)]
+    assert [r for r, _ in open_reviews(app)] == ["unmatched_item"]
+    with app.app_context():
+        item = db.session.scalar(select(ReviewItem))
+        from app.models import User
+
+        user = User(
+            organization_id=world["org"],
+            email="o@x.test",
+            name="O",
+            password_hash="x",
+            role="owner",
+            session_token="t",
+        )
+        db.session.add(user)
+        db.session.flush()
+        pipeline.resolve(item, "assign_sku", {"skuId": world["red"], "remember": True}, user=user)
+        db.session.commit()
+    assert sales(app, world["show"]) == [("cardguy", "reserved", "RED", 1)]
+    assert level(app, world["red"]) == (3, 1)
+    assert open_reviews(app) == []
+    with app.app_context():
+        assert catalog.resolve_alias(world["org"], "mystery box").code == "RED"
+    # Next show: the alias is known, no review needed.
+    world["say"](app, [("", "kat.c bought mystery box")])
+    run(app, world["show"])
+    assert sales(app, world["show"])[-1] == ("kat.c", "reserved", "RED", 1)
+
+
+def test_insufficient_stock_flags_the_sale_for_review(app, world):
+    world["say"](app, [("", "lani808 won Red bundle x5")])
+    run(app, world["show"])
+    assert sales(app, world["show"]) == [("lani808", "detected", "RED", 5)]
+    assert [r for r, _ in open_reviews(app)] == ["insufficient_stock"]
+    assert level(app, world["red"]) == (3, 0)
+
+
+def test_ambiguous_cancellation_asks_which_sale(app, world):
+    world["say"](
+        app,
+        [
+            ("", "lani808 won Red bundle"),
+            ("", "lani808 won Red bundle"),
+            ("host_shop", "cancelled for lani808"),
+        ],
+    )
+    run(app, world["show"])
+    reviews = open_reviews(app)
+    assert [r for r, _ in reviews] == ["ambiguous_sale"]
+    with app.app_context():
+        item = db.session.scalar(select(ReviewItem))
+        assert len(item.proposal["candidates"]) == 2
+        pick = item.proposal["candidates"][0]["saleId"]
+        from app.models import User
+
+        user = User(
+            organization_id=world["org"],
+            email="o@x.test",
+            name="O",
+            password_hash="x",
+            role="owner",
+            session_token="t",
+        )
+        db.session.add(user)
+        db.session.flush()
+        pipeline.resolve(item, "pick_sale", {"saleId": pick}, user=user)
+        db.session.commit()
+    assert sorted(s[1] for s in sales(app, world["show"])) == ["cancelled", "reserved"]
+    assert level(app, world["red"]) == (3, 1)
+
+
+def test_cancel_with_no_open_sale_and_low_confidence_sale_go_to_review(app, world):
+    world["say"](app, [("host_shop", "cancelled for nobody"), ("randomguy", "sold to randomguy")])
+    run(app, world["show"])
+    assert sorted(r for r, _ in open_reviews(app)) == ["low_confidence", "no_open_sale"]
+    assert sales(app, world["show"]) == []
+
+
+def test_reparse_only_revisits_dead_end_lines(app, world):
+    world["say"](app, [("", "lani808 won Red bundle"), ("lani808", "thanks")])
+    run(app, world["show"])
+    with app.app_context():
+        before = db.session.scalar(select(Sale)).id
+        n_events = db.session.scalar(select(db.func.count()).select_from(ParsedEvent))
+    stats = run(app, world["show"], reparse=True)
+    assert stats.parsed == 1  # only the chatter line was re-evaluated
+    with app.app_context():
+        assert db.session.scalar(select(Sale)).id == before
+        assert db.session.scalar(select(db.func.count()).select_from(ParsedEvent)) == n_events
+    assert level(app, world["red"]) == (3, 1)
+
+
+# ---------- jobs ----------
+
+
+def test_jobs_dedupe_claim_run_and_retry(app, monkeypatch):
+    monkeypatch.delenv("JOBS_INLINE", raising=False)
+    calls = []
+
+    @jobs.handler("test_ok")
+    def _ok(payload):
+        calls.append(payload)
+
+    @jobs.handler("test_boom")
+    def _boom(payload):
+        raise RuntimeError("boom")
+
+    with app.app_context():
+        a = jobs.enqueue("test_ok", {"x": 1}, dedupe_key="k")
+        b = jobs.enqueue("test_ok", {"x": 2}, dedupe_key="k")
+        assert a.id == b.id  # deduped while queued
+        boom = jobs.enqueue("test_boom", {})
+        db.session.commit()
+        assert jobs.run_once("w1").status is JobStatus.done
+        assert calls == [{"x": 1}]
+        j = jobs.run_once("w1")
+        assert (
+            j.id == boom.id
+            and j.status is JobStatus.queued
+            and "boom" in j.error
+            and j.attempts == 1
+        )
+        assert jobs.run_once("w1") is None  # retry is in the future
+        assert (
+            jobs.enqueue("test_ok", {"x": 3}, dedupe_key="k").id != a.id
+        )  # a is done, so a new one
+
+
+def test_inline_jobs_run_at_enqueue(app, monkeypatch):
+    monkeypatch.setenv("JOBS_INLINE", "1")
+    seen = []
+
+    @jobs.handler("test_inline")
+    def _h(payload):
+        seen.append(payload)
+
+    with app.app_context():
+        j = jobs.enqueue("test_inline", {"a": 1})
+        assert seen == [{"a": 1}]
+        assert db.session.get(Job, j.id).status is JobStatus.done
+
+
+def test_ingest_schedules_a_parse_and_inline_mode_parses_immediately(
+    client, app, monkeypatch, world
+):
+    monkeypatch.setenv("JOBS_INLINE", "1")
+    with app.app_context():
+        from app.services.devices import create_device
+
+        _, key = create_device(db.session.get(Organization, world["org"]), "L")
+        db.session.commit()
+    rows = [
+        {
+            "id": f"{i:016x}",
+            "showId": SHOW,
+            "username": "",
+            "body": b,
+            "rawText": b,
+            "capturedAt": SHOW,
+            "seq": i,
+        }
+        for i, b in enumerate(["lani808 won Red bundle", "kat.c won Red bundle"], start=1)
+    ]
+    r = client.post(
+        "/api/ingest",
+        json={"version": 1, "show": {"id": SHOW, "startedAt": SHOW}, "rows": rows},
+        headers={"Authorization": "Bearer " + key},
+    )
+    assert r.status_code == 200
+    assert sales(app, world["show"]) == [
+        ("lani808", "reserved", "RED", 1),
+        ("kat.c", "reserved", "RED", 1),
+    ]
+    with app.app_context():
+        assert db.session.scalar(select(Job)).status is JobStatus.done
+
+
+def test_review_and_show_routes(client, app, world):
+    world["say"](app, [("", "cardguy bought mystery box for $10"), ("", "lani808 won Red bundle")])
+    r = client.get("/api/auth/csrf")
+    h = {"X-CSRF-Token": r.get_json()["token"]}
+    client.post(
+        "/api/auth/signup",
+        json={
+            "organization": "Other",
+            "name": "O",
+            "email": "o@x.test",
+            "password": "correct-horse-battery",
+        },
+        headers=h,
+    )
+    assert client.get(f"/api/shows/{world['show']}").status_code == 404  # other org
+    # become a user of the world org
+    with app.app_context():
+        from app.models import User
+
+        u = db.session.scalar(select(User))
+        u.organization_id = world["org"]
+        db.session.commit()
+    assert client.post(f"/api/shows/{world['show']}/parse", headers=h).get_json()["sales"] == {
+        "detected": 1,
+        "reserved": 1,
+    }
+    ev = client.get(f"/api/shows/{world['show']}/events").get_json()
+    assert [e["kind"] for e in ev["events"]] == ["sale", "sale"]
+    s = client.get(f"/api/shows/{world['show']}/sales").get_json()["sales"]
+    assert s[0]["buyer"] == "cardguy" and s[0]["sku"] is None and s[1]["sku"]["code"] == "RED"
+    items = client.get("/api/review").get_json()["items"]
+    assert (
+        len(items) == 1 and items[0]["reason"] == "unmatched_item" and len(items[0]["context"]) == 2
+    )
+    r = client.post(
+        f"/api/review/{items[0]['id']}/resolve",
+        json={"action": "assign_sku", "skuId": world["red"], "remember": False},
+        headers=h,
+    )
+    assert r.status_code == 200, r.get_json()
+    assert client.get("/api/review").get_json()["items"] == []
+    assert (
+        client.post(
+            f"/api/review/{items[0]['id']}/resolve", json={"action": "dismiss"}, headers=h
+        ).status_code
+        == 409
+    )
+    stats = client.get(f"/api/shows/{world['show']}").get_json()["stats"]
+    assert stats["sales"] == {"reserved": 2} and stats["openReviews"] == 0
+    actions = [e["action"] for e in client.get("/api/audit").get_json()["entries"]]
+    assert "review.resolved" in actions and "show.parsed" in actions

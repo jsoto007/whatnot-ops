@@ -69,3 +69,31 @@ def update_user(user_id: int):
     disabled = bool(d["disabled"]) if "disabled" in d else None
     user = accounts.update_user(g.u, user_id, role=role, disabled=disabled)
     return jsonify(serializers.user(user))
+
+
+@bp.patch("/organization")
+@require("settings.manage")
+def update_organization():
+    d = request.get_json(silent=True) or {}
+    org = g.u.organization
+    changes: dict = {}
+    if "name" in d and (d["name"] or "").strip():
+        changes["name"] = [org.name, d["name"].strip()]
+        org.name = d["name"].strip()
+    if "hostUsername" in d:
+        value = (d["hostUsername"] or "").strip().lstrip("@")[:80] or None
+        changes["hostUsername"] = [org.host_username, value]
+        org.host_username = value
+    if changes:
+        from ..services import audit
+
+        audit.record(
+            org.id,
+            "organization.updated",
+            user=g.u,
+            target_type="organization",
+            target_id=org.id,
+            details=changes,
+        )
+        db.session.commit()
+    return jsonify({"organization": serializers.organization(org)})

@@ -26,6 +26,8 @@ class Organization(db.Model):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     slug: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    # The seller's Whatnot handle: chat lines from this user count as host confirmations.
+    host_username: Mapped[str | None] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )

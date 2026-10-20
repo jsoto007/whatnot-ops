@@ -3,7 +3,7 @@ from .services.permissions import permissions_for
 
 
 def organization(o: Organization) -> dict:
-    return {"id": o.id, "name": o.name, "slug": o.slug}
+    return {"id": o.id, "name": o.name, "slug": o.slug, "hostUsername": o.host_username}
 
 
 def user(u: User) -> dict:
@@ -127,4 +127,79 @@ def import_row(r) -> dict:
         "action": r.action,
         "before": r.before,
         "error": r.error,
+    }
+
+
+def event(e) -> dict:
+    return {
+        "id": e.id,
+        "messageId": e.message_id,
+        "seq": e.message.seq,
+        "kind": e.kind.value,
+        "buyer": e.buyer_username,
+        "item": e.item_text,
+        "quantity": e.quantity,
+        "priceCents": e.price_cents,
+        "auctionType": e.auction_type,
+        "rule": e.rule,
+        "confidence": e.confidence,
+        "rawText": e.message.raw_text,
+        "capturedAt": e.message.captured_at.isoformat(),
+    }
+
+
+def sale(s) -> dict:
+    return {
+        "id": s.id,
+        "showId": s.show_id,
+        "showDate": s.show.show_date.isoformat(),
+        "buyer": s.buyer_username,
+        "sku": {
+            "id": s.sku.id,
+            "code": s.sku.code,
+            "name": s.sku.name,
+            "productName": s.sku.product.name,
+        }
+        if s.sku
+        else None,
+        "item": s.item_text,
+        "quantity": s.quantity,
+        "priceCents": s.price_cents,
+        "auctionType": s.auction_type,
+        "status": s.status.value,
+        "statusReason": s.status_reason,
+        "flagged": s.flagged,
+        "seq": s.event.message.seq if s.event else None,
+        "rawText": s.event.message.raw_text if s.event else None,
+        "createdAt": s.created_at.isoformat(),
+    }
+
+
+def chat_message(m) -> dict:
+    return {
+        "id": m.id,
+        "seq": m.seq,
+        "username": m.username,
+        "body": m.body,
+        "rawText": m.raw_text,
+        "capturedAt": m.captured_at.isoformat(),
+    }
+
+
+def review_item(r, context) -> dict:
+    return {
+        "id": r.id,
+        "showId": r.show_id,
+        "showDate": r.show_id and context["show_date"],
+        "reason": r.reason,
+        "summary": r.summary,
+        "source": r.source,
+        "status": r.status.value,
+        "proposal": r.proposal,
+        "message": chat_message(r.message) if r.message else None,
+        "context": [
+            {"seq": m.seq, "username": m.username, "body": m.body} for m in context["lines"]
+        ],
+        "sale": sale(r.sale) if r.sale else None,
+        "createdAt": r.created_at.isoformat(),
     }

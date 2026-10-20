@@ -1,0 +1,75 @@
+from flask import Blueprint, g, jsonify, request
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
+from .. import serializers
+from ..auth import require
+from ..db import db
+from ..models import ChatMessage, ReviewItem, ReviewStatus, Sale, Show
+from ..services import audit, pipeline
+from ..services.catalog import CatalogError
+from ..services.inventory import InventoryError
+from ..services.pipeline import ReviewError
+
+bp = Blueprint("review", __name__)
+
+
+@bp.errorhandler(ReviewError)
+@bp.errorhandler(CatalogError)
+@bp.errorhandler(InventoryError)
+def review_error(e):
+    db.session.rollback()
+    return jsonify({"error": str(e)}), e.status
+
+
+def _context(item: ReviewItem, around: int = 3) -> dict:
+    show = db.session.get(Show, item.show_id) if item.show_id else None
+    show_date = show.show_date.isoformat() if show else None
+    lines = []
+    if item.message is not None:
+        lines = db.session.scalars(
+            select(ChatMessage)
+            .where(
+                ChatMessage.show_id == item.message.show_id,
+                ChatMessage.seq.between(item.message.seq - around, item.message.seq + around),
+            )
+            .order_by(ChatMessage.seq)
+        ).all()
+    return {"show_date": show_date, "lines": lines}
+
+
+@bp.get("")
+@require("review.act")
+def list_review():
+    status = request.args.get("status", "open")
+    q = select(ReviewItem).where(ReviewItem.organization_id == g.u.organization_id)
+    if status != "all":
+        q = q.where(ReviewItem.status == ReviewStatus(status))
+    items = db.session.scalars(
+        q.options(
+            selectinload(ReviewItem.message), selectinload(ReviewItem.sale).selectinload(Sale.sku)
+        )
+        .order_by(ReviewItem.id)
+        .limit(200)
+    ).all()
+    return jsonify({"items": [serializers.review_item(i, _context(i)) for i in items]})
+
+
+@bp.post("/<int:item_id>/resolve")
+@require("review.act")
+def resolve(item_id: int):
+    item = db.session.get(ReviewItem, item_id)
+    if item is None or item.organization_id != g.u.organization_id:
+        return jsonify({"error": "review item not found"}), 404
+    body = request.get_json(silent=True) or {}
+    pipeline.resolve(item, body.get("action", ""), body, user=g.u)
+    audit.record(
+        g.u.organization_id,
+        "review.resolved",
+        user=g.u,
+        target_type="review",
+        target_id=item.id,
+        details={"reason": item.reason, **(item.resolution or {})},
+    )
+    db.session.commit()
+    return jsonify({"item": serializers.review_item(item, _context(item))})

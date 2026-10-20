@@ -3,7 +3,7 @@ SHELL := /bin/bash
 PY := .venv/bin
 E2E_PORT ?= 5055
 
-.PHONY: install db-create db-url api web check test lint e2e build-web migrate ext-e2e
+.PHONY: install db-create db-url api web worker check test lint e2e build-web migrate ext-e2e
 
 install:
 	cd api && python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt
@@ -22,7 +22,11 @@ migrate: db-url
 	cd api && FLASK_APP=wsgi.py $(PY)/flask db upgrade
 
 api: db-url
-	cd api && FLASK_APP=wsgi.py $(PY)/flask run --port 5000 --debug
+	cd api && JOBS_INLINE=1 FLASK_APP=wsgi.py $(PY)/flask run --port 5000 --debug
+
+# Background worker (parsing, exports). `make api` runs jobs inline instead.
+worker: db-url
+	cd api && $(PY)/python -m app.worker
 
 web:
 	cd web && npm run dev
@@ -50,7 +54,7 @@ build-web:
 # Production-like: Flask serves web/dist, Playwright drives the installed Chrome.
 e2e: build-web db-url
 	cd api && APP_ENV=test FLASK_APP=wsgi.py $(PY)/flask db upgrade
-	( cd api && exec env APP_ENV=test FLASK_APP=wsgi.py $(PY)/flask run --port $(E2E_PORT) --no-debugger ) > /tmp/whatnot-ops-e2e-flask.log 2>&1 & \
+	( cd api && exec env APP_ENV=test JOBS_INLINE=1 FLASK_APP=wsgi.py $(PY)/flask run --port $(E2E_PORT) --no-debugger ) > /tmp/whatnot-ops-e2e-flask.log 2>&1 & \
 	  pid=$$!; trap "kill $$pid 2>/dev/null" EXIT; \
 	  for i in $$(seq 1 30); do curl -sf http://localhost:$(E2E_PORT)/api/health >/dev/null && break; sleep 0.5; done; \
 	  cd web && E2E_BASE_URL=http://localhost:$(E2E_PORT) npx playwright test

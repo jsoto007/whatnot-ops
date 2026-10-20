@@ -8,7 +8,7 @@ See `docs/PLAN.md` for the phased build plan and `CLAUDE.md` for working
 rules. Done so far: Phase 0 (scaffold), Phase 1 (self-healing extension
 capture), Phase 2 (extension → API ingest), Phase 3 (accounts, roles,
 invites, device keys from the UI), Phase 4 (products and the inventory
-ledger).
+ledger), Phase 5 (rule-based parser, sales, review queue, job worker).
 
 ## Layout
 
@@ -71,6 +71,26 @@ movement, so parallel sales can never reserve more than is available.
 column plus `Current Stock` or `Start of Show Inventory`): preview shows
 what would be created or set, apply does it. Aliases on the Products page
 map the names used in chat ("red", "ultra pack") to SKUs for the parser.
+
+## From chat to sales (the parser)
+
+Every ingested batch queues a `parse_show` job (the `jobs` table; run
+`make worker`, or set `JOBS_INLINE=1` to run jobs in-process as `make api`,
+`make e2e` and CI do). `api/app/services/rules.py` classifies each line
+(sale, claim, gift, cancel, payment failed, no-pick, listing, chatter) with
+ordered regexes; `pipeline.py` turns a sale into a `Sale`, matches the item
+to a SKU through aliases, reserves stock through the ledger, and releases
+it again on a cancel / payment-failed line for that buyer. Anything a person
+must decide lands in **Review**: unknown item (pick the SKU, optionally
+remember the name), not enough stock, which of several open sales to
+cancel, a sale-looking line from someone who is not the host or the
+platform. Set the shop's Whatnot handle under **Settings** so host lines
+are trusted.
+
+The rules are checked against `api/tests/fixtures/chat_corpus.jsonl`, which
+is **synthetic** until real shows are captured; `tests/test_rules.py`
+prints precision/recall per kind. "Parse now" on a show re-evaluates only
+lines that led nowhere; existing sales are never rewritten by rules.
 
 ## Connect a laptop (extension device key)
 

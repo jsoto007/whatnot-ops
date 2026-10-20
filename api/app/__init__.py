@@ -12,6 +12,7 @@ from .routes.catalog import bp as catalog_bp
 from .routes.devices import bp as devices_bp
 from .routes.health import bp as health_bp
 from .routes.ingest import bp as ingest_bp
+from .routes.review import bp as review_bp
 from .routes.shows import bp as shows_bp
 from .routes.team import bp as team_bp
 from .spa import register_spa
@@ -28,6 +29,7 @@ def create_app(config: Config | None = None) -> Flask:
     migrate.init_app(app, db, directory=os.path.join(os.path.dirname(__file__), "..", "migrations"))
 
     from . import models  # noqa: F401 - register tables with SQLAlchemy/Alembic
+    from .services import pipeline  # noqa: F401 - registers job handlers
 
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(ingest_bp, url_prefix="/api")
@@ -37,6 +39,7 @@ def create_app(config: Config | None = None) -> Flask:
     app.register_blueprint(audit_bp, url_prefix="/api/audit")
     app.register_blueprint(shows_bp, url_prefix="/api/shows")
     app.register_blueprint(catalog_bp, url_prefix="/api")
+    app.register_blueprint(review_bp, url_prefix="/api/review")
     register_spa(app)
     register_cli(app)
 
