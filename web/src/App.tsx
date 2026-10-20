@@ -11,7 +11,9 @@ import { AppLayout } from './pages/app/Layout'
 import { Placeholder } from './pages/app/Placeholder'
 import { Products } from './pages/app/Products'
 import { Settings } from './pages/app/Settings'
-import { ShowDetail, Shows } from './pages/app/Shows'
+import { Review } from './pages/app/Review'
+import { ShowDetail } from './pages/app/ShowDetail'
+import { Shows } from './pages/app/Shows'
 import { Team } from './pages/app/Team'
 
 function PublicShell({ children }: { children: React.ReactNode }) {
@@ -70,7 +72,9 @@ export function App() {
               <Route path="orders" element={<Placeholder title="Orders" phase={7} />} />
               <Route path="inventory" element={<Inventory />} />
               <Route path="products" element={<Products />} />
-              <Route path="review" element={<Placeholder title="Review" phase={6} />} />
+              <Route element={<RequirePermission permission="review.act" />}>
+                <Route path="review" element={<Review />} />
+              </Route>
               <Route path="reports" element={<Placeholder title="Reports" phase={8} />} />
               <Route element={<RequirePermission permission="team.view" />}>
                 <Route path="team" element={<Team />} />

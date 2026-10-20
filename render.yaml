@@ -43,11 +43,21 @@ services:
       #   MAILGUN_API_KEY, MAILGUN_DOMAIN, EMAIL_FROM      transactional email (Phase 3)
       #   JEV_API_KEY, JEV_API_URL, ANTHROPIC_API_KEY      AI supervisor (Phase 6)
 
-  # Background worker for parsing, AI and exports — enabled in Phase 5.
-  # - type: worker
-  #   name: whatnot-ops-worker
-  #   runtime: python
-  #   plan: starter
-  #   buildCommand: cd api && pip install -r requirements.txt
-  #   startCommand: cd api && python -m app.worker
-  #   envVars: (same as web)
+  # Background worker: parsing, AI supervision, exports (jobs table, SKIP LOCKED).
+  - type: worker
+    name: whatnot-ops-worker
+    runtime: python
+    plan: starter
+    buildCommand: cd api && pip install -r requirements.txt
+    startCommand: cd api && python -m app.worker
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: APP_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false # paste the web service's value
+      - key: DATABASE_URL
+        fromDatabase:
+          name: whatnot-ops-db
+          property: connectionString

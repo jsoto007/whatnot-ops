@@ -4,6 +4,7 @@ from ..db import db
 from ..models import Show
 from ..services.devices import device_for_key, touch
 from ..services.ingest import BatchInvalid, ingest, message_count
+from ..services.pipeline import schedule_parse
 
 bp = Blueprint("ingest", __name__)
 
@@ -52,6 +53,8 @@ def post_batch():
     except BatchInvalid as e:
         db.session.rollback()
         return jsonify({"error": "invalid batch", "details": e.errors}), 400
+    schedule_parse(result.show)
+    db.session.commit()
     return jsonify(
         {
             "accepted": result.accepted,

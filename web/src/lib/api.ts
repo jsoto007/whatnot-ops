@@ -70,6 +70,7 @@ export interface Organization {
   id: number
   name: string
   slug: string
+  hostUsername: string | null
 }
 export interface Me {
   user: User
@@ -169,3 +170,60 @@ export interface ImportRow {
 
 export const money = (cents: number | null | undefined) =>
   cents == null ? '—' : (cents / 100).toLocaleString(undefined, { style: 'currency', currency: 'USD' })
+
+// ---------- parser / sales / review (Phase 5) ----------
+export type EventKind = 'sale' | 'claim' | 'gift' | 'cancel' | 'payment_failed' | 'no_pick' | 'listing' | 'chatter'
+export type SaleStatus = 'detected' | 'reserved' | 'paid' | 'cancelled' | 'payment_failed' | 'fulfilled'
+export interface ParsedEvent {
+  id: number
+  messageId: number
+  seq: number
+  kind: EventKind
+  buyer: string
+  item: string
+  quantity: number
+  priceCents: number | null
+  auctionType: string
+  rule: string
+  confidence: number
+  rawText: string
+  capturedAt: string
+}
+export interface Sale {
+  id: number
+  showId: number
+  showDate: string
+  buyer: string
+  sku: { id: number; code: string; name: string; productName: string } | null
+  item: string
+  quantity: number
+  priceCents: number | null
+  auctionType: string
+  status: SaleStatus
+  statusReason: string | null
+  flagged: boolean
+  seq: number | null
+  rawText: string | null
+  createdAt: string
+}
+export interface ReviewItem {
+  id: number
+  showId: number | null
+  showDate: string | null
+  reason: string
+  summary: string
+  source: string
+  status: 'open' | 'resolved' | 'dismissed'
+  proposal: Record<string, unknown> | null
+  message: { id: number; seq: number; username: string; body: string; rawText: string; capturedAt: string } | null
+  context: { seq: number; username: string; body: string }[]
+  sale: Sale | null
+  createdAt: string
+}
+export interface ParseStats {
+  parsed: number
+  events: Record<string, number>
+  sales: Record<string, number>
+  openReviews: number
+  job: { id: number; status: string; error: string | null } | null
+}

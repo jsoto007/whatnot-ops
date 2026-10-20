@@ -62,6 +62,18 @@ commands.
   50-thread oversell test — keep it passing.
 - **Secrets** only from env; never printed, logged or committed. `.env` is
   gitignored.
+- **Parser.** Classification rules live only in `api/app/services/rules.py`
+  (pure, tested against `tests/fixtures/chat_corpus.jsonl`, which is
+  synthetic — say so whenever quoting its numbers). State changes to sales
+  go through `pipeline.set_sale_status()`; review decisions through
+  `pipeline.resolve()`. Both are idempotent on replay.
+- **Jobs.** `api/app/services/jobs.py` is the queue (`SELECT … FOR UPDATE
+  SKIP LOCKED`); handlers register with `@handler("kind")`. `JOBS_INLINE=1`
+  runs them synchronously (dev, e2e, CI); production runs `python -m
+  app.worker`.
+- **Migrations.** `flask db migrate` prints the generated path — rename
+  *that* file (never `ls -t`), and when a downgrade drops tables that use
+  Postgres enums, drop the enum types too (see 0004).
 - **AI** (Phase 6) only proposes; every applied change goes through the same
   service functions and audit log as a human action.
 - Commits only when asked, on a feature branch; stage by path.

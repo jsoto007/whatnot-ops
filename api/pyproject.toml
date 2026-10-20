@@ -11,6 +11,9 @@ extend-exclude = ["migrations/env.py", "migrations/script.py.mako"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "W"]
 
+[tool.ruff.lint.per-file-ignores]
+"app/services/rules.py" = ["E501"]  # regex tables read better unwrapped
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

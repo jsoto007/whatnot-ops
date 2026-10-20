@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/useAuth'
 import { Field, Form } from '../../components/Form'
-import { api, apiGet, type AuditEntry, type Device } from '../../lib/api'
+import { api, apiGet, type AuditEntry, type Device, type Organization } from '../../lib/api'
 
 export function Settings() {
   const { me, can } = useAuth()
@@ -20,6 +20,7 @@ export function Settings() {
       <p className="muted">
         {me?.organization.name} · <code>{me?.organization.slug}</code>
       </p>
+      {can('settings.manage') && <HostUsername />}
 
       <h3>Laptops (extension device keys)</h3>
       <p className="muted small">Each laptop running Chat Scraper needs its own key. Keys are shown once.</p>
@@ -77,6 +78,26 @@ export function Settings() {
 
       {can('audit.view') && <Audit />}
     </section>
+  )
+}
+
+function HostUsername() {
+  const { me, setMe } = useAuth()
+  const [value, setValue] = useState(me?.organization.hostUsername ?? '')
+  return (
+    <Form
+      className="inline-form"
+      submitLabel="Save"
+      onSubmit={async () => {
+        const r = await api<{ organization: Organization }>('PATCH', '/api/team/organization', { hostUsername: value })
+        if (me) setMe({ ...me, organization: r.organization })
+      }}
+    >
+      <Field label="Your Whatnot username (the host)">
+        <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="myshoplive" data-testid="host-username" />
+      </Field>
+      <span className="muted small">Chat lines from this account count as confirmations ("sold to…", "cancelled…").</span>
+    </Form>
   )
 }
 
