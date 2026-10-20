@@ -33,8 +33,14 @@ commands.
   in `api/app/services/permissions.py`, and the SPA gets the user's list
   from `/api/auth/me`. Every state change writes `audit_log`
   (`services/audit.py`).
-- Ingest auth is a per-device API key (`flask devices create`), only its
-  SHA-256 is stored (`api/app/services/devices.py`). Rows are idempotent by
+- Ingest auth is a per-device API key, only its SHA-256 is stored
+  (`api/app/services/devices.py`). Laptops normally get it by pairing: the
+  portal makes a single-use 10-minute code, the extension trades it at
+  `POST /api/pair` (conditional UPDATE decides the winner). The portal serves
+  the built extension at `/api/extension/download` with its own URL baked in.
+- **Admin**: `ADMIN_EMAIL` names the shop's protected owner
+  (`services/admin.py`). Only it may sign up, once; it cannot be demoted or
+  disabled; login restores it. No ADMIN_EMAIL in production = sign-up closed. Rows are idempotent by
   `(show_id, client_id)`; a batch is all-or-nothing.
 - Deploy: Render Blueprint (`render.yaml`), one Python web service that
   builds `web/dist` and serves it through Flask (`api/app/spa.py`). Same

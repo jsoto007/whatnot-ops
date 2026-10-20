@@ -23,20 +23,54 @@
   .msg.good { color: var(--green); } .msg.bad { color: var(--red); }
   .stats { font-size: 13px; color: var(--grey); border-top: 1px solid var(--navy3); padding-top: 12px; }
   .stats b { color: #fff; }
+  .card { background: var(--navy); border: 1px solid var(--navy3); border-radius: 12px; padding: 16px; display: grid; gap: 12px; }
+  .card h2 { margin: 0; font-size: 16px; }
+  .steps { margin: 0; padding-left: 20px; color: var(--grey); font-size: 13px; display: grid; gap: 4px; }
+  .steps b { color: #fff; }
+  #code { font: 600 22px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; height: 48px; text-align: center; }
+  .connected { display: flex; align-items: center; gap: 10px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px rgba(105,190,40,.2); flex: none; }
+  details { color: var(--grey); font-size: 13px; }
+  details summary { cursor: pointer; }
+  details[open] summary { margin-bottom: 10px; }
+  details .inner { display: grid; gap: 10px; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <header><img src="icon48.png" alt=""><h1>Chat Scraper — Settings</h1></header>
 <main>
-  <p style="margin:0;color:var(--grey);font-size:14px">Every captured line is saved on this laptop and uploaded to the web app. Ask an owner for a device key.</p>
-  <label>Server URL <input id="url" type="url" placeholder="https://ops.example.com" autocomplete="off"></label>
-  <label>Device API key <input id="key" type="password" placeholder="wn_…" autocomplete="off"></label>
-  <div class="row">
-    <button class="go" id="save">Save</button>
-    <button id="test">Test connection</button>
-    <button id="flush">Upload now</button>
-  </div>
-  <div class="msg" id="msg"></div>
+  <p style="margin:0;color:var(--grey);font-size:14px">Every captured line is saved on this laptop and uploaded to your shop's web app.</p>
+  <label>Web app address <input id="url" type="url" placeholder="https://ops.example.com" autocomplete="off"></label>
+
+  <section class="card" id="pair-card">
+    <h2 id="pair-title">Connect this laptop</h2>
+    <ol class="steps">
+      <li>In the web app, open <b>Settings → Laptops → Connect a laptop</b>.</li>
+      <li>Type the 8-character code it shows. It works once, for 10 minutes.</li>
+    </ol>
+    <label>Pairing code <input id="code" placeholder="ABCD-EFGH" autocomplete="off" spellcheck="false" maxlength="9" aria-describedby="pair-title"></label>
+    <button class="go" id="pair">Connect</button>
+  </section>
+
+  <section class="card" id="connected-card" hidden>
+    <div class="connected"><span class="dot" aria-hidden="true"></span><div><b id="who">Connected</b><div style="color:var(--grey);font-size:13px">Uploads go to this shop automatically.</div></div></div>
+    <div class="row">
+      <button id="test">Test connection</button>
+      <button id="flush">Upload now</button>
+      <button id="disconnect">Disconnect</button>
+    </div>
+  </section>
+
+  <div class="msg" id="msg" role="status"></div>
+
+  <details id="advanced">
+    <summary>Use a device key instead</summary>
+    <div class="inner">
+      <label>Device API key <input id="key" type="password" placeholder="wn_…" autocomplete="off"></label>
+      <div class="row"><button class="go" id="save">Save key</button><button id="test-key">Test key</button></div>
+    </div>
+  </details>
   <div class="stats" id="stats"></div>
 </main>
 <script src="options.js"></script>

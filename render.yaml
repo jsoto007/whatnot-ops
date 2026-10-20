@@ -22,8 +22,11 @@ services:
     name: whatnot-ops
     runtime: python
     plan: starter
+    # The extension is built here too: Settings → Laptops serves it as a zip
+    # (api/app/routes/extension.py) with this portal's address baked in.
     buildCommand: >-
-      cd web && npm ci && npm run build && cd ../api
+      cd web && npm ci && npm run build
+      && cd ../extension && npm ci && npm run build && cd ../api
       && pip install -r requirements.txt
     startCommand: >-
       cd api && flask --app wsgi.py db upgrade
@@ -43,10 +46,11 @@ services:
         fromDatabase:
           name: whatnot-ops-db
           property: connectionString
-      # Sign-ups: the very first account is always allowed (bootstrap). Set
-      # ALLOW_SIGNUPS=1 only while onboarding more shops; otherwise owners invite.
-      # - key: ALLOW_SIGNUPS
-      #   value: "1"
+      # The shop's admin (protected owner). Only this email can create the shop
+      # on /signup, once; nobody can demote or disable it in the app. Without it
+      # production never opens sign-up. Set it in the dashboard before first visit.
+      - key: ADMIN_EMAIL
+        sync: false
       # APP_URL (links in invite / reset emails) — set once a custom domain exists;
       # until then the app uses RENDER_EXTERNAL_URL.
       # - key: APP_URL

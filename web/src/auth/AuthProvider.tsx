@@ -3,13 +3,15 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, api, apiGet, type Me } from '../lib/api'
 import { AuthContext, type AuthState } from './context'
 
-async function fetchMe(): Promise<{ me: Me | null; signupsOpen: boolean }> {
+type MeState = { me: Me | null; signupsOpen: boolean; signupAdminOnly: boolean }
+
+async function fetchMe(): Promise<MeState> {
   try {
-    return { me: await apiGet<Me>('/api/auth/me'), signupsOpen: false }
+    return { me: await apiGet<Me>('/api/auth/me'), signupsOpen: false, signupAdminOnly: false }
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
-      const body = err.body as { signupsOpen?: boolean } | undefined
-      return { me: null, signupsOpen: body?.signupsOpen ?? false }
+      const body = err.body as { signupsOpen?: boolean; signupAdminOnly?: boolean } | undefined
+      return { me: null, signupsOpen: body?.signupsOpen ?? false, signupAdminOnly: body?.signupAdminOnly ?? false }
     }
     throw err
   }
@@ -19,7 +21,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['me'], queryFn: fetchMe, staleTime: 60_000, retry: false })
   const me = q.data?.me ?? null
-  const setMe = useCallback((next: Me | null) => qc.setQueryData(['me'], { me: next, signupsOpen: false }), [qc])
+  const setMe = useCallback((next: Me | null) => qc.setQueryData<MeState>(['me'], { me: next, signupsOpen: false, signupAdminOnly: false }), [qc])
   const logout = useCallback(async () => {
     await api('POST', '/api/auth/logout')
     // Update "me" first so guards see the signed-out state synchronously, then
@@ -32,11 +34,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       me,
       loading: q.isPending,
       signupsOpen: q.data?.signupsOpen ?? false,
+      signupAdminOnly: q.data?.signupAdminOnly ?? false,
       can: (p) => !!me && me.permissions.includes(p),
       setMe,
       logout,
     }),
-    [me, q.isPending, q.data?.signupsOpen, setMe, logout],
+    [me, q.isPending, q.data?.signupsOpen, q.data?.signupAdminOnly, setMe, logout],
   )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

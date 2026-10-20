@@ -55,7 +55,7 @@ const HTML = `
       </div>
       <div class="row">
         <button class="b" id="search">Open Chat Search</button>
-        <button class="b sec" id="settings" title="Server and device key">Settings</button>
+        <button class="b sec" id="settings" title="Connect this laptop to your shop">Settings</button>
       </div>
       <div class="row">
         <button class="b sec" id="backup">Save backup copy</button>

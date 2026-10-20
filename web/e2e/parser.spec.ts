@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { connectLaptop } from './laptop'
 import { cell, receive } from './stock'
 
 const PW = 'correct-horse-battery'
@@ -39,10 +40,7 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   await expect(cell(page, 'RED', 'on-hand')).toHaveText('3')
 
   // A device key, then "the extension" posts a batch through the real ingest API.
-  await page.getByRole('link', { name: 'Settings' }).click()
-  await page.getByLabel('Laptop name').fill('Laptop')
-  await page.getByRole('button', { name: 'Create key' }).click()
-  const key = (await page.getByTestId('new-key').locator('code').textContent())!.trim()
+  const key = await connectLaptop(page, request)
   const batch = {
     version: 1,
     show: { id: SHOW, startedAt: SHOW },

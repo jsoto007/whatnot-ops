@@ -10,9 +10,11 @@ from .routes.audit import bp as audit_bp
 from .routes.auth import bp as auth_bp
 from .routes.catalog import bp as catalog_bp
 from .routes.devices import bp as devices_bp
+from .routes.extension import bp as extension_bp
 from .routes.health import bp as health_bp
 from .routes.ingest import bp as ingest_bp
 from .routes.orders import bp as orders_bp
+from .routes.pair import bp as pair_bp
 from .routes.reports import bp as reports_bp
 from .routes.review import bp as review_bp
 from .routes.shows import bp as shows_bp
@@ -35,6 +37,8 @@ def create_app(config: Config | None = None) -> Flask:
 
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(ingest_bp, url_prefix="/api")
+    app.register_blueprint(pair_bp, url_prefix="/api")
+    app.register_blueprint(extension_bp, url_prefix="/api/extension")
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(team_bp, url_prefix="/api/team")
     app.register_blueprint(devices_bp, url_prefix="/api/devices")

@@ -102,6 +102,32 @@ export async function ping(settings: Settings, fetchFn: typeof fetch = fetch): P
   return (await res.json()) as { ok: true; device: string; organization: string }
 }
 
+/** Trade a pairing code from the web app for this laptop's device key (used once, then forgotten). */
+export async function pairDevice(
+  serverUrl: string,
+  code: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<{ key: string; device: string; organization: string }> {
+  let res: Response
+  try {
+    res = await fetchFn(serverUrl + '/api/pair', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code.trim() }),
+    })
+  } catch (err) {
+    throw new UploadError('offline', (err as Error).message || 'network error')
+  }
+  if (res.ok) return (await res.json()) as { key: string; device: string; organization: string }
+  let detail = `server returned ${res.status}`
+  try {
+    detail = ((await res.json()) as { error?: string }).error ?? detail
+  } catch {
+    /* not JSON: keep the status */
+  }
+  throw new UploadError(res.status >= 500 ? 'offline' : 'rejected', detail)
+}
+
 /** Exponential backoff in seconds: 5, 10, 20 … capped at 5 minutes. */
 export function backoffSeconds(failures: number): number {
   return Math.min(300, 5 * 2 ** Math.max(0, failures - 1))

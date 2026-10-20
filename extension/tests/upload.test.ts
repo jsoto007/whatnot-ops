@@ -3,7 +3,7 @@ import path from 'node:path'
 import type { CapturedRow } from '../src/capture/types'
 import { validateBatch } from '../src/upload/schema'
 import { normaliseUrl } from '../src/upload/settings'
-import { BATCH_MAX, UploadError, backoffSeconds, postBatch, uploadOnce, type UploadStore } from '../src/upload/uploader'
+import { BATCH_MAX, UploadError, backoffSeconds, pairDevice, postBatch, uploadOnce, type UploadStore } from '../src/upload/uploader'
 
 const FIXTURES = path.resolve(__dirname, '..', '..', 'shared', 'fixtures')
 const fixture = (name: string) => JSON.parse(readFileSync(path.join(FIXTURES, name), 'utf8'))
@@ -98,6 +98,29 @@ describe('uploadOnce', () => {
       message: 'invalid batch; rows/0/id: bad',
     })
     expect(new UploadError('offline', 'x').kind).toBe('offline')
+  })
+})
+
+describe('pairDevice', () => {
+  it('posts the code and returns the key the server hands back', async () => {
+    const calls: [string, RequestInit][] = []
+    const fetchFn = (async (u: string, init: RequestInit) => {
+      calls.push([u, init])
+      return new Response(JSON.stringify({ key: 'wn_k', device: 'Front laptop', organization: 'Shop' }), { status: 201 })
+    }) as unknown as typeof fetch
+    const r = await pairDevice('https://ops.test', ' abcd-efgh ', fetchFn)
+    expect(r).toEqual({ key: 'wn_k', device: 'Front laptop', organization: 'Shop' })
+    expect(calls[0]![0]).toBe('https://ops.test/api/pair')
+    expect(JSON.parse(String(calls[0]![1].body))).toEqual({ code: 'abcd-efgh' })
+  })
+  it("says why a code was refused, and treats a dead server as offline", async () => {
+    const refused = (async () => new Response(JSON.stringify({ error: 'that code is wrong, used or expired' }), { status: 404 })) as unknown as typeof fetch
+    await expect(pairDevice('https://ops.test', 'ABCDEFGH', refused)).rejects.toMatchObject({ kind: 'rejected', message: 'that code is wrong, used or expired' })
+    const down = (async () => {
+      throw new TypeError('Failed to fetch')
+    }) as unknown as typeof fetch
+    await expect(pairDevice('https://ops.test', 'ABCDEFGH', down)).rejects.toBeInstanceOf(UploadError)
+    await expect(pairDevice('https://ops.test', 'ABCDEFGH', down)).rejects.toMatchObject({ kind: 'offline' })
   })
 })
 

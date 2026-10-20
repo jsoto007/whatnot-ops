@@ -6,11 +6,17 @@ from sqlalchemy import select
 from .. import serializers
 from ..auth import require
 from ..db import db
-from ..models import Device
+from ..models import Device, DevicePairing
 from ..services import audit
-from ..services.devices import create_device
+from ..services.devices import PairingError, create_device, start_pairing
 
 bp = Blueprint("devices", __name__)
+
+
+@bp.errorhandler(PairingError)
+def pairing_error(e: PairingError):
+    db.session.rollback()
+    return jsonify({"error": str(e)}), e.status
 
 
 @bp.get("")
@@ -61,3 +67,50 @@ def revoke(device_id: int):
         )
         db.session.commit()
     return ("", 204)
+
+
+@bp.post("/pairings")
+@require("devices.manage")
+def create_pairing():
+    """A short code for one laptop; the extension trades it for a key at /api/pair."""
+    name = (request.get_json(silent=True) or {}).get("name") or ""
+    pairing, code = start_pairing(g.u.organization, name, user=g.u)
+    audit.record(
+        g.u.organization_id,
+        "device.pairing_started",
+        user=g.u,
+        target_type="pairing",
+        target_id=pairing.id,
+        details={"name": pairing.name},
+    )
+    db.session.commit()
+    return jsonify(
+        {
+            "pairingId": pairing.id,
+            "name": pairing.name,
+            "code": code,
+            "expiresAt": pairing.expires_at.isoformat(),
+        }
+    ), 201
+
+
+@bp.get("/pairings/<int:pairing_id>")
+@require("devices.manage")
+def pairing_status(pairing_id: int):
+    """The portal polls this while the code is on screen to say "Connected"."""
+    p = db.session.get(DevicePairing, pairing_id)
+    if p is None or p.organization_id != g.u.organization_id:
+        return jsonify({"error": "pairing not found"}), 404
+    if p.device_id is not None:
+        status = "connected"
+    elif p.expires_at <= datetime.now(UTC):
+        status = "expired"
+    else:
+        status = "waiting"
+    return jsonify(
+        {
+            "status": status,
+            "expiresAt": p.expires_at.isoformat(),
+            "device": serializers.device(p.device) if p.device else None,
+        }
+    )

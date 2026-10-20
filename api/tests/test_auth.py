@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 from sqlalchemy import select
 
 from app.db import db
-from app.models import AuditLog, User
+from app.models import AuditLog, Role, User
 from app.services import mail
 
 PW = "correct-horse-battery"
@@ -367,18 +367,93 @@ def test_shows_list_and_messages_are_scoped_to_the_org(client, app):
     assert other.get(f"/api/shows/{shows[0]['id']}").status_code == 404
 
 
-def test_production_closes_signups_once_a_user_exists(client, app, monkeypatch):
+def test_production_without_admin_email_never_opens_signups(client, app, monkeypatch):
     app.config["APP_ENV"] = "production"
-    monkeypatch.delenv("ALLOW_SIGNUPS", raising=False)
+    monkeypatch.delenv("ADMIN_EMAIL", raising=False)
     try:
-        r, _ = signup(client)
-        assert r.status_code == 201  # bootstrap: first ever account
-        client.post("/api/auth/logout", headers=csrf(client))
-        r, _ = signup(client, email="second@x.test", org="Second")
+        me = client.get("/api/auth/me").get_json()
+        assert me["signupsOpen"] is False and me["signupAdminOnly"] is False
+        r, _ = signup(client)  # even the very first visitor cannot claim the shop
         assert r.status_code == 403
-        assert client.get("/api/auth/me").get_json()["signupsOpen"] is False
     finally:
         app.config["APP_ENV"] = "test"
+
+
+def test_only_the_admin_email_can_create_the_shop_once(client, app, monkeypatch):
+    app.config["APP_ENV"] = "production"
+    monkeypatch.setenv("ADMIN_EMAIL", "  Boss@Shop.test ")
+    try:
+        me = client.get("/api/auth/me").get_json()
+        assert me["signupsOpen"] is True and me["signupAdminOnly"] is True
+        r, _ = signup(client, email="first-visitor@x.test")
+        assert r.status_code == 403 and "admin email" in r.get_json()["error"]
+        r, _ = signup(client, email="boss@shop.test")
+        assert r.status_code == 201
+        assert r.get_json()["user"]["role"] == "owner" and r.get_json()["user"]["isAdmin"] is True
+        client.post("/api/auth/logout", headers=csrf(client))
+        assert client.get("/api/auth/me").get_json()["signupsOpen"] is False
+        r, _ = signup(client, email="boss@shop.test", org="Again")
+        assert r.status_code == 403 and "already set up" in r.get_json()["error"]
+    finally:
+        app.config["APP_ENV"] = "test"
+
+
+def test_the_admin_cannot_be_demoted_or_disabled_and_is_restored_on_login(client, app, monkeypatch):
+    monkeypatch.setenv("ADMIN_EMAIL", "boss@shop.test")
+    signup(client, email="boss@shop.test")
+    h = csrf(client)
+    token = (
+        client.post("/api/team/invites", json={"email": "co@shop.test", "role": "owner"}, headers=h)
+        .get_json()["acceptUrl"]
+        .rsplit("/", 1)[1]
+    )
+    co = app.test_client()
+    hc = csrf(co)
+    co.post(
+        "/api/auth/invites/accept", json={"token": token, "name": "Co", "password": PW}, headers=hc
+    )
+    users = {u["email"]: u for u in co.get("/api/team").get_json()["users"]}
+    admin_id = users["boss@shop.test"]["id"]
+    assert users["boss@shop.test"]["isAdmin"] is True and users["co@shop.test"]["isAdmin"] is False
+    hc = csrf(co)
+    r = co.patch(f"/api/team/users/{admin_id}", json={"role": "viewer"}, headers=hc)
+    assert r.status_code == 409 and "ADMIN_EMAIL" in r.get_json()["error"]
+    r = co.patch(f"/api/team/users/{admin_id}", json={"disabled": True}, headers=hc)
+    assert r.status_code == 409
+    # Even if the database says otherwise (an old demotion, a manual edit), logging in
+    # as the ADMIN_EMAIL restores an enabled owner.
+    with app.app_context():
+        u = db.session.scalar(select(User).where(User.email == "boss@shop.test"))
+        u.role = Role.viewer
+        u.disabled = True
+        db.session.commit()
+    fresh = app.test_client()
+    r = fresh.post(
+        "/api/auth/login", json={"email": "boss@shop.test", "password": PW}, headers=csrf(fresh)
+    )
+    assert r.status_code == 200 and r.get_json()["user"]["role"] == "owner"
+    actions = [e["action"] for e in fresh.get("/api/audit").get_json()["entries"]]
+    assert "user.admin_restored" in actions
+
+
+def test_an_invited_admin_email_becomes_owner(client, app, monkeypatch):
+    signup(client)  # shop created before ADMIN_EMAIL was set
+    monkeypatch.setenv("ADMIN_EMAIL", "new-boss@shop.test")
+    h = csrf(client)
+    token = (
+        client.post(
+            "/api/team/invites", json={"email": "new-boss@shop.test", "role": "viewer"}, headers=h
+        )
+        .get_json()["acceptUrl"]
+        .rsplit("/", 1)[1]
+    )
+    b = app.test_client()
+    r = b.post(
+        "/api/auth/invites/accept",
+        json={"token": token, "name": "New Boss", "password": PW},
+        headers=csrf(b),
+    )
+    assert r.status_code == 201 and r.get_json()["user"]["role"] == "owner"
 
 
 def test_owner_sets_the_host_username(client):

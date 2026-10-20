@@ -23,6 +23,9 @@ test('owner signs up, creates a device key, invites fulfillment who gets a limit
 
   // Device key for a laptop, shown once.
   await page.getByRole('link', { name: 'Settings' }).click()
+  // Step 1 offers the extension download when the server has a build of it.
+  await expect(page.getByTestId('download-extension').or(page.getByTestId('extension-missing'))).toBeVisible()
+  await page.getByText('Advanced: create a device key instead').click()
   await page.getByLabel('Laptop name').fill('Front laptop')
   await page.getByRole('button', { name: 'Create key' }).click()
   await expect(page.getByTestId('new-key')).toContainText('wn_')
