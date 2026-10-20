@@ -4,7 +4,8 @@ from app.config import Config, ConfigError, db_host
 
 
 def test_missing_database_url_fails_loudly(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "development")  # CI runs with APP_ENV=test, which reads TEST_DATABASE_URL
+    # CI runs with APP_ENV=test, which makes Config() read TEST_DATABASE_URL instead.
+    monkeypatch.setenv("APP_ENV", "development")
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with pytest.raises(ConfigError):
         Config()
