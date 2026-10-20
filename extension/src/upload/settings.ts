@@ -6,10 +6,22 @@ export interface Settings {
   apiKey: string
 }
 
-export async function loadSettings(storage = chrome.storage.local): Promise<Settings> {
+/** Build-time default (dist/defaults.json), used when the laptop has no server URL saved yet. */
+export async function defaultServerUrl(fetchFn: typeof fetch = fetch): Promise<string> {
+  try {
+    const res = await fetchFn(chrome.runtime.getURL('defaults.json'))
+    const j = (await res.json()) as { serverUrl?: string }
+    return normaliseUrl(j.serverUrl ?? '')
+  } catch {
+    return ''
+  }
+}
+
+export async function loadSettings(storage = chrome.storage.local, fetchFn: typeof fetch = fetch): Promise<Settings> {
   const r = await storage.get([SETTINGS_KEYS.url, SETTINGS_KEYS.key])
+  const saved = normaliseUrl(String(r[SETTINGS_KEYS.url] ?? ''))
   return {
-    serverUrl: normaliseUrl(String(r[SETTINGS_KEYS.url] ?? '')),
+    serverUrl: saved || (await defaultServerUrl(fetchFn)),
     apiKey: String(r[SETTINGS_KEYS.key] ?? '').trim(),
   }
 }

@@ -109,3 +109,23 @@ describe('helpers', () => {
     expect(normaliseUrl(' https://ops.test/// ')).toBe('https://ops.test')
   })
 })
+
+describe('loadSettings default server url', () => {
+  const storage = (vals: Record<string, string>) => ({ get: async () => vals }) as unknown as typeof chrome.storage.local
+  beforeEach(() => {
+    vi.stubGlobal('chrome', { runtime: { getURL: (p: string) => 'chrome-extension://x/' + p } })
+  })
+  it('uses the baked-in default when nothing is saved', async () => {
+    const { loadSettings } = await import('../src/upload/settings')
+    const fetchFn = vi.fn(async () => new Response(JSON.stringify({ serverUrl: 'https://ops.test/' }), { status: 200 }))
+    expect(await loadSettings(storage({}), fetchFn)).toEqual({ serverUrl: 'https://ops.test', apiKey: '' })
+  })
+  it('prefers what the laptop saved and survives a missing defaults file', async () => {
+    const { loadSettings } = await import('../src/upload/settings')
+    const fetchFn = vi.fn(async () => {
+      throw new Error('404')
+    })
+    expect(await loadSettings(storage({ cs_server_url: 'https://mine.test', cs_api_key: 'k' }), fetchFn)).toEqual({ serverUrl: 'https://mine.test', apiKey: 'k' })
+    expect(await loadSettings(storage({}), fetchFn)).toEqual({ serverUrl: '', apiKey: '' })
+  })
+})

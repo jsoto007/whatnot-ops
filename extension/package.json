@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.e2e.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "npm run build:test && playwright test -c e2e/playwright.config.ts"
+    "test:e2e": "npm run build:test && playwright test -c e2e/playwright.config.ts",
+    "package": "npm run build && node package.mjs"
   },
   "dependencies": {
     "ajv": "^8.20.0",
