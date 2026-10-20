@@ -4,12 +4,14 @@ from app.config import Config, ConfigError, db_host
 
 
 def test_missing_database_url_fails_loudly(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")  # CI runs with APP_ENV=test, which reads TEST_DATABASE_URL
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with pytest.raises(ConfigError):
         Config()
 
 
 def test_postgres_scheme_is_normalised_to_psycopg(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
     monkeypatch.setenv("DATABASE_URL", "postgres://u:p@db.example.com:5432/x")
     assert Config().SQLALCHEMY_DATABASE_URI == "postgresql+psycopg://u:p@db.example.com:5432/x"
 
