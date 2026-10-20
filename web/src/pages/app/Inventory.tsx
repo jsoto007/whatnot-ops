@@ -16,7 +16,9 @@ export function Inventory() {
   if (q.isPending) return <p className="muted">Loading…</p>
   if (q.isError) return <p className="form-error">Could not load inventory.</p>
   const skus = q.data.skus.slice().sort((a, b) => Number(b.low) - Number(a.low) || a.available - b.available || a.productName.localeCompare(b.productName))
-  const low = skus.filter((s) => s.low)
+  const short = skus.filter((s) => s.short > 0)
+  const toBuy = short.reduce((n, s) => n + s.short, 0)
+  const low = skus.filter((s) => s.low && !s.short)
   const reserved = skus.reduce((n, s) => n + s.reserved, 0)
   return (
     <section>
@@ -24,7 +26,17 @@ export function Inventory() {
         <div>
           <h2>Inventory</h2>
           <div className="sub">
-            {skus.length} SKUs · {reserved} held for open sales · {low.length ? <b style={{ color: 'var(--tint-amber-ink)' }}>{low.length} low</b> : 'nothing low'}
+            {skus.length} SKUs · {reserved} held for open sales
+            {short.length > 0 && (
+              <>
+                {' · '}
+                <b style={{ color: 'var(--tint-red-ink)' }} data-testid="to-buy">
+                  {short.length} oversold, buy {toBuy} more
+                </b>
+              </>
+            )}
+            {' · '}
+            {low.length ? <b style={{ color: 'var(--tint-amber-ink)' }}>{low.length} low</b> : 'nothing low'}
           </div>
         </div>
         {write && (
@@ -80,7 +92,7 @@ function LevelRow({ sku, write, open, onToggle, onChange }: { sku: Level; write:
   })
   return (
     <>
-      <tr className={sku.low ? 'low' : ''} data-testid={`level-${sku.code}`}>
+      <tr className={sku.short ? 'short' : sku.low ? 'low' : ''} data-testid={`level-${sku.code}`}>
         <td>{sku.productName}</td>
         <td>
           <code>{sku.code}</code>
@@ -89,16 +101,31 @@ function LevelRow({ sku, write, open, onToggle, onChange }: { sku: Level; write:
         <td className="num">{sku.onHand}</td>
         <td className="num">{sku.reserved}</td>
         <td className="num">
-          <b>{sku.available}</b>
-          {sku.low && <span className="badge warn">low</span>}
+          <b className={sku.short ? 'neg' : undefined}>{sku.available}</b>
+          {sku.short > 0 ? (
+            <span className="badge danger" title="Sold more than the shelf holds; buy this many to fill every order">
+              buy {sku.short}
+            </span>
+          ) : (
+            sku.low && <span className="badge warn">low</span>
+          )}
         </td>
         <td>
-          <div className="avail" title={`${sku.available} of ${sku.onHand} on hand available`}>
-            <div className="avail-track">
-              <div className={'avail-fill' + (sku.available <= 0 ? ' out' : sku.low ? ' low' : '')} style={{ width: `${sku.onHand ? Math.max(2, Math.round((100 * Math.max(0, sku.available)) / sku.onHand)) : 0}%` }} />
+          {sku.short > 0 ? (
+            <div className="avail" title={`${sku.reserved} held for sales, ${Math.max(0, sku.onHand)} on the shelf`}>
+              <div className="avail-track">
+                <div className="avail-fill out" style={{ width: '100%' }} />
+              </div>
+              <span className="small neg">oversold</span>
             </div>
-            <span className="muted small">{sku.onHand ? Math.round((100 * Math.max(0, sku.available)) / sku.onHand) : 0}%</span>
-          </div>
+          ) : (
+            <div className="avail" title={`${sku.available} of ${sku.onHand} on hand available`}>
+              <div className="avail-track">
+                <div className={'avail-fill' + (sku.available <= 0 ? ' out' : sku.low ? ' low' : '')} style={{ width: `${sku.onHand ? Math.max(2, Math.round((100 * Math.max(0, sku.available)) / sku.onHand)) : 0}%` }} />
+              </div>
+              <span className="muted small">{sku.onHand ? Math.round((100 * Math.max(0, sku.available)) / sku.onHand) : 0}%</span>
+            </div>
+          )}
         </td>
         {write && (
           <td>

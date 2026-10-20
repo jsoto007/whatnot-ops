@@ -87,7 +87,9 @@ No "current stock" column that gets overwritten. `InventoryMovement` rows
 (reserve / commit / release / adjust / restock) keyed by the source event, so
 re-processing a message is a no-op. Available = on-hand minus open reserves,
 computed inside `SELECT … FOR UPDATE` on the SKU row. This is what prevents
-duplicate deductions and overselling.
+duplicate deductions and lost updates. Overselling is allowed on purpose
+(decided 2026-10-20): available may go negative, and the shortfall is shown
+as how many to buy.
 
 Sale lifecycle: `detected → reserved → paid → fulfilled`, with branches
 `cancelled` and `payment_failed` that release the reserve. Every transition

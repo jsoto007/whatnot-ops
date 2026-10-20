@@ -25,7 +25,7 @@ from ..models import (
     Sku,
 )
 from . import catalog, inventory, rules
-from .inventory import Actor, InsufficientStock
+from .inventory import Actor
 from .jobs import enqueue, handler
 
 log = logging.getLogger(__name__)
@@ -114,25 +114,11 @@ def match_sku(org_id: int, item_text: str) -> Sku | None:
 
 
 def _reserve(sale: Sale) -> bool:
-    try:
-        inventory.reserve(
-            sale.sku_id, sale.quantity, source_type="sale", source_id=str(sale.id), actor=RULE_ACTOR
-        )
-    except InsufficientStock as e:
-        sale.status = SaleStatus.detected
-        sale.status_reason = str(e)
-        sale.flagged = True
-        open_review(
-            sale.organization_id,
-            "insufficient_stock",
-            f"{sale.buyer_username} bought {sale.quantity} × "
-            f"{sale.item_text or sale.sku.code} but {e}",
-            show_id=sale.show_id,
-            message_id=sale.event.message_id if sale.event else None,
-            event_id=sale.event_id,
-            sale_id=sale.id,
-        )
-        return False
+    """Hold stock for the sale. Never refused for lack of stock: an oversell leaves the
+    SKU's `available` negative, and Inventory / the dashboard say how many to buy."""
+    inventory.reserve(
+        sale.sku_id, sale.quantity, source_type="sale", source_id=str(sale.id), actor=RULE_ACTOR
+    )
     sale.status = SaleStatus.reserved
     sale.status_reason = None
     return True

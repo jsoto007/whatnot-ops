@@ -59,7 +59,11 @@ commands.
   `api/app/services/inventory.py::move()`; nothing writes `Sku.on_hand` or
   `Sku.reserved` directly. Movements with a `source_type`/`source_id` are
   idempotent (unique per SKU + kind); `tests/test_inventory.py` has the
-  50-thread oversell test — keep it passing.
+  50-thread no-lost-updates test — keep it passing.
+- **Overselling is allowed** (Javier's call, 2026-10-20): a reserve never
+  fails for lack of stock. `available` goes negative and `Sku.short` is how
+  many to buy; Inventory, the dashboard and the Excel sheet show it. Counts
+  (adjust / import) may land below what is held, but never below zero.
 - **Secrets** only from env; never printed, logged or committed. `.env` is
   gitignored.
 - **Parser.** Classification rules live only in `api/app/services/rules.py`

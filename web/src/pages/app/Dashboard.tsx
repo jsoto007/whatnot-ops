@@ -144,7 +144,7 @@ function Products({ skus }: { skus: TopSku[] }) {
                     {`${s.product} ${s.variant}`.trim()} <span className="muted small">{s.code}</span>
                   </div>
                   <div className={scarce ? 'small danger-ink' : 'muted small'}>
-                    {s.sold} sold · {s.available} left
+                    {s.sold} sold · {s.short ? `oversold, buy ${s.short}` : `${s.available} left`}
                   </div>
                 </div>
                 <div className="sell-through">
@@ -236,12 +236,23 @@ function attentionRows(a: Attention, can: (p: string) => boolean, lowStock: Over
       verb: 'Reconcile',
     })
   }
-  if (can('inventory.view') && lowStock.length) {
-    const first = lowStock[0]!
+  const oversold = a.oversold ?? []
+  if (can('inventory.view') && oversold.length) {
+    const first = oversold[0]!
+    const units = oversold.reduce((n, s) => n + s.short, 0)
     rows.push(
-      lowStock.length === 1
+      oversold.length === 1
+        ? { key: 'oversold', icon: 'inventory', tone: 'red', title: `Buy ${first.short} more ${first.product}`, sub: `Oversold: ${first.sold} sold, ${plural(first.short, 'order item', 'order items')} not on the shelf yet`, to: '/app/inventory', verb: 'Restock', primary: true }
+        : { key: 'oversold', icon: 'inventory', tone: 'red', title: `${oversold.length} products oversold · buy ${units} more`, sub: oversold.slice(0, 3).map((s) => `${s.short} ${s.product}`).join(' · '), to: '/app/inventory', verb: 'Restock', primary: true },
+    )
+  }
+  const low = lowStock.filter((s) => !s.short)
+  if (can('inventory.view') && low.length) {
+    const first = low[0]!
+    rows.push(
+      low.length === 1
         ? { key: 'stock', icon: 'inventory', tone: 'red', title: `${first.product} is down to ${first.available}`, sub: `At or below its low-stock line of ${first.lowAt} · ${first.sold} sold`, to: '/app/inventory', verb: 'Restock' }
-        : { key: 'stock', icon: 'inventory', tone: 'red', title: `${lowStock.length} products are running low`, sub: lowStock.slice(0, 3).map((s) => `${s.product} (${s.available})`).join(' · '), to: '/app/inventory', verb: 'Restock' },
+        : { key: 'stock', icon: 'inventory', tone: 'red', title: `${low.length} products are running low`, sub: low.slice(0, 3).map((s) => `${s.product} (${s.available})`).join(' · '), to: '/app/inventory', verb: 'Restock' },
     )
   }
   return rows

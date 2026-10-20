@@ -135,6 +135,8 @@ export interface Sku {
   onHand: number
   reserved: number
   available: number
+  /** How many to buy to fill sold orders; >0 only when oversold (available < 0). */
+  short: number
   lowStockAt: number
   low: boolean
   active: boolean
@@ -317,6 +319,7 @@ export interface TopSku {
   sold: number
   paidCents: number
   available: number
+  short: number
   sellThrough: number | null
 }
 export interface LowStockItem {
@@ -324,6 +327,7 @@ export interface LowStockItem {
   code: string
   product: string
   available: number
+  short: number
   lowAt: number
   sold: number
 }
@@ -334,6 +338,7 @@ export interface Attention {
   fulfilItems: number
   fulfilOldestShow: string | null
   lowStock: number
+  oversold: LowStockItem[]
   unreconciledShows: { showId: number; date: string; pendingCents: number; openSales: number }[]
   live: (ShowTiles & { pace: number[] }) | null
 }

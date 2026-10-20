@@ -206,7 +206,25 @@ def test_low_stock_carries_threshold_and_sold(app, world):
             "code": "RED",
             "product": "Red bundle",
             "available": 1,
+            "short": 0,
             "lowAt": 1,
             "sold": 2,
         }
     ]
+
+
+def test_oversold_sku_reports_how_many_to_buy(app, world):
+    seed(app, world)
+    with app.app_context():
+        from app.services import inventory
+
+        inventory.reserve(world["red"], 4, source_type="sale", source_id="oversell")
+        db.session.commit()
+        d = dashboard.overview(world["org"])
+        sku = db.session.get(Sku, world["red"])
+        assert d["lowStock"][0]["code"] == "RED"
+        assert d["lowStock"][0]["available"] == sku.available < 0
+        assert d["lowStock"][0]["short"] == -sku.available
+        assert [s["code"] for s in d["attention"]["oversold"]] == ["RED"]
+        top = next(t for t in dashboard.top_skus(world["org"]) if t["code"] == "RED")
+        assert top["sellThrough"] == 1.0

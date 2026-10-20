@@ -5,7 +5,7 @@ import pytest
 from app.db import db
 from app.models import MovementKind, Organization, Sku
 from app.services import catalog, inventory
-from app.services.inventory import Actor, InsufficientStock, InventoryError
+from app.services.inventory import Actor, InventoryError
 
 
 @pytest.fixture
@@ -58,26 +58,53 @@ def test_replaying_the_same_event_moves_nothing(app, sku):
     assert level(app, sku) == (10, 4, 6)
 
 
-def test_cannot_oversell_release_or_commit_more_than_reserved(app, sku):
+def test_overselling_goes_negative_and_says_how_many_to_buy(app, sku):
     with app.app_context():
-        with pytest.raises(InsufficientStock):
-            inventory.reserve(sku, 11, source_type="sale", source_id="big")
         inventory.reserve(sku, 10, source_type="sale", source_id="all")
-        with pytest.raises(InsufficientStock):
-            inventory.reserve(sku, 1, source_type="sale", source_id="one-more")
+        inventory.reserve(sku, 3, source_type="sale", source_id="three-more")
+        db.session.commit()
+        s = db.session.get(Sku, sku)
+        assert (s.on_hand, s.reserved, s.available, s.short) == (10, 13, -3, 3)
+        # Paying for the oversold sale takes the shelf below zero: 3 owed to buyers.
+        inventory.commit(sku, 13, source_type="sale", source_id="all-paid")
+        db.session.commit()
+        s = db.session.get(Sku, sku)
+        assert (s.on_hand, s.reserved, s.available, s.short) == (-3, 0, -3, 3)
+        # Buying 5 more fills the 3 owed and leaves 2 on the shelf.
+        inventory.move(sku, MovementKind.restock, 5, source_type="test", source_id="buy")
+        db.session.commit()
+        s = db.session.get(Sku, sku)
+        assert (s.on_hand, s.available, s.short) == (2, 2, 0)
+        assert inventory.recompute(s) == (2, 0)
+
+
+def test_counts_may_land_below_held_but_never_below_zero(app, sku):
+    with app.app_context():
+        inventory.reserve(sku, 6, source_type="sale", source_id="six")
+        inventory.set_on_hand(sku, 4, source_type="count", source_id="c1", actor=Actor())
+        db.session.commit()
+        s = db.session.get(Sku, sku)
+        assert (s.on_hand, s.reserved, s.short) == (4, 6, 2)
+        with pytest.raises(InventoryError, match="below zero"):
+            inventory.move(sku, MovementKind.adjust, -5)
+        db.session.rollback()
+
+
+def test_cannot_release_or_commit_more_than_reserved(app, sku):
+    with app.app_context():
+        inventory.reserve(sku, 10, source_type="sale", source_id="all")
         with pytest.raises(InventoryError):
             inventory.release(sku, 11, source_type="sale", source_id="all")
         with pytest.raises(InventoryError):
             inventory.commit(sku, 11, source_type="sale", source_id="all")
-        with pytest.raises(InventoryError, match="below"):
-            inventory.move(sku, MovementKind.adjust, -1)  # 10 on hand, 10 reserved
         db.session.rollback()
     assert level(app, sku) == (10, 0, 10)
 
 
-def test_fifty_parallel_reserves_never_exceed_stock(app, sku):
-    """The gate: 50 workers each want 1 of 10 available; exactly 10 may win."""
-    results: list[bool] = []
+def test_fifty_parallel_reserves_lose_no_updates(app, sku):
+    """50 workers each reserve 1 of 10 on the shelf: all succeed (overselling is allowed),
+    and the row lock keeps every one of them in the count: 50 held, 40 to buy."""
+    errors: list[Exception] = []
     lock = threading.Lock()
 
     def worker(i: int):
@@ -85,25 +112,24 @@ def test_fifty_parallel_reserves_never_exceed_stock(app, sku):
             try:
                 inventory.reserve(sku, 1, source_type="sale", source_id=f"par-{i}")
                 db.session.commit()
-                ok = True
-            except InsufficientStock:
+            except Exception as e:  # noqa: BLE001 - any failure fails the test below
                 db.session.rollback()
-                ok = False
+                with lock:
+                    errors.append(e)
             finally:
                 db.session.remove()
-        with lock:
-            results.append(ok)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(50)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    assert results.count(True) == 10
-    assert level(app, sku) == (10, 10, 0)
+    assert errors == []
+    assert level(app, sku) == (10, 50, -40)
     with app.app_context():
         s = db.session.get(Sku, sku)
-        assert inventory.recompute(s) == (10, 10)
+        assert s.short == 40
+        assert inventory.recompute(s) == (10, 50)
 
 
 def test_set_on_hand_is_one_adjust_and_noop_when_equal(app, sku):

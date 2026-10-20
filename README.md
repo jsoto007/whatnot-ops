@@ -87,10 +87,14 @@ ordered regexes; `pipeline.py` turns a sale into a `Sale`, matches the item
 to a SKU through aliases, reserves stock through the ledger, and releases
 it again on a cancel / payment-failed line for that buyer. Anything a person
 must decide lands in **Review**: unknown item (pick the SKU, optionally
-remember the name), not enough stock, which of several open sales to
+remember the name), which of several open sales to
 cancel, a sale-looking line from someone who is not the host or the
 platform. Set the shop's Whatnot handle under **Settings** so host lines
 are trusted.
+
+Overselling is allowed: a sale for more than is on the shelf is still
+reserved, and the SKU's available count goes negative. **Inventory** and the
+dashboard show "buy N more" until a restock covers it.
 
 The rules are checked against `api/tests/fixtures/chat_corpus.jsonl`, which
 is **synthetic** until real shows are captured; `tests/test_rules.py`

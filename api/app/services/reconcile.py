@@ -202,7 +202,7 @@ def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Pl
         sale = db.session.get(Sale, row.sale_id)
         if row.action == "mark_paid":
             if sale.status is SaleStatus.detected:
-                # Paid but never reserved (unknown item / no stock): it still counts as sold.
+                # Paid but never reserved (unknown item): it still counts as sold.
                 if sale.sku_id is None:
                     row.action, row.note = (
                         "unmatched",
@@ -210,10 +210,7 @@ def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Pl
                     )
                     _review_unmatched(show, row, import_id)
                     continue
-                pipeline._reserve(sale)
-                if sale.status is not SaleStatus.reserved:
-                    row.action, row.note = "unmatched", f"sale #{sale.id}: {sale.status_reason}"
-                    continue
+                pipeline._reserve(sale)  # never refused; an oversell shows as a shortfall
             pipeline.set_sale_status(
                 sale, SaleStatus.paid, reason=f"payment file {import_id}", actor=actor
             )
