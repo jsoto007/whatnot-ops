@@ -1,6 +1,3 @@
-from datetime import UTC
-
-import pytest
 from sqlalchemy import select
 
 from app.db import db
@@ -12,59 +9,10 @@ from app.models import (
     ReviewItem,
     ReviewStatus,
     Sale,
-    Show,
     Sku,
 )
-from app.services import catalog, inventory, jobs, pipeline
-from app.services.inventory import MovementKind
-
-SHOW = "2026-10-19T20:00:00.000Z"
-
-
-@pytest.fixture
-def world(app):
-    """An org with RED (3 on hand), a show, and a helper to add chat lines."""
-    from datetime import datetime
-
-    from app.models import ChatMessage
-
-    with app.app_context():
-        org = Organization(name="Shop", slug="shop", host_username="host_shop")
-        db.session.add(org)
-        db.session.flush()
-        red = catalog.create_product(
-            org.id, "Red bundle", skus=[{"code": "RED", "priceCents": 2500}]
-        ).skus[0]
-        inventory.move(red.id, MovementKind.restock, 3, source_type="test", source_id="seed")
-        show = Show(
-            organization_id=org.id,
-            show_key=SHOW,
-            started_at=datetime.fromisoformat(SHOW.replace("Z", "+00:00")),
-            show_date=datetime.now(UTC).date(),
-        )
-        db.session.add(show)
-        db.session.commit()
-        ids = {"org": org.id, "red": red.id, "show": show.id}
-
-    def say(app, lines):
-        with app.app_context():
-            n = db.session.scalar(select(db.func.count()).select_from(ChatMessage)) or 0
-            for i, (u, b) in enumerate(lines, start=n + 1):
-                db.session.add(
-                    ChatMessage(
-                        show_id=ids["show"],
-                        client_id=f"{i:016x}",
-                        seq=i,
-                        username=u,
-                        body=b,
-                        raw_text=f"{u} {b}".strip(),
-                        captured_at=datetime.now(UTC),
-                    )
-                )
-            db.session.commit()
-
-    ids["say"] = say
-    return ids
+from app.services import catalog, jobs, pipeline
+from tests.conftest import SHOW  # noqa: F401 - shared show key
 
 
 def run(app, show_id, **kw):

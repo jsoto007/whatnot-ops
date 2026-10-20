@@ -55,6 +55,7 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
       row(5, '', 'cardguy bought mystery box for $10'),
       row(6, 'cardguy', 'thanks!'),
       row(7, '', 'Cancelled for pokemom_22'),
+      row(8, 'lani808', 'please cancel mine, card declined'), // not a host line: only the AI audit acts on it
     ],
   }
   const res = await request.post('/api/ingest', { data: batch, headers: { Authorization: 'Bearer ' + key } })
@@ -63,22 +64,33 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   // The show appears; parse it (JOBS_INLINE already parsed on ingest, "Parse now" is idempotent).
   await page.getByRole('link', { name: 'Shows' }).click()
   await page.getByRole('link', { name: /show|\d{4}/ }).first().click()
+  // Jobs run inline in e2e, so ingest already parsed the show and the fake AI audit already ran:
+  // lani808's "card declined" line was a confident, reversible finding and the AI applied it.
   await page.getByTestId('parse-now').click()
-  await expect(page.getByTestId('tile-parsed')).toContainText('7')
-  await expect(page.getByTestId('tile-sales')).toContainText('2') // lani808 + cardguy; pokemom's is in the cancelled tile
-  await expect(page.getByTestId('tile-cancelled')).toContainText('1')
+  await expect(page.getByTestId('tile-parsed')).toContainText('8')
+  await expect(page.getByTestId('tile-sales')).toContainText('1') // cardguy; lani808 and pokemom are in the cancelled tile
+  await expect(page.getByTestId('tile-cancelled')).toContainText('2')
   await expect(page.getByTestId('tile-review')).toContainText('1')
 
   const sales = page.getByTestId('sales')
-  await expect(sales).toContainText('lani808')
-  await expect(sales.locator('tr', { hasText: 'lani808' })).toContainText('reserved')
+  await expect(sales.locator('tr', { hasText: 'lani808' })).toContainText('payment failed')
   await expect(sales.locator('tr', { hasText: 'pokemom_22' })).toContainText('cancelled')
   await expect(sales.locator('tr', { hasText: 'cardguy' })).toContainText('unmatched')
 
-  // Stock: lani808 holds 1 of 3; pokemom's 2 were released.
+  // Running the audit again proposes nothing new.
+  await page.getByTestId('ai-audit').click()
+  await expect(page.getByTestId('tile-cancelled')).toContainText('2')
+  await expect(page.getByTestId('tile-review')).toContainText('1')
+
+  // Stock: nothing reserved (lani808 released by the AI, pokemom by the rules); 3 available.
   await page.getByRole('link', { name: 'Inventory' }).click()
-  await expect(page.getByTestId('level-RED').locator('td').nth(3)).toHaveText('1')
-  await expect(page.getByTestId('level-RED').locator('td').nth(4)).toContainText('2')
+  await expect(page.getByTestId('level-RED').locator('td').nth(3)).toHaveText('0')
+  await expect(page.getByTestId('level-RED').locator('td').nth(4)).toContainText('3')
+
+  // The AI's action is in the activity log and the Settings page shows the provider.
+  await page.getByRole('link', { name: 'Settings' }).click()
+  await expect(page.getByTestId('ai-status')).toContainText('Provider fake')
+  await expect(page.locator('.table.small')).toContainText('ai supervisor')
 
   // Review: teach the app that "mystery box" is a red bundle.
   await page.getByRole('link', { name: 'Review' }).click()
@@ -89,7 +101,7 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   await page.getByRole('button', { name: 'Use this SKU' }).click()
   await expect(page.getByText('Nothing waiting')).toBeVisible()
   await page.getByRole('link', { name: 'Inventory' }).click()
-  await expect(page.getByTestId('level-RED').locator('td').nth(3)).toHaveText('2')
+  await expect(page.getByTestId('level-RED').locator('td').nth(3)).toHaveText('1')
   await page.getByRole('link', { name: 'Products' }).click()
   await expect(page.locator('.chip', { hasText: 'mystery box' })).toBeVisible()
 })

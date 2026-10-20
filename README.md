@@ -8,7 +8,8 @@ See `docs/PLAN.md` for the phased build plan and `CLAUDE.md` for working
 rules. Done so far: Phase 0 (scaffold), Phase 1 (self-healing extension
 capture), Phase 2 (extension → API ingest), Phase 3 (accounts, roles,
 invites, device keys from the UI), Phase 4 (products and the inventory
-ledger), Phase 5 (rule-based parser, sales, review queue, job worker).
+ledger), Phase 5 (rule-based parser, sales, review queue, job worker), Phase 6 (AI
+supervisor).
 
 ## Layout
 
@@ -91,6 +92,35 @@ The rules are checked against `api/tests/fixtures/chat_corpus.jsonl`, which
 is **synthetic** until real shows are captured; `tests/test_rules.py`
 prints precision/recall per kind. "Parse now" on a show re-evaluates only
 lines that led nowhere; existing sales are never rewritten by rules.
+
+## AI supervisor
+
+Off unless `AI_PROVIDER` is set: `claude` (official Anthropic SDK,
+`ANTHROPIC_API_KEY`, `CLAUDE_MODEL` defaults to `claude-opus-5-5`, structured
+JSON output) or `jev` (`JEV_API_URL`, `JEV_API_KEY`, `POST /v1/decide`).
+`fake` is a keyword-driven stand-in for tests and e2e, refused in production.
+Providers are swapped behind one interface (`api/app/services/ai/`), and
+every call is logged in `ai_calls` (provider, purpose, latency, confidence,
+error), shown under Settings.
+
+What it does (`api/app/services/supervisor.py`):
+
+- When the rules open a review item for a low-confidence line or an unknown
+  item, a job asks the provider to classify the line or pick the SKU among
+  the shop's products and aliases.
+- After each parse, an audit of the show runs (2 minutes later, deduped):
+  the last 400 lines plus the open sales, asking for cancellations and
+  payment problems the rules missed, missed sales and duplicates.
+  "Run AI audit" on a show runs it now.
+- Every answer is a proposal with a confidence. Only reversible actions
+  above the thresholds in `ai/policy.py` are applied on their own (cancel /
+  payment failed on a reserved sale, assign a SKU at ≥ 95%); they go through
+  the same functions a person uses, with actor `ai` in the audit log.
+  Marking a sale paid is never automatic. Everything else waits in Review
+  with an "Apply suggestion" button.
+
+`flask ai-eval` replays the (synthetic) rules corpus through the configured
+provider and prints the agreement.
 
 ## Connect a laptop (extension device key)
 

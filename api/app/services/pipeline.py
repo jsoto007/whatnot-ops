@@ -83,6 +83,10 @@ def open_review(
     )
     db.session.add(item)
     db.session.flush()
+    if reason in ("low_confidence", "unmatched_item"):
+        from .supervisor import schedule_review
+
+        schedule_review(item)
     return item
 
 
@@ -355,6 +359,10 @@ def process_show(show_id: int, *, reparse: bool = False, host: str | None = None
         or 0
     )
     show.updated_at = func.now()
+    if stats.parsed:
+        from .supervisor import schedule_audit
+
+        schedule_audit(show)
     return stats
 
 
@@ -421,6 +429,10 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
         set_sale_status(sale, status, reason=f"review #{item.id}", actor=actor)
         item.status = ReviewStatus.resolved
         item.resolution = {"action": "pick_sale", "saleId": sale.id, "status": status.value}
+    elif action == "apply_proposal":
+        from .supervisor import apply_proposal
+
+        apply_proposal(item, actor=actor, user=user)
     elif action == "set_status":
         sale = item.sale
         if sale is None:

@@ -41,7 +41,8 @@ services:
           property: connectionString
       # Add in the dashboard when ready (never commit values):
       #   MAILGUN_API_KEY, MAILGUN_DOMAIN, EMAIL_FROM      transactional email (Phase 3)
-      #   JEV_API_KEY, JEV_API_URL, ANTHROPIC_API_KEY      AI supervisor (Phase 6)
+      #   AI_PROVIDER=claude|jev + ANTHROPIC_API_KEY / JEV_API_KEY (+ JEV_API_URL)   AI supervisor
+      #   (set the same AI_* values on the worker; that is where the jobs run)
 
   # Background worker: parsing, AI supervision, exports (jobs table, SKIP LOCKED).
   - type: worker

@@ -38,6 +38,14 @@ def _context(item: ReviewItem, around: int = 3) -> dict:
     return {"show_date": show_date, "lines": lines}
 
 
+@bp.get("/ai-status")
+@require("review.act")
+def ai_status():
+    from ..services import supervisor
+
+    return jsonify(supervisor.status(g.u.organization_id))
+
+
 @bp.get("")
 @require("review.act")
 def list_review():
