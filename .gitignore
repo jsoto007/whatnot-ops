@@ -22,3 +22,5 @@ extension/dist-test/
 extension/test-results/
 extension/playwright-report/
 web/*.tsbuildinfo
+
+extension/chat-scraper-*.zip

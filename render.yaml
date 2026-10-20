@@ -1,13 +1,15 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 # One Python web service builds the React app and serves it through Flask
-# (api/app/spa.py), so there is no CORS and session cookies are same-origin.
+# (api/app/spa.py): same origin, session cookies, no CORS. A background worker
+# runs the jobs table (parsing, AI supervision). See docs/RUNBOOK.md.
 #
 # Before syncing:
-#   • The database is on a paid plan on purpose: free Postgres expires after
-#     30 days. Check workspace billing before debugging a failed deploy.
-#   • Changing envVars here and merging to main redeploys production.
-#   • Verify on the first deploy that Render's Python runtime provides Node for
-#     the web build (NODE_VERSION below); if not, switch to a Docker runtime.
+#   • Create the Blueprint only with Javier's OK; changing envVars here and
+#     merging to main redeploys production.
+#   • Postgres is on a paid plan on purpose: free databases expire after 30 days.
+#   • Check workspace billing first when a deploy fails for no visible reason.
+#   • First deploy: confirm Render's Python runtime provides Node (NODE_VERSION)
+#     for the web build; if not, switch the web service to a Docker runtime.
 
 databases:
   - name: whatnot-ops-db
@@ -23,7 +25,9 @@ services:
     buildCommand: >-
       cd web && npm ci && npm run build && cd ../api
       && pip install -r requirements.txt
-    startCommand: cd api && flask --app wsgi.py db upgrade && gunicorn --chdir api wsgi:app
+    startCommand: >-
+      cd api && flask --app wsgi.py db upgrade
+      && gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
@@ -39,10 +43,20 @@ services:
         fromDatabase:
           name: whatnot-ops-db
           property: connectionString
+      # Sign-ups: the very first account is always allowed (bootstrap). Set
+      # ALLOW_SIGNUPS=1 only while onboarding more shops; otherwise owners invite.
+      # - key: ALLOW_SIGNUPS
+      #   value: "1"
+      # APP_URL (links in invite / reset emails) — set once a custom domain exists;
+      # until then the app uses RENDER_EXTERNAL_URL.
+      # - key: APP_URL
+      #   value: https://ops.example.com
+      #
       # Add in the dashboard when ready (never commit values):
-      #   MAILGUN_API_KEY, MAILGUN_DOMAIN, EMAIL_FROM      transactional email (Phase 3)
-      #   AI_PROVIDER=claude|jev + ANTHROPIC_API_KEY / JEV_API_KEY (+ JEV_API_URL)   AI supervisor
+      #   MAILGUN_API_KEY, MAILGUN_DOMAIN, EMAIL_FROM                 invites + password resets
+      #   AI_PROVIDER=claude|jev, ANTHROPIC_API_KEY / JEV_API_KEY (+ JEV_API_URL, JEV_MODEL)
       #   (set the same AI_* values on the worker; that is where the jobs run)
+      #   LOG_LEVEL=INFO
 
   # Background worker: parsing, AI supervision, exports (jobs table, SKIP LOCKED).
   - type: worker
@@ -62,3 +76,5 @@ services:
         fromDatabase:
           name: whatnot-ops-db
           property: connectionString
+      - key: WORKER_POLL_SECONDS
+        value: "2"

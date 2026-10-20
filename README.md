@@ -10,7 +10,8 @@ capture), Phase 2 (extension → API ingest), Phase 3 (accounts, roles,
 invites, device keys from the UI), Phase 4 (products and the inventory
 ledger), Phase 5 (rule-based parser, sales, review queue, job worker), Phase 6 (AI
 supervisor), Phase 7 (orders, payment reconciliation, fulfilment), Phases 8–9 (dashboard,
-analytics, Excel reports).
+analytics, Excel reports), Phase 10 (deploy config, runbook). Nothing is
+deployed yet: `docs/RUNBOOK.md` has the first-deploy steps.
 
 ## Layout
 
@@ -33,6 +34,7 @@ make web                        # Vite on http://localhost:5173 (proxies /api)
 make check                      # lint + typecheck + unit tests, both sides
 make e2e                        # production build served by Flask + Playwright
 make ext-e2e                    # extension: build, then Playwright against the fixture chat + the real API
+make smoke BASE_URL=https://…   # health, SPA, fallback and 404 checks against a deployed instance
 ```
 
 ## Accounts

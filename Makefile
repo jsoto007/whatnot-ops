@@ -3,7 +3,7 @@ SHELL := /bin/bash
 PY := .venv/bin
 E2E_PORT ?= 5055
 
-.PHONY: install db-create db-url api web worker check test lint e2e build-web migrate ext-e2e
+.PHONY: install db-create db-url api web worker check test lint e2e build-web migrate ext-e2e smoke
 
 install:
 	cd api && python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt
@@ -58,3 +58,11 @@ e2e: build-web db-url
 	  pid=$$!; trap "kill $$pid 2>/dev/null" EXIT; \
 	  for i in $$(seq 1 30); do curl -sf http://localhost:$(E2E_PORT)/api/health >/dev/null && break; sleep 0.5; done; \
 	  cd web && E2E_BASE_URL=http://localhost:$(E2E_PORT) npx playwright test
+
+# Smoke test a deployed instance: make smoke BASE_URL=https://whatnot-ops.onrender.com
+BASE_URL ?= http://localhost:5055
+smoke:
+	@curl -fsS "$(BASE_URL)/api/health" | grep -q '"db":true' && echo "health ok"
+	@curl -fsS "$(BASE_URL)/" | grep -q '<div id="root">' && echo "spa ok"
+	@curl -fsS "$(BASE_URL)/some/client/route" | grep -q '<div id="root">' && echo "spa fallback ok"
+	@test "$$(curl -s -o /dev/null -w '%{http_code}' "$(BASE_URL)/api/nope")" = 404 && echo "api 404 ok"

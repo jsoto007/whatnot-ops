@@ -5,6 +5,8 @@ import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 
 const test = process.argv.includes('--test')
 const out = test ? 'dist-test' : 'dist'
+// DEFAULT_SERVER_URL bakes the team's server into the build (Settings still shows it and takes a key).
+const defaults = { serverUrl: (process.env.DEFAULT_SERVER_URL || '').trim().replace(/\/+$/, '') }
 
 rmSync(out, { recursive: true, force: true })
 mkdirSync(out, { recursive: true })
@@ -31,4 +33,5 @@ if (test) {
 }
 writeFileSync(`${out}/manifest.json`, JSON.stringify(manifest, null, 2))
 for (const f of ['search.html', 'options.html', 'icon16.png', 'icon48.png', 'icon128.png']) cpSync(f, `${out}/${f}`)
+writeFileSync(`${out}/defaults.json`, JSON.stringify(defaults))
 console.log(`built ${out}/`)
