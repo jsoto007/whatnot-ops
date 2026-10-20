@@ -9,6 +9,8 @@ const REASON_LABEL: Record<string, string> = {
   ambiguous_sale: 'Which sale?',
   low_confidence: 'Not sure',
   no_open_sale: 'No open sale to cancel',
+  no_payment_record: 'Sold but not in the payment file',
+  unmatched_payment: 'Paid but no matching sale',
   cancel_sale: 'AI: looks cancelled',
   payment_failed: 'AI: payment problem',
   missing_sale: 'AI: possible missed sale',
@@ -28,18 +30,42 @@ export function Review() {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['review'], queryFn: () => apiGet<{ items: ReviewItem[] }>('/api/review') })
   const products = useQuery({ queryKey: ['products'], queryFn: () => apiGet<{ products: Product[] }>('/api/products') })
+  const [reason, setReason] = useState('')
   const refresh = () => qc.invalidateQueries()
   if (q.isPending) return <p className="muted">Loading…</p>
   if (q.isError) return <p className="form-error">Could not load the review queue.</p>
   const skus = (products.data?.products ?? []).flatMap((p) => p.skus.map((s) => ({ ...s, productName: p.name })))
+  const items = q.data.items
+  const byReason = new Map<string, number>()
+  for (const it of items) byReason.set(it.reason, (byReason.get(it.reason) ?? 0) + 1)
+  const visible = reason ? items.filter((it) => it.reason === reason) : items
   return (
     <section>
-      <h2>Review</h2>
-      <p className="muted">{q.data.items.length} open</p>
-      {q.data.items.length === 0 ? (
-        <p className="card muted">Nothing waiting. Rules handled everything they saw.</p>
+      <div className="page-head">
+        <div>
+          <h2>Review</h2>
+          <div className="sub">{items.length ? `${items.length} decision${items.length === 1 ? '' : 's'} waiting. Each one is a chat line the rules could not settle on their own.` : 'Nothing waiting on you.'}</div>
+        </div>
+      </div>
+      {items.length > 0 && (
+        <div className="chips filter" role="group" aria-label="Filter by reason" style={{ marginBottom: 'var(--space-3)' }}>
+          <button className={'chip' + (reason === '' ? ' on' : '')} onClick={() => setReason('')}>
+            All <span className="chip-n">{items.length}</span>
+          </button>
+          {[...byReason.entries()].map(([r, n]) => (
+            <button key={r} className={'chip' + (reason === r ? ' on' : '')} onClick={() => setReason(r)}>
+              {REASON_LABEL[r] ?? r} <span className="chip-n">{n}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {items.length === 0 ? (
+        <div className="empty">
+          <b>Nothing waiting</b>
+          The rules handled everything they saw.
+        </div>
       ) : (
-        q.data.items.map((it) => <Item key={it.id} item={it} skus={skus} onDone={refresh} />)
+        visible.map((it) => <Item key={it.id} item={it} skus={skus} onDone={refresh} />)
       )}
     </section>
   )
@@ -78,7 +104,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
       )}
       {item.context.length > 0 && (
         <div className="chat small">
-          {item.context.map((c) => (
+          {item.context.filter((c) => !item.message || Math.abs(c.seq - item.message.seq) <= 2).map((c) => (
             <div className={'chat-line' + (item.message && c.seq === item.message.seq ? ' hit' : '')} key={c.seq}>
               <span className="t">#{c.seq}</span>
               <span className="u">{c.username}</span>

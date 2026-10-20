@@ -4,7 +4,7 @@ from openpyxl import load_workbook
 from sqlalchemy import select
 
 from app.db import db
-from app.models import Organization, Show, User
+from app.models import Organization, Show, Sku, User
 from app.services import dashboard, reconcile, reports
 from app.services.inventory import Actor
 from tests.test_pipeline import run
@@ -168,3 +168,45 @@ def test_report_routes_and_permissions(client, app, world):
     )
     assert pat.get(f"/api/reports/show/{world['show']}.xlsx").status_code == 403
     assert pat.get(f"/api/dashboard/shows/{world['show']}").status_code == 200
+
+
+def test_overview_attention_lists_what_needs_a_person(app, world):
+    seed(app, world)
+    with app.app_context():
+        a = dashboard.overview(world["org"])["attention"]
+    assert a["openReviews"] == 0 and a["toFulfil"] == 1 and a["lowStock"] == 0  # every line matched
+    assert a["live"] is not None and a["live"]["showId"] == world["show"]
+    assert a["unreconciledShows"] == []  # the live show is excluded; nothing else pending
+
+
+def test_attention_details_and_live_chat_pace(app, world):
+    seed(app, world)
+    with app.app_context():
+        a = dashboard.overview(world["org"])["attention"]
+        c = dashboard.counts(world["org"])
+    assert a["fulfilItems"] == 2 and a["fulfilOldestShow"] == a["live"]["date"]
+    assert a["reviewReasons"] == {}
+    pace = a["live"]["pace"]
+    assert (
+        len(pace) == 30 and sum(pace) == 6 and pace[-1] == 6
+    )  # all six lines landed in the last minute
+    assert c == {"openReviews": 0, "toFulfil": 1, "live": True}
+
+
+def test_low_stock_carries_threshold_and_sold(app, world):
+    seed(app, world)
+    with app.app_context():
+        sku = db.session.get(Sku, world["red"])
+        sku.low_stock_at = 1
+        db.session.commit()
+        low = dashboard.overview(world["org"])["lowStock"]
+    assert low == [
+        {
+            "skuId": world["red"],
+            "code": "RED",
+            "product": "Red bundle",
+            "available": 1,
+            "lowAt": 1,
+            "sold": 2,
+        }
+    ]

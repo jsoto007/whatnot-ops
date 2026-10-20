@@ -21,6 +21,12 @@ def get_dashboard():
     return jsonify(dashboard.overview(g.u.organization_id))
 
 
+@bp.get("/dashboard/counts")
+@require("shows.view")
+def get_counts():
+    return jsonify(dashboard.counts(g.u.organization_id))
+
+
 @bp.get("/dashboard/shows/<int:show_id>")
 @require("shows.view")
 def get_show_dashboard(show_id: int):

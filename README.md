@@ -29,8 +29,9 @@ docs/        plan, runbook
 cp .env.example .env            # local Postgres.app, see values inside
 make db-create                  # creates whatnot_ops and whatnot_ops_test
 make install                    # python venv + npm install
-make api                        # Flask on http://localhost:5000
-make web                        # Vite on http://localhost:5173 (proxies /api)
+make api                        # Flask on http://localhost:5050
+make web                        # Vite on http://localhost:5174 (proxies /api)
+make seed-demo                  # local demo shop with three shows (sign-in details in api/app/cli/seed_demo.py)
 make check                      # lint + typecheck + unit tests, both sides
 make e2e                        # production build served by Flask + Playwright
 make ext-e2e                    # extension: build, then Playwright against the fixture chat + the real API

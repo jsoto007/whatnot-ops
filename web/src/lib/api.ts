@@ -319,10 +319,34 @@ export interface TopSku {
   available: number
   sellThrough: number | null
 }
+export interface LowStockItem {
+  skuId: number
+  code: string
+  product: string
+  available: number
+  lowAt: number
+  sold: number
+}
+export interface Attention {
+  openReviews: number
+  reviewReasons: Record<string, number>
+  toFulfil: number
+  fulfilItems: number
+  fulfilOldestShow: string | null
+  lowStock: number
+  unreconciledShows: { showId: number; date: string; pendingCents: number; openSales: number }[]
+  live: (ShowTiles & { pace: number[] }) | null
+}
+export interface NavCounts {
+  openReviews: number
+  toFulfil: number
+  live: boolean
+}
 export interface Overview {
   shows: ShowTiles[]
   totals: Record<string, number>
   topBuyers: TopBuyer[]
   topSkus: TopSku[]
-  lowStock: { skuId: number; code: string; product: string; available: number }[]
+  lowStock: LowStockItem[]
+  attention: Attention
 }

@@ -98,8 +98,8 @@ commands.
 ```bash
 make install      # api venv + web npm install
 make db-create    # local whatnot_ops + whatnot_ops_test
-make api          # Flask :5000 (debug)
-make web          # Vite :5173, proxies /api → :5000
+make api          # Flask :5050 (debug; 5000 is macOS AirPlay)
+make web          # Vite :5174, proxies /api → :5050
 make check        # ruff + pytest, eslint + tsc + vitest
 make e2e          # build web, serve via Flask :5055, Playwright
 ```

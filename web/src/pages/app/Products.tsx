@@ -46,7 +46,10 @@ export function Products() {
         </Form>
       )}
       {q.data.products.length === 0 ? (
-        <p className="card muted">No products yet. Add one above or import the inventory sheet on the Inventory page.</p>
+        <div className="empty">
+          <b>No products yet</b>
+          Add one above, or import the inventory sheet on the Inventory page.
+        </div>
       ) : (
         q.data.products.map((p) => <ProductCard key={p.id} product={p} write={write} onChange={refresh} />)
       )}

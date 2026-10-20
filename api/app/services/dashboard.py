@@ -24,6 +24,7 @@ STANDING = (SaleStatus.detected, SaleStatus.reserved, SaleStatus.paid, SaleStatu
 PAID = (SaleStatus.paid, SaleStatus.fulfilled)
 LOST = (SaleStatus.cancelled, SaleStatus.payment_failed)
 TYPES = ("red", "bundle", "ultra", "mega")
+LIVE_WINDOW = timedelta(minutes=10)
 
 
 def _qty(status_filter):
@@ -215,24 +216,133 @@ def totals(rows: list[dict]) -> dict:
     return {k: sum(r[k] for r in rows) for k in keys} | {"shows": len(rows)}
 
 
+FULFIL = (OrderStatus.paid, OrderStatus.picking, OrderStatus.packed)
+
+
 def overview(org_id: int) -> dict:
     rows = shows_table(org_id)
+    low = _low_stock(org_id)
+    # Shows with money still on the table: sales reserved or detected, no payment file applied.
+    unreconciled = [
+        {
+            "showId": r["showId"],
+            "date": r["date"],
+            "pendingCents": r["revenuePendingCents"],
+            "openSales": r["orders"].get("open", 0),
+        }
+        for r in rows
+        if r["revenuePendingCents"] > 0 and not r["live"]
+    ]
+    live = next((r for r in rows if r["live"]), None)
+    if live is not None:
+        live = {**live, "pace": chat_pace(live["showId"])}
+    fulfil_items, fulfil_oldest = fulfil_summary(org_id)
     return {
         "shows": rows,
         "totals": totals(rows),
         "topBuyers": top_buyers(org_id),
         "topSkus": top_skus(org_id),
-        "lowStock": [
-            {"skuId": s.id, "code": s.code, "product": s.product.name, "available": s.available}
-            for s in db.session.scalars(
-                select(Sku)
-                .where(
-                    Sku.organization_id == org_id,
-                    Sku.active.is_(True),
-                    Sku.on_hand - Sku.reserved <= Sku.low_stock_at,
-                )
-                .order_by(Sku.code)
-                .limit(20)
-            )
-        ],
+        "lowStock": low,
+        "attention": {
+            "openReviews": sum(r["openReviews"] for r in rows),
+            "reviewReasons": review_reasons(org_id),
+            "toFulfil": sum(r["toFulfil"] for r in rows),
+            "fulfilItems": fulfil_items,
+            "fulfilOldestShow": fulfil_oldest,
+            "lowStock": len(low),
+            "unreconciledShows": unreconciled,
+            "live": live,
+        },
     }
+
+
+def counts(org_id: int) -> dict:
+    """Cheap numbers for the sidebar badges (every page loads them)."""
+    reviews = db.session.scalar(
+        select(func.count())
+        .select_from(ReviewItem)
+        .where(ReviewItem.organization_id == org_id, ReviewItem.status == ReviewStatus.open)
+    )
+    to_fulfil = db.session.scalar(
+        select(func.count())
+        .select_from(Order)
+        .where(Order.organization_id == org_id, Order.status.in_(FULFIL))
+    )
+    cutoff = datetime.now(UTC) - LIVE_WINDOW
+    live = db.session.scalar(
+        select(func.count())
+        .select_from(Show)
+        .where(Show.organization_id == org_id, Show.updated_at >= cutoff)
+    )
+    return {"openReviews": reviews or 0, "toFulfil": to_fulfil or 0, "live": bool(live)}
+
+
+def review_reasons(org_id: int) -> dict[str, int]:
+    rows = db.session.execute(
+        select(ReviewItem.reason, func.count())
+        .where(ReviewItem.organization_id == org_id, ReviewItem.status == ReviewStatus.open)
+        .group_by(ReviewItem.reason)
+    ).all()
+    return {reason: int(n) for reason, n in rows}
+
+
+def fulfil_summary(org_id: int) -> tuple[int, str | None]:
+    """Items in paid-but-unshipped orders, and the date of the oldest show they come from."""
+    items, oldest = db.session.execute(
+        select(func.coalesce(func.sum(Sale.quantity), 0), func.min(Show.show_date))
+        .join(Order, Order.id == Sale.order_id)
+        .join(Show, Show.id == Sale.show_id)
+        .where(Order.organization_id == org_id, Order.status.in_(FULFIL), Sale.status.in_(PAID))
+    ).one()
+    return int(items), oldest.isoformat() if oldest else None
+
+
+def chat_pace(show_id: int, minutes: int = 30) -> list[int]:
+    """Messages per minute over the last `minutes` of the show's chat, oldest first."""
+    last = db.session.scalar(
+        select(func.max(ChatMessage.captured_at)).where(ChatMessage.show_id == show_id)
+    )
+    buckets = [0] * minutes
+    if last is None:
+        return buckets
+    start = last - timedelta(minutes=minutes)
+    stamps = db.session.scalars(
+        select(ChatMessage.captured_at).where(
+            ChatMessage.show_id == show_id, ChatMessage.captured_at > start
+        )
+    ).all()
+    for ts in stamps:
+        i = min(minutes - 1, int((ts - start).total_seconds() // 60))
+        buckets[i] += 1
+    return buckets
+
+
+def _low_stock(org_id: int) -> list[dict]:
+    skus = db.session.scalars(
+        select(Sku)
+        .where(
+            Sku.organization_id == org_id,
+            Sku.active.is_(True),
+            Sku.on_hand - Sku.reserved <= Sku.low_stock_at,
+        )
+        .order_by(Sku.on_hand - Sku.reserved, Sku.code)
+        .limit(20)
+    ).all()
+    sold = dict(
+        db.session.execute(
+            select(Sale.sku_id, func.sum(Sale.quantity))
+            .where(Sale.sku_id.in_([s.id for s in skus] or [0]), Sale.status.in_(STANDING))
+            .group_by(Sale.sku_id)
+        ).all()
+    )
+    return [
+        {
+            "skuId": s.id,
+            "code": s.code,
+            "product": s.product.name,
+            "available": s.available,
+            "lowAt": s.low_stock_at,
+            "sold": int(sold.get(s.id, 0)),
+        }
+        for s in skus
+    ]

@@ -11,19 +11,34 @@ export function Inventory() {
   const q = useQuery({ queryKey: ['inventory'], queryFn: () => apiGet<{ skus: Level[] }>('/api/inventory') })
   const refresh = () => Promise.all([qc.invalidateQueries({ queryKey: ['inventory'] }), qc.invalidateQueries({ queryKey: ['products'] })])
   const [open, setOpen] = useState<number | null>(null)
+  const [showImport, setShowImport] = useState(false)
   const write = can('inventory.write')
   if (q.isPending) return <p className="muted">Loading…</p>
   if (q.isError) return <p className="form-error">Could not load inventory.</p>
-  const low = q.data.skus.filter((s) => s.low).length
+  const skus = q.data.skus.slice().sort((a, b) => Number(b.low) - Number(a.low) || a.available - b.available || a.productName.localeCompare(b.productName))
+  const low = skus.filter((s) => s.low)
+  const reserved = skus.reduce((n, s) => n + s.reserved, 0)
   return (
     <section>
-      <h2>Inventory</h2>
-      <p className="muted">
-        {q.data.skus.length} SKUs · {low} low
-      </p>
-      {write && <Import onDone={refresh} />}
-      {q.data.skus.length === 0 ? (
-        <p className="card muted">Nothing in stock yet. Import the inventory sheet or add products.</p>
+      <div className="page-head">
+        <div>
+          <h2>Inventory</h2>
+          <div className="sub">
+            {skus.length} SKUs · {reserved} held for open sales · {low.length ? <b style={{ color: 'var(--tint-amber-ink)' }}>{low.length} low</b> : 'nothing low'}
+          </div>
+        </div>
+        {write && (
+          <button className="btn ghost" onClick={() => setShowImport((v) => !v)} data-testid="toggle-import">
+            {showImport ? 'Hide import' : 'Import the inventory sheet'}
+          </button>
+        )}
+      </div>
+      {write && showImport && <Import onDone={refresh} />}
+      {skus.length === 0 ? (
+        <div className="empty">
+          <b>Nothing in stock yet</b>
+          Import the inventory sheet, or add products first.
+        </div>
       ) : (
         <table className="table" data-testid="levels">
           <thead>
@@ -31,14 +46,15 @@ export function Inventory() {
               <th>Product</th>
               <th>SKU</th>
               <th className="num">On hand</th>
-              <th className="num">Reserved</th>
+              <th className="num">Held</th>
               <th className="num">Available</th>
+              <th>Stock</th>
               {write && <th>Adjust</th>}
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {q.data.skus.map((s) => (
+            {skus.map((s) => (
               <LevelRow key={s.id} sku={s} write={write} open={open === s.id} onToggle={() => setOpen(open === s.id ? null : s.id)} onChange={refresh} />
             ))}
           </tbody>
@@ -76,6 +92,14 @@ function LevelRow({ sku, write, open, onToggle, onChange }: { sku: Level; write:
           <b>{sku.available}</b>
           {sku.low && <span className="badge warn">low</span>}
         </td>
+        <td>
+          <div className="avail" title={`${sku.available} of ${sku.onHand} on hand available`}>
+            <div className="avail-track">
+              <div className={'avail-fill' + (sku.available <= 0 ? ' out' : sku.low ? ' low' : '')} style={{ width: `${sku.onHand ? Math.max(2, Math.round((100 * Math.max(0, sku.available)) / sku.onHand)) : 0}%` }} />
+            </div>
+            <span className="muted small">{sku.onHand ? Math.round((100 * Math.max(0, sku.available)) / sku.onHand) : 0}%</span>
+          </div>
+        </td>
         {write && (
           <td>
             <form
@@ -102,7 +126,7 @@ function LevelRow({ sku, write, open, onToggle, onChange }: { sku: Level; write:
       </tr>
       {open && (
         <tr>
-          <td colSpan={write ? 7 : 6}>
+          <td colSpan={write ? 8 : 7}>
             <History skuId={sku.id} />
           </td>
         </tr>
