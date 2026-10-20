@@ -5,6 +5,7 @@ must fail loudly rather than quietly point at some other database.
 """
 
 import os
+from datetime import timedelta
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
@@ -27,7 +28,9 @@ class Config:
         self.APP_ENV = os.environ.get("APP_ENV", "development")
         testing = testing or self.APP_ENV == "test"
         self.TESTING = testing
-        self.SECRET_KEY = os.environ.get("SECRET_KEY", "")
+        self.SECRET_KEY = os.environ.get("SECRET_KEY", "") or (
+            "dev-only-secret" if os.environ.get("APP_ENV", "development") != "production" else ""
+        )
         url = os.environ.get("TEST_DATABASE_URL" if testing else "DATABASE_URL", "")
         if not url:
             which = "TEST_DATABASE_URL" if testing else "DATABASE_URL"
@@ -40,6 +43,8 @@ class Config:
         self.SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
         if self.APP_ENV == "production" and not self.SECRET_KEY:
             raise ConfigError("SECRET_KEY must be set in production")
+        self.SESSION_COOKIE_NAME = "wn_session"
         self.SESSION_COOKIE_SECURE = self.APP_ENV == "production"
         self.SESSION_COOKIE_HTTPONLY = True
         self.SESSION_COOKIE_SAMESITE = "Lax"
+        self.PERMANENT_SESSION_LIFETIME = timedelta(days=14)

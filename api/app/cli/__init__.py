@@ -36,6 +36,40 @@ def register_cli(app: Flask) -> None:
         click.echo("API key (shown once, paste it into the extension options):")
         click.echo(key)
 
+    @app.cli.group()
+    def users():
+        """Accounts."""
+
+    @users.command("create-owner")
+    @click.option("--org", required=True, help="Organization name (created if missing).")
+    @click.option("--email", required=True)
+    @click.option("--name", required=True)
+    @click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True)
+    def users_create_owner(org: str, email: str, name: str, password: str):
+        """First owner of a shop (for production, where sign-ups are closed)."""
+        from ..models import Role, User
+        from ..services import accounts
+
+        click.echo(f"database: {db_host(app.config['SQLALCHEMY_DATABASE_URI'])}")
+        organization = _org(org)
+        email = accounts.normalise_email(email)
+        accounts.check_password_strength(password)
+        if db.session.scalar(select(User.id).where(User.email == email)):
+            raise click.ClickException("that email already has an account")
+        import secrets
+
+        user = User(
+            organization=organization,
+            email=email,
+            name=name,
+            password_hash=accounts._ph.hash(password),
+            role=Role.owner,
+            session_token=secrets.token_hex(16),
+        )
+        db.session.add(user)
+        db.session.commit()
+        click.echo(f"owner {email} created for '{organization.name}'")
+
     @app.cli.command("e2e-seed")
     def e2e_seed():
         """Test only: a device whose key is $E2E_DEVICE_KEY. Refused in production."""

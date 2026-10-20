@@ -6,7 +6,8 @@ React dashboard gives the fulfillment team everything at a glance.
 
 See `docs/PLAN.md` for the phased build plan and `CLAUDE.md` for working
 rules. Done so far: Phase 0 (scaffold), Phase 1 (self-healing extension
-capture), Phase 2 (extension → API ingest).
+capture), Phase 2 (extension → API ingest), Phase 3 (accounts, roles,
+invites, device keys from the UI).
 
 ## Layout
 
@@ -31,13 +32,38 @@ make e2e                        # production build served by Flask + Playwright
 make ext-e2e                    # extension: build, then Playwright against the fixture chat + the real API
 ```
 
+## Accounts
+
+The first visit to `/signup` creates the shop and its owner (always allowed
+for the very first account; afterwards only with `ALLOW_SIGNUPS=1` or
+outside production). Owners invite the team from **Team** with a role:
+
+| role        | can                                                              |
+|-------------|------------------------------------------------------------------|
+| owner       | everything, incl. roles, disabling users, settings               |
+| manager     | invite fulfillment/viewer, device keys, inventory, review, reports |
+| fulfillment | shows, orders, pick/pack                                          |
+| viewer      | read-only shows, orders, inventory, reports                       |
+
+The matrix lives in `api/app/services/permissions.py`. Invites and password
+resets go out through Mailgun (`MAILGUN_API_KEY`, `MAILGUN_DOMAIN`,
+optional `EMAIL_FROM`, `APP_URL` for the links); with Mailgun unset the
+email is logged and, outside production, the link is shown in the UI.
+Production bootstrap without sign-ups:
+
+```bash
+cd api && FLASK_APP=wsgi.py .venv/bin/flask users create-owner --org "Shop name" --email you@shop.com --name "You"
+```
+
 ## Connect a laptop (extension device key)
+
+**Settings → Laptops → Create key** in the web app (owner or manager), or:
 
 ```bash
 cd api && FLASK_APP=wsgi.py .venv/bin/flask devices create --org "Shop name" --name "Front laptop"
 ```
 
-Prints the key once (`wn_…`). Paste it with the server URL into the
+Either shows the key once (`wn_…`). Paste it with the server URL into the
 extension's Settings page (toolbar icon → Settings, or `chrome://extensions`
 → Chat Scraper → Details → Extension options). "Test connection" should say
 which device and organization it is. Every captured line is saved on the
