@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { Icon, type IconName } from '../../components/Icon'
+import { apiGet, type NavCounts } from '../../lib/api'
 
 const GROUPS: { title: string; items: { to: string; label: string; permission: string; icon: IconName; end?: boolean }[] }[] = [
   {
@@ -46,6 +48,26 @@ export function AppLayout() {
   const loc = useLocation()
   const [collapsed, setCollapsed] = useState(readCollapsed)
   const [open, setOpen] = useState(false)
+  const countsQ = useQuery({
+    queryKey: ['nav-counts'],
+    queryFn: () => apiGet<NavCounts>('/api/dashboard/counts'),
+    enabled: can('shows.view'),
+    refetchInterval: 30_000,
+  })
+  const counts = countsQ.data
+  const refetchCounts = countsQ.refetch
+  const mayCount = can('shows.view')
+  // Badges follow the user around: refresh them on every navigation, not only on the 30 s poll.
+  useEffect(() => {
+    if (mayCount) void refetchCounts()
+  }, [loc.pathname, mayCount, refetchCounts])
+  const badge = (to: string): { text: string; tone: 'live' | 'count' } | null => {
+    if (!counts) return null
+    if (to === '/app/shows' && counts.live) return { text: 'Live', tone: 'live' }
+    if (to === '/app/orders' && counts.toFulfil) return { text: String(counts.toFulfil), tone: 'count' }
+    if (to === '/app/review' && counts.openReviews) return { text: String(counts.openReviews), tone: 'count' }
+    return null
+  }
 
   const toggleCollapsed = useCallback(() => {
     setCollapsed((c) => {
@@ -113,12 +135,19 @@ export function AppLayout() {
             return (
               <div key={g.title} className="nav-section">
                 <div className="nav-group">{g.title}</div>
-                {items.map((s) => (
-                  <NavLink key={s.to} to={s.to} end={s.end} title={collapsed ? s.label : undefined} className={({ isActive }) => (isActive ? 'active' : '')}>
-                    <Icon name={s.icon} />
-                    <span className="label">{s.label}</span>
-                  </NavLink>
-                ))}
+                {items.map((s) => {
+                  const b = badge(s.to)
+                  return (
+                    <NavLink key={s.to} to={s.to} end={s.end} title={collapsed ? s.label : undefined} className={({ isActive }) => (isActive ? 'active' : '')}>
+                      <span className="nav-ico">
+                        <Icon name={s.icon} />
+                        {b && <span className={'nav-dot ' + b.tone} aria-hidden />}
+                      </span>
+                      <span className="label">{s.label}</span>
+                      {b && <span className={'nav-badge ' + b.tone}>{b.text}</span>}
+                    </NavLink>
+                  )
+                })}
               </div>
             )
           })}

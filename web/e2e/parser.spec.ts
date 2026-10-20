@@ -62,7 +62,7 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   expect(res.ok()).toBe(true)
 
   // The show appears; parse it (JOBS_INLINE already parsed on ingest, "Parse now" is idempotent).
-  await page.getByRole('link', { name: 'Shows' }).click()
+  await page.getByRole('link', { name: /^Shows/ }).click()
   await page.getByRole('link', { name: /show|\d{4}/ }).first().click()
   // Jobs run inline in e2e, so ingest already parsed the show and the fake AI audit already ran:
   // lani808's "card declined" line was a confident, reversible finding and the AI applied it.
@@ -94,7 +94,7 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   await expect(page.locator('.table.small')).toContainText('ai supervisor')
 
   // Review: teach the app that "mystery box" is a red bundle.
-  await page.getByRole('link', { name: 'Review' }).click()
+  await page.getByRole('link', { name: /^Review/ }).click()
   await expect(page.locator('.review')).toHaveCount(1)
   const select = page.getByLabel(/SKU for review/)
   const redValue = await select.locator('option', { hasText: 'RED' }).getAttribute('value')

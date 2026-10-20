@@ -53,14 +53,14 @@ test('sales become orders; the payment file verifies them; the queue drives pick
   expect(res.ok()).toBe(true)
 
   // Two buyers → two open orders, nothing to fulfil yet.
-  await page.getByRole('link', { name: 'Orders' }).click()
+  await page.getByRole('link', { name: /^Orders/ }).click()
   await expect(page.getByText('Nothing to pick')).toBeVisible()
   await page.getByRole('tab', { name: 'Awaiting payment' }).click()
   await expect(page.getByTestId('order-lani808')).toContainText('3 · 1× RED, 2× RED')
   await expect(page.getByTestId('order-kat.c')).toContainText('1 · 1× RED')
 
   // Reconcile: lani808 paid, kat.c refunded.
-  await page.getByRole('link', { name: 'Shows' }).click()
+  await page.getByRole('link', { name: /^Shows/ }).click()
   await page.getByRole('link', { name: /show|\d{4}/ }).first().click()
   await page.getByRole('tab', { name: 'Payments' }).click()
   await page.getByTestId('reconcile-file').setInputFiles({
@@ -84,7 +84,7 @@ test('sales become orders; the payment file verifies them; the queue drives pick
   await expect(page.getByTestId('level-RED').locator('td').nth(3)).toHaveText('0')
 
   // Queue: lani808's order is verified; pick list shows 3 × RED; pick → pack → ship.
-  await page.getByRole('link', { name: 'Orders' }).click()
+  await page.getByRole('link', { name: /^Orders/ }).click()
   await expect(page.getByTestId('order-lani808')).toContainText('ready')
   await expect(page.getByTestId('order-kat.c')).toHaveCount(0)
   await page.getByRole('combobox', { name: 'Show' }).selectOption({ index: 1 })

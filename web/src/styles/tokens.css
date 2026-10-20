@@ -10,6 +10,8 @@
   --blue: #2f80ed;
   --amber: #d97706;
   --red: #dc2626;
+  --paid: #3f8f17;
+  --awaiting: #f2b33d;
 
   /* surfaces + ink */
   --bg: #f4f6fa;
@@ -48,7 +50,7 @@
   --font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font: 14px/1.5 var(--font-family);
   --motion: 160ms ease;
-  --sidebar-w: 232px;
+  --sidebar-w: 248px;
   --sidebar-w-compact: 64px;
   --content-max: 1440px;
 }

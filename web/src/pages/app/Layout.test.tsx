@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { AuthContext, type AuthState } from '../../auth/context'
 import { AppLayout } from './Layout'
@@ -16,8 +17,11 @@ const auth: AuthState = {
   logout: async () => {},
 }
 
-function mount(path = '/app') {
+function mount(path = '/app', counts = { openReviews: 0, toFulfil: 0, live: false }) {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(counts), { status: 200 })))
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
+    <QueryClientProvider client={qc}>
     <AuthContext.Provider value={auth}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
@@ -27,7 +31,8 @@ function mount(path = '/app') {
           </Route>
         </Routes>
       </MemoryRouter>
-    </AuthContext.Provider>,
+    </AuthContext.Provider>
+    </QueryClientProvider>,
   )
 }
 
@@ -72,4 +77,11 @@ test('mobile drawer opens from the top bar and closes after navigating or on Esc
   fireEvent.keyDown(window, { key: 'Escape' })
   expect(sidebar).not.toHaveClass('open')
   expect(document.body).not.toHaveClass('drawer-open')
+})
+
+test('badges: live show on Shows, counts on Orders and Review', async () => {
+  mount('/app', { openReviews: 6, toFulfil: 7, live: true })
+  expect(await screen.findByText('Live')).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: /Orders/ })).toHaveTextContent('Orders7')
+  expect(screen.getByRole('link', { name: /Review/ })).toHaveTextContent('Review6')
 })
