@@ -319,10 +319,18 @@ export interface TopSku {
   available: number
   sellThrough: number | null
 }
+export interface Attention {
+  openReviews: number
+  toFulfil: number
+  lowStock: number
+  unreconciledShows: { showId: number; date: string; pendingCents: number; openSales: number }[]
+  live: ShowTiles | null
+}
 export interface Overview {
   shows: ShowTiles[]
   totals: Record<string, number>
   topBuyers: TopBuyer[]
   topSkus: TopSku[]
   lowStock: { skuId: number; code: string; product: string; available: number }[]
+  attention: Attention
 }

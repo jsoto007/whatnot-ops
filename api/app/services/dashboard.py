@@ -217,22 +217,46 @@ def totals(rows: list[dict]) -> dict:
 
 def overview(org_id: int) -> dict:
     rows = shows_table(org_id)
+    low = _low_stock(org_id)
+    # Shows with money still on the table: sales reserved or detected, no payment file applied.
+    unreconciled = [
+        {
+            "showId": r["showId"],
+            "date": r["date"],
+            "pendingCents": r["revenuePendingCents"],
+            "openSales": r["orders"].get("open", 0),
+        }
+        for r in rows
+        if r["revenuePendingCents"] > 0 and not r["live"]
+    ]
     return {
         "shows": rows,
         "totals": totals(rows),
         "topBuyers": top_buyers(org_id),
         "topSkus": top_skus(org_id),
-        "lowStock": [
-            {"skuId": s.id, "code": s.code, "product": s.product.name, "available": s.available}
-            for s in db.session.scalars(
-                select(Sku)
-                .where(
-                    Sku.organization_id == org_id,
-                    Sku.active.is_(True),
-                    Sku.on_hand - Sku.reserved <= Sku.low_stock_at,
-                )
-                .order_by(Sku.code)
-                .limit(20)
-            )
-        ],
+        "lowStock": low,
+        "attention": {
+            "openReviews": sum(r["openReviews"] for r in rows),
+            "toFulfil": sum(r["toFulfil"] for r in rows),
+            "lowStock": len(low),
+            "unreconciledShows": unreconciled,
+            "live": next((r for r in rows if r["live"]), None),
+        },
     }
+
+
+def _low_stock(org_id: int) -> list[dict]:
+    rows = db.session.scalars(
+        select(Sku)
+        .where(
+            Sku.organization_id == org_id,
+            Sku.active.is_(True),
+            Sku.on_hand - Sku.reserved <= Sku.low_stock_at,
+        )
+        .order_by(Sku.code)
+        .limit(20)
+    )
+    return [
+        {"skuId": s.id, "code": s.code, "product": s.product.name, "available": s.available}
+        for s in rows
+    ]

@@ -54,18 +54,20 @@ test('dashboard tiles, show analytics and the Excel report agree', async ({ page
   expect(res.ok()).toBe(true)
 
   await page.getByRole('link', { name: 'Dashboard' }).click()
-  await expect(page.getByTestId('live-pill')).toContainText('4 messages')
+  await expect(page.getByTestId('live-card')).toContainText('4 messages')
   await expect(page.getByTestId('tile-items')).toContainText('3')
   await expect(page.getByTestId('tile-buyers')).toContainText('2')
-  await expect(page.getByTestId('tile-red')).toContainText('3')
-  await expect(page.getByTestId('tile-gifts')).toContainText('1')
-  await expect(page.getByTestId('tile-nopicks')).toContainText('1')
-  await expect(page.getByTestId('tile-paid')).toContainText('$75.00 awaiting payment')
-  await expect(page.getByTestId('shows-table')).toContainText('3')
+  await expect(page.getByTestId('tile-paid')).toContainText('$75.00 still awaiting payment')
+  await expect(page.getByTestId('attention-empty')).toBeVisible() // live show: nothing to reconcile yet, no reviews
+  await expect(page.getByTestId('shows-table')).toContainText('live')
   await expect(page.locator('.bars').first()).toContainText('lani808')
 
   await page.getByTestId('shows-table').getByRole('link').first().click()
   await expect(page.getByTestId('tile-items')).toContainText('3')
+  await expect(page.getByTestId('tile-red')).toContainText('3')
+  await expect(page.getByTestId('tile-gifts')).toContainText('1')
+  await expect(page.getByTestId('tile-nopicks')).toContainText('1')
+  await expect(page.getByTestId('status-bar')).toContainText('2 reserved')
   await page.getByRole('tab', { name: 'Analytics' }).click()
   await expect(page.locator('.bars').nth(1)).toContainText('75% sold through')
 

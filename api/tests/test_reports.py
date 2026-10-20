@@ -168,3 +168,12 @@ def test_report_routes_and_permissions(client, app, world):
     )
     assert pat.get(f"/api/reports/show/{world['show']}.xlsx").status_code == 403
     assert pat.get(f"/api/dashboard/shows/{world['show']}").status_code == 200
+
+
+def test_overview_attention_lists_what_needs_a_person(app, world):
+    seed(app, world)
+    with app.app_context():
+        a = dashboard.overview(world["org"])["attention"]
+    assert a["openReviews"] == 0 and a["toFulfil"] == 1 and a["lowStock"] == 0  # every line matched
+    assert a["live"] is not None and a["live"]["showId"] == world["show"]
+    assert a["unreconciledShows"] == []  # the live show is excluded; nothing else pending

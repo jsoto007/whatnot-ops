@@ -67,9 +67,11 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   // Jobs run inline in e2e, so ingest already parsed the show and the fake AI audit already ran:
   // lani808's "card declined" line was a confident, reversible finding and the AI applied it.
   await page.getByTestId('parse-now').click()
-  await expect(page.getByTestId('tile-items')).toContainText('1') // cardguy's; lani808 and pokemom are in the cancelled tile
-  await expect(page.getByTestId('tile-cancelled')).toContainText('2')
-  await expect(page.getByTestId('tile-review')).toContainText('1')
+  await expect(page.getByTestId('tile-items')).toContainText('1') // cardguy's; lani808 and pokemom are cancelled/failed
+  await expect(page.getByTestId('tile-items')).toContainText('2 cancelled or failed')
+  await expect(page.getByTestId('status-bar')).toContainText('1 cancelled')
+  await expect(page.getByTestId('status-bar')).toContainText('1 payment failed')
+  await expect(page.getByTestId('next-steps')).toContainText('1 line needs a decision')
 
   const sales = page.getByTestId('sales')
   await expect(sales.locator('tr', { hasText: 'lani808' })).toContainText('payment failed')
@@ -78,8 +80,8 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
 
   // Running the audit again proposes nothing new.
   await page.getByTestId('ai-audit').click()
-  await expect(page.getByTestId('tile-cancelled')).toContainText('2')
-  await expect(page.getByTestId('tile-review')).toContainText('1')
+  await expect(page.getByTestId('tile-items')).toContainText('2 cancelled or failed')
+  await expect(page.getByTestId('next-steps')).toContainText('1 line needs a decision')
 
   // Stock: nothing reserved (lani808 released by the AI, pokemom by the rules); 3 available.
   await page.getByRole('link', { name: 'Inventory' }).click()
@@ -98,7 +100,7 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   const redValue = await select.locator('option', { hasText: 'RED' }).getAttribute('value')
   await select.selectOption(redValue!)
   await page.getByRole('button', { name: 'Use this SKU' }).click()
-  await expect(page.getByText('Nothing waiting')).toBeVisible()
+  await expect(page.getByText('Nothing waiting', { exact: true })).toBeVisible()
   await page.getByRole('link', { name: 'Inventory' }).click()
   await expect(page.getByTestId('level-RED').locator('td').nth(3)).toHaveText('1')
   await page.getByRole('link', { name: 'Products' }).click()

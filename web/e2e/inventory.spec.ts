@@ -41,6 +41,7 @@ test('products, aliases, adjustments, history and sheet import', async ({ page }
   await expect(page.locator('.table.small')).toContainText('initial count')
 
   // Sheet import: preview first, nothing changes; then apply.
+  await page.getByTestId('toggle-import').click()
   await page.locator('input[type=file]').setInputFiles({
     name: 'sheet.csv',
     mimeType: 'text/csv',

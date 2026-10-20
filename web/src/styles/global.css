@@ -228,3 +228,55 @@ tr.low td { background: #fffbeb; }
 .bars td:last-child { width: 60%; }
 .bar-row { display: flex; align-items: center; gap: var(--space-2); }
 .bar { height: 10px; background: var(--navy-3); border-radius: 0 5px 5px 0; min-width: 2px; }
+
+/* ---------- intentional data display ---------- */
+.tiles.primary .tile .tile-label { margin: 0 0 2px; }
+.live-card { display: flex; align-items: center; gap: var(--space-4); text-decoration: none; color: inherit; margin-bottom: var(--space-4); border-left: 4px solid var(--green); }
+.live-card .live-stats { flex: 1; font-size: 14px; }
+.live-card .btn { margin-left: auto; }
+.dash-top { align-items: start; }
+.attention { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+.attn { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-m); padding: 10px 12px; box-shadow: var(--shadow); }
+.attn-icon { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+.attn-amber .attn-icon { background: var(--tint-amber); color: var(--tint-amber-ink); }
+.attn-blue .attn-icon { background: var(--tint-blue); color: var(--tint-blue-ink); }
+.attn-red .attn-icon { background: var(--tint-red); color: var(--tint-red-ink); }
+.attn-grey .attn-icon { background: var(--tint-grey); color: var(--tint-grey-ink); }
+.attn-text { flex: 1; font-size: 14px; }
+.attn .btn { margin-left: auto; }
+.statusbar { margin: var(--space-3) 0; padding: var(--space-3) var(--space-4); }
+.statusbar-track { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--tint-grey); gap: 2px; }
+.statusbar .seg, .statusbar .dot { background: var(--tint-grey-ink); }
+.statusbar .seg.fulfilled, .statusbar .dot.fulfilled { background: var(--green-dark); }
+.statusbar .seg.paid, .statusbar .dot.paid { background: var(--green); }
+.statusbar .seg.reserved, .statusbar .dot.reserved { background: var(--blue); }
+.statusbar .seg.detected, .statusbar .dot.detected { background: var(--amber); }
+.statusbar .seg.payment_failed, .statusbar .dot.payment_failed { background: #f08c8c; }
+.statusbar .seg.cancelled, .statusbar .dot.cancelled { background: var(--red); }
+.statusbar-legend { list-style: none; margin: var(--space-2) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; }
+.statusbar .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: 0; margin-right: 2px; }
+.next-steps { margin: var(--space-3) 0; border-left: 4px solid var(--amber); padding: var(--space-3) var(--space-4); }
+.next-steps ul { margin: 4px 0 0; padding-left: 18px; }
+.next-steps li { margin: 2px 0; }
+.tab-count { background: var(--tint-grey); color: var(--text-muted); border-radius: 999px; padding: 0 7px; font-size: 11px; margin-left: 6px; }
+.chips.filter .chip { cursor: pointer; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); font: 500 13px var(--font-family); padding: 5px 10px; }
+.chips.filter .chip.on { background: var(--navy-3); color: #fff; border-color: var(--navy-3); }
+.chips.filter .chip:disabled { opacity: .45; cursor: default; }
+.chip-n { opacity: .7; margin-left: 4px; }
+.sales-by-buyer tr.group-start td { border-top: 2px solid var(--border-strong); }
+.sales-by-buyer tbody tr:first-child td { border-top: 0; }
+code.sku { margin-left: 8px; }
+.avail { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+.avail-track { flex: 1; height: 8px; background: var(--tint-grey); border-radius: 4px; overflow: hidden; }
+.avail-fill { height: 100%; background: var(--green); border-radius: 4px; }
+.avail-fill.low { background: var(--amber); }
+.avail-fill.out { background: var(--red); }
+.order-items { color: var(--text-muted); font-size: 12.5px; }
+.order-items b { color: var(--text); }
+.review .actions { margin-left: auto; }
+@media (max-width: 900px) {
+  .live-card { flex-wrap: wrap; }
+  .live-card .btn { margin-left: 0; }
+  .attn { flex-wrap: wrap; }
+  .attn .btn { margin-left: 46px; }
+}

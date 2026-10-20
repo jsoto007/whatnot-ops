@@ -54,10 +54,10 @@ test('sales become orders; the payment file verifies them; the queue drives pick
 
   // Two buyers → two open orders, nothing to fulfil yet.
   await page.getByRole('link', { name: 'Orders' }).click()
-  await expect(page.getByText('Nothing to fulfil')).toBeVisible()
+  await expect(page.getByText('Nothing to pick')).toBeVisible()
   await page.getByRole('tab', { name: 'Awaiting payment' }).click()
-  await expect(page.getByTestId('order-lani808')).toContainText('3')
-  await expect(page.getByTestId('order-kat.c')).toContainText('1')
+  await expect(page.getByTestId('order-lani808')).toContainText('3 · 1× RED, 2× RED')
+  await expect(page.getByTestId('order-kat.c')).toContainText('1 · 1× RED')
 
   // Reconcile: lani808 paid, kat.c refunded.
   await page.getByRole('link', { name: 'Shows' }).click()
@@ -85,14 +85,15 @@ test('sales become orders; the payment file verifies them; the queue drives pick
 
   // Queue: lani808's order is verified; pick list shows 3 × RED; pick → pack → ship.
   await page.getByRole('link', { name: 'Orders' }).click()
-  await expect(page.getByTestId('order-lani808')).toContainText('paid')
+  await expect(page.getByTestId('order-lani808')).toContainText('ready')
   await expect(page.getByTestId('order-kat.c')).toHaveCount(0)
   await page.getByRole('combobox', { name: 'Show' }).selectOption({ index: 1 })
-  await page.getByRole('link', { name: 'Pick list' }).click()
+  await page.getByRole('link', { name: 'Pick list for this show' }).click()
   await expect(page.getByTestId('pick-list')).toContainText('RED')
   await expect(page.getByTestId('pick-list').locator('td').nth(2)).toHaveText('3')
   await page.goBack()
   await page.getByTestId('order-lani808').getByRole('button', { name: 'Start picking' }).click()
+  await page.getByRole('tab', { name: 'In progress' }).click()
   await expect(page.getByTestId('order-lani808')).toContainText('picking')
   await page.getByTestId('order-lani808').getByRole('link').click()
   await expect(page.getByTestId('packing-slip')).toContainText('all paid')
