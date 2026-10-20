@@ -134,3 +134,14 @@ class ChatMessage(db.Model):
     )
 
     show: Mapped[Show] = relationship(back_populates="messages")
+
+
+class RateLimit(db.Model):
+    """Fixed-window attempt counters (services/ratelimit.py). Shared by every gunicorn
+    worker because it lives in Postgres; rows older than a day are pruned."""
+
+    __tablename__ = "rate_limits"
+
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -3,7 +3,7 @@
 import secrets
 from functools import wraps
 
-from flask import g, jsonify, request, session
+from flask import current_app, g, jsonify, request, session
 
 from .db import db
 from .models import User
@@ -49,7 +49,7 @@ def set_csrf_cookie(resp, token: str):
         CSRF_COOKIE,
         token,
         samesite="Lax",
-        secure=request.is_secure,
+        secure=request.is_secure or current_app.config.get("APP_ENV") == "production",
         httponly=False,
         max_age=30 * 86400,
     )

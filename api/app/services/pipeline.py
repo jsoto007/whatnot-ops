@@ -55,8 +55,17 @@ def open_review(
     sale_id: int | None = None,
     proposal: dict | None = None,
     source: str = "rule",
+    dedupe: bool = True,
 ) -> ReviewItem:
-    """One open item per (reason, message/sale); re-processing does not pile up duplicates."""
+    """One open item per (reason, message/sale); re-processing does not pile up duplicates.
+
+    An item with neither a message nor a sale would match *every* such open item of the
+    reason ("sale_id IS NULL"), so callers that key on something else (reconcile: buyer +
+    item) pass dedupe=False and check for duplicates themselves."""
+    if not dedupe and not message_id and not sale_id:
+        return _new_review(
+            org_id, reason, summary, show_id, message_id, event_id, sale_id, proposal, source
+        )
     q = select(ReviewItem).where(
         ReviewItem.organization_id == org_id,
         ReviewItem.reason == reason,
@@ -70,6 +79,12 @@ def open_review(
     existing = db.session.scalar(q)
     if existing is not None:
         return existing
+    return _new_review(
+        org_id, reason, summary, show_id, message_id, event_id, sale_id, proposal, source
+    )
+
+
+def _new_review(org_id, reason, summary, show_id, message_id, event_id, sale_id, proposal, source):
     item = ReviewItem(
         organization_id=org_id,
         show_id=show_id,
@@ -221,6 +236,14 @@ def set_sale_status(
     """The one place a sale changes state; moves inventory accordingly."""
     if sale.status == new_status:
         return sale
+    if new_status in (SaleStatus.detected, SaleStatus.reserved):
+        # Going backwards would need a fresh reservation; the ledger keys reserves by sale
+        # id, so re-reserving would silently move nothing. Refuse rather than drift.
+        raise ReviewError(
+            f"sale {sale.id} is {sale.status.value}; it cannot be moved back to "
+            f"{new_status.value}. Record a new sale instead.",
+            409,
+        )
     if new_status in (SaleStatus.cancelled, SaleStatus.payment_failed):
         if sale.status is SaleStatus.reserved:
             inventory.release(
@@ -314,7 +337,10 @@ def process_show(show_id: int, *, reparse: bool = False, host: str | None = None
         db.session.flush()
         stats.parsed += 1
         if c.kind is EventKind.listing:
-            current_listing = c.item
+            # Only the host or the platform announces what is up next; a viewer typing
+            # "Now selling - <expensive item>" must not decide what the next win was.
+            if c.confidence >= 0.8:
+                current_listing = c.item
         elif c.kind is EventKind.sale:
             if not ev.item_text and current_listing:
                 ev.item_text = current_listing

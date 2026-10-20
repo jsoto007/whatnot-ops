@@ -19,7 +19,8 @@ from .dashboard import STANDING  # same definition of "sold" as the dashboard
 from .inventory import Actor, InventoryError
 
 MAX_QTY = 100_000
-_ID = re.compile(r"^[A-Za-z0-9_-]{6,40}$")
+# No "_" or "%": the id is used as a LIKE prefix (`<id>:%`) when checking for replays.
+_ID = re.compile(r"^[A-Za-z0-9-]{6,40}$")
 
 
 def _client_id(value) -> str:

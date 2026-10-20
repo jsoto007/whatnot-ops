@@ -1,4 +1,5 @@
 import type { CapturedRow } from '../capture/types'
+import { clampRow, clampUrl } from './limits'
 import type { Settings } from './settings'
 
 export const BATCH_MAX = 200
@@ -18,13 +19,15 @@ export interface UploadStore {
   pendingRows(limit: number): Promise<CapturedRow[]>
   pendingCount(): Promise<number>
   markUploaded(ids: string[]): Promise<void>
+  /** Set rows aside for good: the server rejected their batch. */
+  markParked(ids: string[]): Promise<void>
   show: ShowLookup
 }
 
 export type UploadOutcome =
   | { status: 'idle' }
   | { status: 'unconfigured' }
-  | { status: 'sent'; sent: number; remaining: number }
+  | { status: 'sent'; sent: number; remaining: number; parked?: number; detail?: string }
   | { status: 'auth' }
   | { status: 'rejected'; detail: string }
   | { status: 'offline'; detail: string }
@@ -50,18 +53,31 @@ export async function uploadOnce(
   const byShow = new Map<string, CapturedRow[]>()
   for (const r of rows) (byShow.get(r.showId) ?? byShow.set(r.showId, []).get(r.showId)!).push(r)
   let sent = 0
+  let parked = 0
+  let detail: string | undefined
   for (const [showId, showRows] of byShow) {
     const meta = await store.show(showId)
+    const url = clampUrl(meta?.url)
     const batch: ChatEventBatch = {
       version: 1,
-      show: { id: showId, startedAt: meta?.startedAt ?? showId, ...(meta?.url ? { url: meta.url } : {}) },
-      rows: showRows,
+      show: { id: showId, startedAt: meta?.startedAt ?? showId, ...(url ? { url } : {}) },
+      rows: showRows.map(clampRow),
     }
-    await postBatch(settings, batch, fetchFn)
+    try {
+      await postBatch(settings, batch, fetchFn)
+    } catch (err) {
+      // A batch the server refuses would be refused forever: set it aside and keep
+      // the queue moving. Auth and network problems still stop the flush.
+      if (!(err instanceof UploadError) || err.kind !== 'rejected') throw err
+      await store.markParked(showRows.map((r) => r.id))
+      parked += showRows.length
+      detail = err.message
+      continue
+    }
     await store.markUploaded(showRows.map((r) => r.id))
     sent += showRows.length
   }
-  return { status: 'sent', sent, remaining: await store.pendingCount() }
+  return { status: 'sent', sent, remaining: await store.pendingCount(), ...(parked ? { parked, detail } : {}) }
 }
 
 export async function postBatch(settings: Settings, batch: ChatEventBatch, fetchFn: typeof fetch = fetch): Promise<void> {
@@ -69,6 +85,7 @@ export async function postBatch(settings: Settings, batch: ChatEventBatch, fetch
   try {
     res = await fetchFn(settings.serverUrl + '/api/ingest', {
       method: 'POST',
+      redirect: 'error',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + settings.apiKey },
       body: JSON.stringify(batch),
     })
@@ -81,7 +98,7 @@ export async function postBatch(settings: Settings, batch: ChatEventBatch, fetch
     let detail = `${res.status}`
     try {
       const j = (await res.json()) as { error?: string; details?: string[] }
-      detail = [j.error, ...(j.details ?? [])].filter(Boolean).join('; ') || detail
+      detail = [j.error, ...(j.details ?? [])].filter(Boolean).join('; ').slice(0, 300) || detail
     } catch {
       /* not JSON */
     }
@@ -93,7 +110,7 @@ export async function postBatch(settings: Settings, batch: ChatEventBatch, fetch
 export async function ping(settings: Settings, fetchFn: typeof fetch = fetch): Promise<{ ok: true; device: string; organization: string }> {
   let res: Response
   try {
-    res = await fetchFn(settings.serverUrl + '/api/ingest/ping', { headers: { Authorization: 'Bearer ' + settings.apiKey } })
+    res = await fetchFn(settings.serverUrl + '/api/ingest/ping', { redirect: 'error', headers: { Authorization: 'Bearer ' + settings.apiKey } })
   } catch (err) {
     throw new UploadError('offline', (err as Error).message || 'network error')
   }
@@ -112,6 +129,7 @@ export async function pairDevice(
   try {
     res = await fetchFn(serverUrl + '/api/pair', {
       method: 'POST',
+      redirect: 'error',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: code.trim() }),
     })
@@ -126,6 +144,20 @@ export async function pairDevice(
     /* not JSON: keep the status */
   }
   throw new UploadError(res.status >= 500 ? 'offline' : 'rejected', detail)
+}
+
+/** Tell the server this laptop is disconnecting: it revokes the key. Best effort. */
+export async function revokeDevice(settings: Settings, fetchFn: typeof fetch = fetch): Promise<boolean> {
+  try {
+    const res = await fetchFn(settings.serverUrl + '/api/ingest/disconnect', {
+      method: 'POST',
+      redirect: 'error',
+      headers: { Authorization: 'Bearer ' + settings.apiKey },
+    })
+    return res.ok
+  } catch {
+    return false
+  }
 }
 
 /** Exponential backoff in seconds: 5, 10, 20 … capped at 5 minutes. */

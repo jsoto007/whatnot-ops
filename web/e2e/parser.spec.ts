@@ -41,6 +41,11 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
 
   // A device key, then "the extension" posts a batch through the real ingest API.
   const key = await connectLaptop(page, request)
+  // The host's own lines are the ones the shop (and the AI) may act on.
+  await page.getByRole('link', { name: 'Settings' }).click()
+  await page.getByLabel('Your Whatnot username (the host)').fill('shop_host')
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(page.getByLabel('Your Whatnot username (the host)')).toHaveValue('shop_host')
   const batch = {
     version: 1,
     show: { id: SHOW, startedAt: SHOW },
@@ -52,7 +57,7 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
       row(5, '', 'cardguy bought mystery box for $10'),
       row(6, 'cardguy', 'thanks!'),
       row(7, '', 'Cancelled for pokemom_22'),
-      row(8, 'lani808', 'please cancel mine, card declined'), // not a host line: only the AI audit acts on it
+      row(8, 'shop_host', 'lani808 card declined, relisting'), // host line the rules miss: the AI audit acts on it
     ],
   }
   const res = await request.post('/api/ingest', { data: batch, headers: { Authorization: 'Bearer ' + key } })
@@ -62,7 +67,8 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   await page.getByRole('link', { name: /^Shows/ }).click()
   await page.getByRole('link', { name: /show|\d{4}/ }).first().click()
   // Jobs run inline in e2e, so ingest already parsed the show and the fake AI audit already ran:
-  // lani808's "card declined" line was a confident, reversible finding and the AI applied it.
+  // the host's "card declined" line was a confident, reversible finding the AI could tie to the
+  // host, so it applied it (a buyer or viewer line alone would only become a proposal).
   await page.getByTestId('parse-now').click()
   await expect(page.getByTestId('tile-items')).toContainText('1') // cardguy's; lani808 and pokemom are cancelled/failed
   await expect(page.getByTestId('tile-items')).toContainText('2 cancelled or failed')

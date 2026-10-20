@@ -11,7 +11,8 @@ export default defineConfig({
     strictPort: true,
     proxy: { '/api': 'http://localhost:5050' },
   },
-  build: { outDir: 'dist', sourcemap: true },
+  // No public source maps: Flask serves dist/ to anyone (api/app/spa.py also refuses *.map).
+  build: { outDir: 'dist', sourcemap: false },
   test: {
     environment: 'jsdom',
     globals: true,

@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import type { CapturedRow } from '../src/capture/types'
 import { validateBatch } from '../src/upload/schema'
+import { LIMITS } from '../src/upload/limits'
 import { normaliseUrl } from '../src/upload/settings'
 import { BATCH_MAX, UploadError, backoffSeconds, pairDevice, postBatch, uploadOnce, type UploadStore } from '../src/upload/uploader'
 
@@ -33,14 +34,17 @@ function row(showId: string, seq: number): CapturedRow {
   }
 }
 
-function memoryStore(rows: CapturedRow[]): UploadStore & { uploaded: Set<string> } {
+function memoryStore(rows: CapturedRow[]): UploadStore & { uploaded: Set<string>; parked: Set<string> } {
   const uploaded = new Set<string>()
-  const pending = () => rows.filter((r) => !uploaded.has(r.id))
+  const parked = new Set<string>()
+  const pending = () => rows.filter((r) => !uploaded.has(r.id) && !parked.has(r.id))
   return {
     uploaded,
+    parked,
     pendingRows: async (limit) => pending().slice(0, limit),
     pendingCount: async () => pending().length,
     markUploaded: async (ids) => ids.forEach((id) => uploaded.add(id)),
+    markParked: async (ids) => ids.forEach((id) => parked.add(id)),
     show: async (id) => ({ startedAt: id, url: '/live/x' }),
   }
 }
@@ -99,6 +103,35 @@ describe('uploadOnce', () => {
     })
     expect(new UploadError('offline', 'x').kind).toBe('offline')
   })
+
+  it('sets a refused batch aside and keeps sending the other shows', async () => {
+    const A = '2026-10-18T20:00:00.000Z'
+    const B = '2026-10-19T20:00:00.000Z'
+    const store = memoryStore([row(A, 1), row(A, 2), row(B, 1)])
+    const fetchFn = vi.fn(async (_u: string, init: RequestInit) =>
+      JSON.parse(String(init.body)).show.id === A ? new Response(JSON.stringify({ error: 'invalid batch' }), { status: 400 }) : ok(),
+    )
+    const out = await uploadOnce(store, settings, fetchFn as unknown as typeof fetch)
+    expect(out).toEqual({ status: 'sent', sent: 1, remaining: 0, parked: 2, detail: 'invalid batch' })
+    expect([...store.parked].sort()).toEqual([row(A, 1).id, row(A, 2).id].sort())
+    // Nothing is pending any more, so the next flush does not re-send the refused rows.
+    expect(await uploadOnce(store, settings, fetchFn as unknown as typeof fetch)).toEqual({ status: 'idle' })
+  })
+
+  it('cuts oversized rows to the server limits and refuses redirects', async () => {
+    const big = { ...row(S, 1), username: 'u'.repeat(200), body: 'b'.repeat(9000), rawText: 'r'.repeat(9000) }
+    const store = memoryStore([big])
+    store.show = async () => ({ startedAt: S, url: 'https://whatnot.com/' + 'x'.repeat(600) })
+    const fetchFn = vi.fn(async () => ok())
+    await uploadOnce(store, settings, fetchFn)
+    const init = (fetchFn.mock.calls[0]! as unknown as [string, RequestInit])[1]
+    expect(init.redirect).toBe('error')
+    const body = JSON.parse(init.body as string)
+    expect(validateBatch(body)).toEqual({ ok: true })
+    expect(body.rows[0].username).toHaveLength(LIMITS.username)
+    expect(body.rows[0].rawText).toHaveLength(LIMITS.rawText)
+    expect(body.show.url).toBeUndefined()
+  })
 })
 
 describe('pairDevice', () => {
@@ -133,22 +166,67 @@ describe('helpers', () => {
   })
 })
 
-describe('loadSettings default server url', () => {
-  const storage = (vals: Record<string, string>) => ({ get: async () => vals }) as unknown as typeof chrome.storage.local
+function memoryKv() {
+  const m = new Map<string, unknown>()
+  return { m, get: async <T,>(k: string) => m.get(k) as T | undefined, set: async (k: string, v: unknown) => void m.set(k, v), del: async (k: string) => void m.delete(k) }
+}
+
+describe('serverOrigin', () => {
+  it('accepts https and localhost http, keeps only the origin', async () => {
+    const { serverOrigin } = await import('../src/upload/settings')
+    expect(serverOrigin(' https://ops.example.com/app/ ')).toBe('https://ops.example.com')
+    expect(serverOrigin('http://127.0.0.1:5056/')).toBe('http://127.0.0.1:5056')
+    expect(serverOrigin('http://localhost:5050')).toBe('http://localhost:5050')
+    expect(serverOrigin('')).toBe('')
+  })
+  it('refuses plain http, other schemes, credentials and junk', async () => {
+    const { serverOrigin } = await import('../src/upload/settings')
+    expect(() => serverOrigin('http://ops.example.com')).toThrow(/https/)
+    expect(() => serverOrigin('ftp://ops.example.com')).toThrow(/https/)
+    expect(() => serverOrigin('javascript:alert(1)')).toThrow()
+    expect(() => serverOrigin('https://user:pw@ops.example.com')).toThrow(/password/)
+    expect(() => serverOrigin('not a url')).toThrow(/web address/)
+  })
+})
+
+describe('loadSettings', () => {
+  const storage = (vals: Record<string, string>) => {
+    const removed: string[] = []
+    return Object.assign({ get: async () => vals, remove: async (k: string) => void removed.push(k) }, { removed }) as unknown as typeof chrome.storage.local & { removed: string[] }
+  }
   beforeEach(() => {
     vi.stubGlobal('chrome', { runtime: { getURL: (p: string) => 'chrome-extension://x/' + p } })
   })
-  it('uses the baked-in default when nothing is saved', async () => {
+  const noDefaults = vi.fn(async () => {
+    throw new Error('404')
+  })
+  it('uses the baked-in default when nothing is saved, but never an http one', async () => {
     const { loadSettings } = await import('../src/upload/settings')
     const fetchFn = vi.fn(async () => new Response(JSON.stringify({ serverUrl: 'https://ops.test/' }), { status: 200 }))
-    expect(await loadSettings(storage({}), fetchFn)).toEqual({ serverUrl: 'https://ops.test', apiKey: '' })
+    expect(await loadSettings(storage({}), fetchFn, memoryKv())).toEqual({ serverUrl: 'https://ops.test', apiKey: '' })
+    const plain = vi.fn(async () => new Response(JSON.stringify({ serverUrl: 'http://ops.test' }), { status: 200 }))
+    expect(await loadSettings(storage({}), plain, memoryKv())).toEqual({ serverUrl: '', apiKey: '' })
   })
-  it('prefers what the laptop saved and survives a missing defaults file', async () => {
-    const { loadSettings } = await import('../src/upload/settings')
-    const fetchFn = vi.fn(async () => {
-      throw new Error('404')
-    })
-    expect(await loadSettings(storage({ cs_server_url: 'https://mine.test', cs_api_key: 'k' }), fetchFn)).toEqual({ serverUrl: 'https://mine.test', apiKey: 'k' })
-    expect(await loadSettings(storage({}), fetchFn)).toEqual({ serverUrl: '', apiKey: '' })
+  it('moves a key from chrome.storage.local into IndexedDB, bound to its server', async () => {
+    const { loadSettings, KV_CONNECTION } = await import('../src/upload/settings')
+    const kv = memoryKv()
+    const st = storage({ cs_server_url: 'https://mine.test', cs_api_key: 'k' })
+    expect(await loadSettings(st, noDefaults, kv)).toEqual({ serverUrl: 'https://mine.test', apiKey: 'k' })
+    expect(st.removed).toEqual(['cs_api_key'])
+    expect(kv.m.get(KV_CONNECTION)).toEqual({ apiKey: 'k', origin: 'https://mine.test' })
+  })
+  it('never hands the key to a different server than the one it was issued for', async () => {
+    const { loadSettings, saveConnection } = await import('../src/upload/settings')
+    const kv = memoryKv()
+    await saveConnection({ apiKey: 'k', origin: 'https://mine.test', organization: 'Shop' }, kv)
+    expect((await loadSettings(storage({ cs_server_url: 'https://mine.test' }), noDefaults, kv)).apiKey).toBe('k')
+    expect(await loadSettings(storage({ cs_server_url: 'https://evil.test' }), noDefaults, kv)).toEqual({ serverUrl: 'https://evil.test', apiKey: '' })
+  })
+  it('says when the laptop is connected to a different shop than before', async () => {
+    const { saveConnection } = await import('../src/upload/settings')
+    const kv = memoryKv()
+    expect(await saveConnection({ apiKey: 'a', origin: 'https://x.test', organization: 'Shop A' }, kv)).toBe(false)
+    expect(await saveConnection({ apiKey: 'b', origin: 'https://x.test', organization: 'Shop A' }, kv)).toBe(false)
+    expect(await saveConnection({ apiKey: 'c', origin: 'https://x.test', organization: 'Shop B' }, kv)).toBe(true)
   })
 })

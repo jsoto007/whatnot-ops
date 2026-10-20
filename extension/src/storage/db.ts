@@ -6,8 +6,12 @@ import { showDate } from '../shared/showDate'
 export const DB_NAME = 'chat-scraper'
 export const MAX_SHOWS = 30
 
-/** A row as stored: `uploaded` is 0 until the API accepted it (IndexedDB cannot index booleans). */
-export type StoredRow = CapturedRow & { uploaded: 0 | 1 }
+/**
+ * A row as stored. `uploaded`: 0 pending, 1 accepted by the API, 2 set aside
+ * (the server rejected its batch, or it was captured for a different shop than
+ * the one this laptop is connected to now). IndexedDB cannot index booleans.
+ */
+export type StoredRow = CapturedRow & { uploaded: 0 | 1 | 2 }
 
 interface CsDB extends DBSchema {
   shows: { key: string; value: ShowMeta; indexes: { 'by-started': string } }
@@ -116,6 +120,37 @@ export async function markUploaded(ids: string[]): Promise<void> {
     if (r && !r.uploaded) await tx.store.put({ ...r, uploaded: 1 })
   }
   await tx.done
+}
+
+/** Never retried: their batch was rejected, so they must not block the queue. */
+export async function markParked(ids: string[]): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction('rows', 'readwrite')
+  for (const id of ids) {
+    const r = await tx.store.get(id)
+    if (r && r.uploaded === 0) await tx.store.put({ ...r, uploaded: 2 })
+  }
+  await tx.done
+}
+
+/** Set every pending row aside (the laptop moved to another shop). Returns how many. */
+export async function parkAllPending(): Promise<number> {
+  const db = await getDb()
+  const tx = db.transaction('rows', 'readwrite')
+  let n = 0
+  let cur = await tx.store.index('by-uploaded').openCursor(pendingRange)
+  while (cur) {
+    await cur.update({ ...cur.value, uploaded: 2 })
+    n++
+    cur = await cur.continue()
+  }
+  await tx.done
+  return n
+}
+
+export async function parkedCount(): Promise<number> {
+  const db = await getDb()
+  return db.countFromIndex('rows', 'by-uploaded', IDBKeyRange.bound([2, '', 0], [2, '\uffff', Number.MAX_SAFE_INTEGER]))
 }
 
 export async function getShow(showId: string): Promise<ShowMeta | undefined> {

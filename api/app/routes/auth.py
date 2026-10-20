@@ -12,15 +12,16 @@ from ..auth import (
     set_csrf_cookie,
     start_session,
 )
+from ..config import is_dev
 from ..models import Role
-from ..services import accounts, mail
+from ..services import accounts, mail, ratelimit
 from ..services.accounts import AccountError
 
 bp = Blueprint("auth", __name__)
 
 
 def _dev_links_allowed() -> bool:
-    return not mail.configured() and current_app.config.get("APP_ENV") != "production"
+    return not mail.configured() and is_dev(current_app.config.get("APP_ENV"))
 
 
 @bp.before_request
@@ -54,16 +55,26 @@ def me():
     if user is None:
         open_, admin_only = accounts.signup_state()
         return jsonify(
-            {"error": "not signed in", "signupsOpen": open_, "signupAdminOnly": admin_only}
+            {
+                "error": "not signed in",
+                "signupsOpen": open_,
+                "signupAdminOnly": admin_only,
+                "setupCodeRequired": open_ and accounts.setup_code_required(),
+            }
         ), 401
     return jsonify(serializers.me(user))
 
 
 @bp.post("/signup")
 def signup():
+    ratelimit.per_ip("signup", 10, 3600)
     d = request.get_json(silent=True) or {}
     user = accounts.signup(
-        d.get("organization", ""), d.get("name", ""), d.get("email", ""), d.get("password", "")
+        d.get("organization", ""),
+        d.get("name", ""),
+        d.get("email", ""),
+        d.get("password", ""),
+        setup_code=d.get("setupCode"),
     )
     start_session(user)
     return jsonify(serializers.me(user)), 201
@@ -71,8 +82,9 @@ def signup():
 
 @bp.post("/login")
 def login():
+    ratelimit.per_ip("login", 30, 600)
     d = request.get_json(silent=True) or {}
-    user = accounts.login(d.get("email", ""), d.get("password", ""))
+    user = accounts.login(d.get("email", ""), d.get("password", ""), ip=ratelimit.client_ip())
     start_session(user)
     return jsonify(serializers.me(user))
 
@@ -80,6 +92,7 @@ def login():
 @bp.post("/logout")
 @require()
 def logout():
+    accounts.logout(g.u)
     end_session()
     return ("", 204)
 
@@ -102,6 +115,7 @@ def invite_info(token: str):
 
 @bp.post("/invites/accept")
 def accept_invite():
+    ratelimit.per_ip("invite-accept", 20, 600)
     d = request.get_json(silent=True) or {}
     user = accounts.accept_invite(d.get("token", ""), d.get("name", ""), d.get("password", ""))
     start_session(user)
@@ -110,6 +124,7 @@ def accept_invite():
 
 @bp.post("/password/forgot")
 def forgot():
+    ratelimit.per_ip("forgot", 10, 900)
     d = request.get_json(silent=True) or {}
     token = accounts.request_password_reset(d.get("email", ""))
     body: dict = {"ok": True}
@@ -120,6 +135,7 @@ def forgot():
 
 @bp.post("/password/reset")
 def reset():
+    ratelimit.per_ip("reset", 20, 600)
     d = request.get_json(silent=True) or {}
     user = accounts.reset_password(d.get("token", ""), d.get("password", ""))
     start_session(user)

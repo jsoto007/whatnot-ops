@@ -1,8 +1,11 @@
 """What the AI may do on its own. Everything else becomes a review item.
 
 A proposal is auto-applied only when (a) its confidence reaches the threshold
-for that action and (b) the action is reversible through the ledger. Marking
-a sale paid is never automatic: payment truth comes from reconciliation.
+for that action, (b) the action is reversible through the ledger, and (c) the
+supervisor can tie it to a line from the host or the platform (see
+supervisor._corroborated / _authoritative). Chat is typed by anyone watching,
+so the model's confidence alone is never enough. Marking a sale paid is never
+automatic: payment truth comes from reconciliation.
 """
 
 AUTO_APPLY: dict[str, float] = {

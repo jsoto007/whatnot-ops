@@ -3,6 +3,7 @@ from sqlalchemy import select
 
 from .. import serializers
 from ..auth import require
+from ..config import is_dev
 from ..db import db
 from ..models import Invite, Role, User
 from ..services import accounts, mail
@@ -49,7 +50,7 @@ def create_invite():
     d = request.get_json(silent=True) or {}
     invite, token = accounts.create_invite(g.u, d.get("email", ""), _role(d.get("role", "")))
     body = {"invite": serializers.invite(invite), "emailSent": mail.configured()}
-    if not mail.configured() and current_app.config.get("APP_ENV") != "production":
+    if not mail.configured() and is_dev(current_app.config.get("APP_ENV")):
         body["acceptUrl"] = accounts.app_url("/invite/" + token)
     return jsonify(body), 201
 

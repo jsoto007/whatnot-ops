@@ -110,7 +110,7 @@ def register(app):
             email=DEMO_OWNER,
             name="Olive Owner",
             role=Role.owner,
-            password_hash=accounts._ph.hash(DEMO_PASSWORD),
+            password_hash=accounts.hash_password(DEMO_PASSWORD),
             session_token=secrets.token_hex(16),
         )
         viewer = User(
@@ -118,7 +118,7 @@ def register(app):
             email=DEMO_VIEWER,
             name="Vic Viewer",
             role=Role.viewer,
-            password_hash=accounts._ph.hash(DEMO_PASSWORD),
+            password_hash=accounts.hash_password(DEMO_PASSWORD),
             session_token=secrets.token_hex(16),
         )
         db.session.add_all([owner, viewer])

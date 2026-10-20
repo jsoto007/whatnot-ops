@@ -15,11 +15,17 @@ export type Request =
   | { cmd: 'openOptions' }
   | { cmd: 'getUploadStatus' }
   | { cmd: 'flushUploads' }
+  /** extension pages only: the connection changed (paired, key saved, disconnected) */
+  | { cmd: 'settingsChanged' }
+  /** extension pages only: a different shop was connected; set unsent rows aside */
+  | { cmd: 'parkPending' }
 
 export interface UploadStatus {
   configured: boolean
   pending: number
   uploaded: number
+  /** Rows set aside: rejected by the server, or captured for another shop. Never sent. */
+  parked: number
   lastError?: string
   lastSentAt?: number
 }

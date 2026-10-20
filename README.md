@@ -41,8 +41,9 @@ make smoke BASE_URL=https://…   # health, SPA, fallback and 404 checks against
 ## Accounts
 
 The shop's admin is named by the `ADMIN_EMAIL` environment variable. Only
-that email can create the shop on `/signup`, and only once; everyone else
-joins by invite. That account is always an owner: nobody can demote or
+that email can create the shop on `/signup`, only once, and (in production)
+only with the one-time setup code from the `SETUP_TOKEN` environment
+variable; everyone else joins by invite. That account is always an owner: nobody can demote or
 disable it in the app, and logging in restores it if the database says
 otherwise (`api/app/services/admin.py`). Without `ADMIN_EMAIL`, production
 never opens sign-up; development and tests stay open. Owners invite the team

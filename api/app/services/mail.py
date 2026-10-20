@@ -29,9 +29,8 @@ def send(msg: Message, *, post=None) -> bool:
     """Returns True when handed to Mailgun, False when only logged."""
     post = post or requests.post  # resolved at call time so tests can patch requests.post
     if not configured():
-        log.info(
-            "EMAIL (not sent, Mailgun unset) to=%s subject=%r\n%s", msg.to, msg.subject, msg.text
-        )
+        # Never the body: invite and reset emails carry working one-time links.
+        log.warning("EMAIL not sent (Mailgun unset) to=%s subject=%r", msg.to, msg.subject)
         return False
     domain = os.environ["MAILGUN_DOMAIN"]
     base = os.environ.get("MAILGUN_API_BASE", "https://api.mailgun.net/v3")

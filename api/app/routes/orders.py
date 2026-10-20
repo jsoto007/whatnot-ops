@@ -45,8 +45,11 @@ def list_orders():
     status = request.args.get("status")
     if status == "queue":
         q = q.where(Order.status.in_((OrderStatus.paid, OrderStatus.picking, OrderStatus.packed)))
-    elif status:
-        q = q.where(Order.status == OrderStatus(status))
+    elif status and status != "all":
+        try:
+            q = q.where(Order.status == OrderStatus(status))
+        except ValueError:
+            return jsonify({"error": f"unknown status {status!r}"}), 400
     if show_id := request.args.get("show", type=int):
         q = q.where(Order.show_id == show_id)
     if buyer := (request.args.get("buyer") or "").strip().lower():
@@ -97,10 +100,21 @@ def update_order(order_id: int):
     if o is None:
         return jsonify({"error": "order not found"}), 404
     d = request.get_json(silent=True) or {}
+    before = {"notes": o.notes, "tracking": o.tracking}
     if "notes" in d:
-        o.notes = (d.get("notes") or "").strip() or None
+        v = d.get("notes")
+        o.notes = (v.strip()[:2000] or None) if isinstance(v, str) else None
     if "tracking" in d:
-        o.tracking = (d.get("tracking") or "").strip() or None
+        v = d.get("tracking")
+        o.tracking = (v.strip()[:120] or None) if isinstance(v, str) else None
+    audit.record(
+        g.u.organization_id,
+        "order.updated",
+        user=g.u,
+        target_type="order",
+        target_id=o.id,
+        details={"before": before, "after": {"notes": o.notes, "tracking": o.tracking}},
+    )
     db.session.commit()
     return jsonify({"order": serializers.order(o)})
 
