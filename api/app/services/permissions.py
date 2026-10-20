@@ -18,6 +18,7 @@ PERMISSIONS: dict[str, frozenset[Role]] = {
     "inventory.write": MANAGERS,
     "orders.view": ALL,
     "orders.fulfill": frozenset({Role.owner, Role.manager, Role.fulfillment}),
+    "orders.reconcile": MANAGERS,  # importing payment records changes stock (commit)
     "review.act": MANAGERS,
     "reports.view": frozenset({Role.owner, Role.manager, Role.viewer}),
 }

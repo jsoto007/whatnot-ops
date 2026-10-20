@@ -74,6 +74,11 @@ commands.
 - **Migrations.** `flask db migrate` prints the generated path — rename
   *that* file (never `ls -t`), and when a downgrade drops tables that use
   Postgres enums, drop the enum types too (see 0004).
+- **Orders** derive `open / paid / cancelled` from their sales
+  (`services/orders.refresh()`), and only `advance()` moves them through
+  fulfilment, which requires every item paid. Payment comes only from
+  `services/reconcile.py` (the Seller Hub CSV) or a person in Review; chat
+  never marks anything paid.
 - **AI** only proposes. Providers implement `ai/base.py::AiProvider` and are
   chosen by `AI_PROVIDER` (`claude` via the official `anthropic` SDK with
   `output_config.format` structured output, `jev`, `fake` for tests). What may

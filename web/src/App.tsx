@@ -8,6 +8,7 @@ import { Forgot, Reset } from './pages/Password'
 import { Signup } from './pages/Signup'
 import { Inventory } from './pages/app/Inventory'
 import { AppLayout } from './pages/app/Layout'
+import { OrderDetail, Orders, PickList } from './pages/app/Orders'
 import { Placeholder } from './pages/app/Placeholder'
 import { Products } from './pages/app/Products'
 import { Settings } from './pages/app/Settings'
@@ -69,7 +70,9 @@ export function App() {
               <Route index element={<Navigate to="/app/shows" replace />} />
               <Route path="shows" element={<Shows />} />
               <Route path="shows/:id" element={<ShowDetail />} />
-              <Route path="orders" element={<Placeholder title="Orders" phase={7} />} />
+              <Route path="orders" element={<Orders />} />
+              <Route path="orders/pick-list/:showId" element={<PickList />} />
+              <Route path="orders/:id" element={<OrderDetail />} />
               <Route path="inventory" element={<Inventory />} />
               <Route path="products" element={<Products />} />
               <Route element={<RequirePermission permission="review.act" />}>
