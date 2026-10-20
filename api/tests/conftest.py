@@ -19,6 +19,7 @@ TABLES = [
     "users",
     "chat_messages",
     "shows",
+    "rate_limits",
     "device_pairings",
     "devices",
     "organizations",

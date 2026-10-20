@@ -11,6 +11,7 @@ import csv
 import io
 import re
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from sqlalchemy import select
 
@@ -22,7 +23,10 @@ from .inventory import Actor
 BUYER_COLS = ("buyer", "username", "buyer username", "customer", "user", "buyer name")
 ITEM_COLS = ("product", "item", "listing", "title", "product name", "listing title")
 QTY_COLS = ("quantity", "qty")
-PRICE_COLS = ("sold price", "price", "total", "amount", "sale price")
+# A unit price fills Sale.price_cents (which is per unit) directly; a line total only when it
+# divides exactly by the quantity.
+PRICE_COLS = ("sold price", "price", "sale price", "unit price")
+TOTAL_COLS = ("total", "amount", "order total", "line total")
 STATUS_COLS = ("status", "order status", "payment status")
 ORDER_COLS = ("order id", "order #", "order number", "order")
 PAID = re.compile(r"paid|complete|success|shipped|fulfilled|delivered", re.I)
@@ -71,9 +75,39 @@ def _col(header: list[str], names: tuple[str, ...]) -> int | None:
     return None
 
 
+MAX_CENTS = 10_000_000  # $100,000 per item: anything larger is a misread, and int4-safe
+_CURRENCY = re.compile(r"(?i)usd|cad|aud|eur|gbp|us\$|[$€£¥]")
+
+
 def _cents(s: str) -> int | None:
-    m = re.search(r"-?\d+(?:[.,]\d{1,2})?", s or "")
-    return int(round(float(m.group().replace(",", ".")) * 100)) if m else None
+    """Money in integer cents from a whole cell, or None when the cell is not clearly a
+    non-negative amount (the row then keeps its chat or SKU price).
+
+    Accepted: "$25", "25.00", "$1,234.56", "12,500", "USD 1,050", "12,50" / "1000,50"
+    (decimal comma), "1.234,56" (European). Refused: negatives in any notation
+    ("-5", "-$5", "(5.00)", "−5"), anything with other text ("2 for $10"), "$.99",
+    "1e3", and amounts over MAX_CENTS. Rounds half up to the cent."""
+    t = (s if isinstance(s, str) else "").replace("\u00a0", " ").strip()
+    if not t or (t.startswith("(") and t.endswith(")")):
+        return None
+    t = _CURRENCY.sub("", t).strip()
+    if not t or t[0] in "-\u2212\u2012\u2013":
+        return None
+    if re.fullmatch(r"\d{1,3}(,\d{3})+(\.\d+)?", t):
+        num = t.replace(",", "")
+    elif re.fullmatch(r"\d{1,3}(\.\d{3})+,\d+", t):
+        num = t.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d+,\d{1,2}", t):
+        num = t.replace(",", ".")
+    elif re.fullmatch(r"\d+(\.\d+)?", t):
+        num = t
+    else:
+        return None
+    try:
+        cents = int((Decimal(num) * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    except InvalidOperation:
+        return None
+    return cents if cents <= MAX_CENTS else None
 
 
 def parse_csv(text: str) -> list[Row]:
@@ -88,9 +122,10 @@ def parse_csv(text: str) -> list[Row]:
             "need a buyer column (Buyer / Username / Customer) and an item column "
             "(Product / Item / Listing)"
         )
-    q, p, st, o = (
+    q, p, tot, st, o = (
         _col(header, QTY_COLS),
         _col(header, PRICE_COLS),
+        _col(header, TOTAL_COLS),
         _col(header, STATUS_COLS),
         _col(header, ORDER_COLS),
     )
@@ -108,10 +143,16 @@ def parse_csv(text: str) -> list[Row]:
             rows.append(row)
             continue
         try:
-            row.quantity = max(1, int(float(cell(q) or "1")))
-        except ValueError:
+            row.quantity = min(10_000, max(1, int(float(cell(q) or "1"))))
+        except (ValueError, OverflowError):
             row.quantity = 1
-        row.price_cents = _cents(cell(p)) if p is not None else None
+        if p is not None:
+            row.price_cents = _cents(cell(p))
+        elif tot is not None:
+            total = _cents(cell(tot))
+            # Sale.price_cents is per unit: only a total that splits evenly can fill it.
+            exact = total is not None and total % row.quantity == 0
+            row.price_cents = total // row.quantity if exact else None
         status = cell(st)
         row.status = (
             "void"
@@ -208,8 +249,7 @@ def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Pl
                         "unmatched",
                         f"sale #{sale.id} has no SKU; assign one in Review first",
                     )
-                    _review_unmatched(show, row, import_id)
-                    continue
+                    continue  # reviewed with the other unmatched rows below
                 pipeline._reserve(sale)  # never refused; an oversell shows as a shortfall
             pipeline.set_sale_status(
                 sale, SaleStatus.paid, reason=f"payment file {import_id}", actor=actor
@@ -226,9 +266,12 @@ def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Pl
                 reason=f"payment file {import_id}: {row.status}",
                 actor=actor,
             )
+    seen: dict[tuple[str, str], int] = {}
     for row in p.rows:
         if row.action == "unmatched":
-            _review_unmatched(show, row, import_id)
+            k = (row.buyer.lower(), row.item.lower())
+            seen[k] = seen.get(k, 0) + 1
+            _review_unmatched(show, row, import_id, occurrence=seen[k])
     for sale_id in p.uncovered:
         sale = db.session.get(Sale, sale_id)
         sale.flagged = True
@@ -254,13 +297,22 @@ def _orders_of(show: Show):
     return db.session.scalars(select(Order).where(Order.show_id == show.id)).all()
 
 
-def _review_unmatched(show: Show, row: Row, import_id: str) -> None:
+def _review_unmatched(show: Show, row: Row, import_id: str, *, occurrence: int = 1) -> None:
+    """One open review per paid order nobody could match. The key is the order id when the
+    file has one; otherwise buyer + item (case-insensitive) + which occurrence in the file,
+    so two separate "Mystery Pack" wins by the same buyer stay two items, while applying
+    the same file again adds nothing."""
+    key = (
+        f"order:{row.external_id}"
+        if row.external_id
+        else f"{row.buyer.lower()}|{row.item.lower()}|{occurrence}"
+    )
     existing = db.session.scalar(
         select(ReviewItem).where(
             ReviewItem.show_id == show.id,
             ReviewItem.reason == "unmatched_payment",
             ReviewItem.status == ReviewStatus.open,
-            ReviewItem.summary.like(f"%{row.buyer}%{row.item}%"),
+            ReviewItem.proposal["dedupeKey"].as_string() == key,
         )
     )
     if existing is not None:
@@ -276,8 +328,10 @@ def _review_unmatched(show: Show, row: Row, import_id: str) -> None:
             "import": import_id,
             "buyer": row.buyer,
             "item": row.item,
+            "dedupeKey": key,
             "quantity": row.quantity,
             "priceCents": row.price_cents,
         },
         source="reconcile",
+        dedupe=False,  # the structured buyer + item check above is the dedupe
     )

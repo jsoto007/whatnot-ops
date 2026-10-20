@@ -8,7 +8,7 @@ Chrome extensions, like /api/ingest.
 from flask import Blueprint, jsonify, request
 
 from ..db import db
-from ..services import audit
+from ..services import audit, ratelimit
 from ..services.devices import PairingError, redeem_pairing
 
 bp = Blueprint("pair", __name__)
@@ -30,10 +30,18 @@ def cors(resp):
 def pair():
     if request.method == "OPTIONS":
         return ("", 204)
+    if (request.content_length or 0) > 1024:
+        return jsonify({"error": "request body too large"}), 413
     if not request.is_json:
         return jsonify({"error": "body must be JSON"}), 400
     try:
-        pairing, device, key = redeem_pairing((request.get_json(silent=True) or {}).get("code"))
+        ratelimit.per_ip("pair", 20, 600)
+    except ratelimit.RateLimited as e:
+        return jsonify({"error": str(e)}), 429
+    body = request.get_json(silent=True)
+    code = body.get("code") if isinstance(body, dict) else None
+    try:
+        pairing, device, key = redeem_pairing(code if isinstance(code, str) else "")
     except PairingError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), e.status

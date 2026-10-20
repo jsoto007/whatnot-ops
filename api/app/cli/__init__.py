@@ -66,7 +66,7 @@ def register_cli(app: Flask) -> None:
             organization=organization,
             email=email,
             name=name,
-            password_hash=accounts._ph.hash(password),
+            password_hash=accounts.hash_password(password),
             role=Role.owner,
             session_token=secrets.token_hex(16),
         )

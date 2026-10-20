@@ -43,6 +43,26 @@ def ping():
     return jsonify({"ok": True, "device": d.name, "organization": d.organization.name})
 
 
+@bp.post("/ingest/disconnect")
+def disconnect():
+    """The extension's Disconnect button: the laptop revokes its own key."""
+    from datetime import UTC, datetime
+
+    from ..services import audit
+
+    d = g.device
+    d.revoked_at = datetime.now(UTC)
+    audit.record(
+        d.organization_id,
+        "device.disconnected",
+        target_type="device",
+        target_id=d.id,
+        details={"name": d.name, "by": "the laptop"},
+    )
+    db.session.commit()
+    return ("", 204)
+
+
 @bp.post("/ingest")
 def post_batch():
     payload = request.get_json(silent=True)

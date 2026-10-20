@@ -84,7 +84,7 @@ def test_login_logout(client):
     assert client.get("/api/auth/me").status_code == 200
 
 
-def test_wrong_password_is_401_and_locks_after_too_many(client, app):
+def test_failed_logins_are_limited_per_address_not_per_account(client, app):
     signup(client)
     h = csrf(client)
     client.post("/api/auth/logout", headers=h)
@@ -95,12 +95,28 @@ def test_wrong_password_is_401_and_locks_after_too_many(client, app):
             headers=h,
         )
         assert r.status_code == 401
+    # The guesser's address is now refused, even with the right password...
     r = client.post("/api/auth/login", json={"email": "owner@shop.test", "password": PW}, headers=h)
-    assert r.status_code == 423
-    with app.app_context():
-        assert (
-            db.session.scalar(select(AuditLog).where(AuditLog.action == "user.locked")) is not None
+    assert r.status_code == 429
+    # ...and the answer for an unknown account is the same (no enumeration).
+    for _ in range(8):
+        client.post(
+            "/api/auth/login", json={"email": "nobody@x.test", "password": "x" * 12}, headers=h
         )
+    r = client.post("/api/auth/login", json={"email": "nobody@x.test", "password": PW}, headers=h)
+    assert r.status_code == 429
+    # The real owner, elsewhere, is not locked out.
+    owner = app.test_client()
+    ho = csrf(owner)
+    r = owner.post(
+        "/api/auth/login",
+        json={"email": "owner@shop.test", "password": PW},
+        headers=ho,
+        environ_overrides={"REMOTE_ADDR": "203.0.113.7"},
+    )
+    assert r.status_code == 200
+    with app.app_context():
+        assert db.session.scalar(select(AuditLog).where(AuditLog.action == "login.failed"))
 
 
 def test_logout_everywhere_invalidates_other_sessions(app):
@@ -379,15 +395,47 @@ def test_production_without_admin_email_never_opens_signups(client, app, monkeyp
         app.config["APP_ENV"] = "test"
 
 
-def test_only_the_admin_email_can_create_the_shop_once(client, app, monkeypatch):
+def test_only_the_admin_email_with_the_setup_code_can_create_the_shop_once(
+    client, app, monkeypatch
+):
     app.config["APP_ENV"] = "production"
     monkeypatch.setenv("ADMIN_EMAIL", "  Boss@Shop.test ")
+    monkeypatch.delenv("SETUP_TOKEN", raising=False)
     try:
+        # Production without SETUP_TOKEN: knowing the admin's email is not enough.
+        assert client.get("/api/auth/me").get_json()["signupsOpen"] is False
+        monkeypatch.setenv("SETUP_TOKEN", "s3t-up-t0ken-from-render")
         me = client.get("/api/auth/me").get_json()
         assert me["signupsOpen"] is True and me["signupAdminOnly"] is True
+        assert me["setupCodeRequired"] is True
         r, _ = signup(client, email="first-visitor@x.test")
         assert r.status_code == 403 and "admin email" in r.get_json()["error"]
-        r, _ = signup(client, email="boss@shop.test")
+        r, _ = signup(client, email="boss@shop.test")  # right email, no code
+        assert r.status_code == 403 and "setup code" in r.get_json()["error"]
+        h = csrf(client)
+        r = client.post(
+            "/api/auth/signup",
+            json={
+                "organization": "My Shop",
+                "name": "Boss",
+                "email": "boss@shop.test",
+                "password": PW,
+                "setupCode": "wrong",
+            },
+            headers=h,
+        )
+        assert r.status_code == 403
+        r = client.post(
+            "/api/auth/signup",
+            json={
+                "organization": "My Shop",
+                "name": "Boss",
+                "email": "boss@shop.test",
+                "password": PW,
+                "setupCode": " s3t-up-t0ken-from-render ",
+            },
+            headers=h,
+        )
         assert r.status_code == 201
         assert r.get_json()["user"]["role"] == "owner" and r.get_json()["user"]["isAdmin"] is True
         client.post("/api/auth/logout", headers=csrf(client))
@@ -464,3 +512,113 @@ def test_owner_sets_the_host_username(client):
     assert client.get("/api/auth/me").get_json()["organization"]["hostUsername"] == "MyShopLive"
     r = client.patch("/api/team/organization", json={"hostUsername": ""}, headers=h)
     assert r.get_json()["organization"]["hostUsername"] is None
+
+
+# ---------- hardening (security audit 2026-10-20) ----------
+
+
+def test_email_check_is_fast_on_hostile_input(client):
+    import time
+
+    h = csrf(client)
+    started = time.monotonic()
+    r = client.post(
+        "/api/auth/password/forgot", json={"email": "a@" + "a." * 20000 + "@"}, headers=h
+    )
+    assert r.status_code == 202 and time.monotonic() - started < 0.5
+
+
+def test_password_rules_reject_blank_and_huge(client):
+    r, _ = signup(client, password=" " * 12)
+    assert r.status_code == 400
+    r, _ = signup(client, password="x" * 300)
+    assert r.status_code == 400 and "at most" in r.get_json()["error"]
+
+
+def test_logout_kills_a_copied_session_cookie(client, app):
+    signup(client)
+    stolen = app.test_client()
+    stolen.set_cookie("wn_session", client.get_cookie("wn_session").value)
+    assert stolen.get("/api/auth/me").status_code == 200
+    assert client.post("/api/auth/logout", headers=csrf(client)).status_code == 204
+    assert stolen.get("/api/auth/me").status_code == 401
+
+
+def test_a_reset_kills_every_other_reset_link_and_refuses_disabled_users(client, app):
+    signup(client)
+    client.post("/api/auth/logout", headers=csrf(client))
+    h = csrf(client)
+    first = client.post("/api/auth/password/forgot", json={"email": "owner@shop.test"}, headers=h)
+    second = client.post("/api/auth/password/forgot", json={"email": "owner@shop.test"}, headers=h)
+    t1 = first.get_json()["resetUrl"].rsplit("/", 1)[1]
+    t2 = second.get_json()["resetUrl"].rsplit("/", 1)[1]
+    new = "brand-new-password-1"
+    assert (
+        client.post(
+            "/api/auth/password/reset", json={"token": t1, "password": new}, headers=h
+        ).status_code
+        == 200
+    )
+    r = client.post("/api/auth/password/reset", json={"token": t2, "password": PW}, headers=h)
+    assert r.status_code == 404  # the other link died with the first reset
+    # a disabled person cannot use a link either
+    third = client.post("/api/auth/password/forgot", json={"email": "owner@shop.test"}, headers=h)
+    t3 = third.get_json()["resetUrl"].rsplit("/", 1)[1]
+    with app.app_context():
+        u = db.session.scalar(select(User).where(User.email == "owner@shop.test"))
+        u.disabled = True
+        db.session.commit()
+    r = client.post("/api/auth/password/reset", json={"token": t3, "password": PW}, headers=h)
+    assert r.status_code == 404
+
+
+def test_reset_emails_and_signups_are_rate_limited(client, app):
+    signup(client)
+    client.post("/api/auth/logout", headers=csrf(client))
+    h = csrf(client)
+    links = [
+        client.post("/api/auth/password/forgot", json={"email": "owner@shop.test"}, headers=h)
+        .get_json()
+        .get("resetUrl")
+        for _ in range(5)
+    ]
+    assert sum(1 for x in links if x) == 3  # 3 per address per hour
+    other = app.test_client()
+    codes = [signup(other, email=f"s{i}@x.test", org=f"S{i}")[0].status_code for i in range(11)]
+    assert codes.count(429) >= 1
+
+
+def test_managers_cannot_touch_an_owners_invite_and_disabling_withdraws_grants(client, app):
+    signup(client)
+    h = csrf(client)
+
+    def invite(c, hh, email, role):
+        return c.post("/api/team/invites", json={"email": email, "role": role}, headers=hh)
+
+    tok = invite(client, h, "mgr@shop.test", "manager").get_json()["acceptUrl"].rsplit("/", 1)[1]
+    m = app.test_client()
+    hm = csrf(m)
+    m.post("/api/auth/invites/accept", json={"token": tok, "name": "M", "password": PW}, headers=hm)
+    owner_inv = invite(client, h, "boss2@shop.test", "owner").get_json()
+    assert invite(m, hm, "boss2@shop.test", "viewer").status_code == 409
+    invites = client.get("/api/team").get_json()["invites"]
+    owner_invite_id = next(i["id"] for i in invites if i["email"] == "boss2@shop.test")
+    assert m.delete(f"/api/team/invites/{owner_invite_id}", headers=hm).status_code == 403
+    assert owner_inv["acceptUrl"]
+
+    # The manager opens an invite and a laptop code, then is disabled: both stop working.
+    staff_tok = (
+        invite(m, hm, "pat@shop.test", "fulfillment").get_json()["acceptUrl"].rsplit("/", 1)[1]
+    )
+    code = m.post("/api/devices/pairings", json={"name": "Lap"}, headers=hm).get_json()["code"]
+    mgr_id = next(
+        u["id"]
+        for u in client.get("/api/team").get_json()["users"]
+        if u["email"] == "mgr@shop.test"
+    )
+    assert (
+        client.patch(f"/api/team/users/{mgr_id}", json={"disabled": True}, headers=h).status_code
+        == 200
+    )
+    assert app.test_client().get(f"/api/auth/invites/{staff_tok}").status_code == 404
+    assert app.test_client().post("/api/pair", json={"code": code}).status_code == 404

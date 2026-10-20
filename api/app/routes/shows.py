@@ -132,7 +132,9 @@ def events(show_id: int):
     if show is None:
         return jsonify({"error": "show not found"}), 404
     kind = request.args.get("kind") or ""
-    limit = min(int(request.args.get("limit", 200)), 1000)
+    limit = max(1, min(request.args.get("limit", 200, type=int) or 200, 1000))
+    if kind and kind not in {k.value for k in EventKind}:
+        return jsonify({"error": f"unknown kind {kind!r}"}), 400
     q = (
         select(ParsedEvent)
         .where(ParsedEvent.show_id == show.id)
@@ -178,8 +180,8 @@ def messages(show_id: int):
     if show is None:
         return jsonify({"error": "show not found"}), 404
     q = (request.args.get("q") or "").strip()
-    limit = min(int(request.args.get("limit", 200)), 1000)
-    offset = max(int(request.args.get("offset", 0)), 0)
+    limit = max(1, min(request.args.get("limit", 200, type=int) or 200, 1000))
+    offset = max(request.args.get("offset", 0, type=int) or 0, 0)
     stmt = select(ChatMessage).where(ChatMessage.show_id == show.id)
     if q:
         stmt = stmt.where(ChatMessage.raw_text.ilike(f"%{q}%"))

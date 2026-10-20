@@ -7,6 +7,8 @@ export interface AuthState {
   signupsOpen: boolean
   /** Sign-up is limited to the shop's ADMIN_EMAIL (the server never says which email). */
   signupAdminOnly: boolean
+  /** Creating the shop needs the server's one-time SETUP_TOKEN. */
+  setupCodeRequired: boolean
   can: (permission: string) => boolean
   setMe: (me: Me | null) => void
   logout: () => Promise<void>

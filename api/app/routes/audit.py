@@ -12,7 +12,7 @@ bp = Blueprint("audit", __name__)
 @bp.get("")
 @require("audit.view")
 def list_audit():
-    limit = min(int(request.args.get("limit", 100)), 500)
+    limit = max(1, min(request.args.get("limit", 100, type=int) or 100, 500))
     before = request.args.get("before", type=int)
     q = select(AuditLog).where(AuditLog.organization_id == g.u.organization_id)
     if before:

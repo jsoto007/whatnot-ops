@@ -5,7 +5,8 @@ import { Field, Form } from '../components/Form'
 import { api, type Me } from '../lib/api'
 
 export function Signup() {
-  const { setMe, signupsOpen, signupAdminOnly, loading } = useAuth()
+  const { setMe, signupsOpen, signupAdminOnly, setupCodeRequired, loading } = useAuth()
+  const [setupCode, setSetupCode] = useState('')
   const nav = useNavigate()
   const [organization, setOrganization] = useState('')
   const [name, setName] = useState('')
@@ -33,7 +34,7 @@ export function Signup() {
       <Form
         submitLabel="Create shop"
         onSubmit={async () => {
-          setMe(await api<Me>('POST', '/api/auth/signup', { organization, name, email, password }))
+          setMe(await api<Me>('POST', '/api/auth/signup', { organization, name, email, password, ...(setupCodeRequired ? { setupCode } : {}) }))
           nav('/app', { replace: true })
         }}
       >
@@ -46,6 +47,11 @@ export function Signup() {
         <Field label="Email">
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
         </Field>
+        {setupCodeRequired && (
+          <Field label="Setup code (SETUP_TOKEN on the server)">
+            <input value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="off" spellCheck={false} required />
+          </Field>
+        )}
         <Field label="Password (10+ characters)">
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" minLength={10} required />
         </Field>

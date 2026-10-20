@@ -33,6 +33,12 @@ test('desktop: the sidebar collapses to icons and stays collapsed after a reload
 })
 
 test('phone: top bar, drawer navigation, and no page wider than the screen', async ({ page }) => {
+  // The production Content-Security-Policy (api/app/__init__.py) must not break any page.
+  const violations: string[] = []
+  page.on('console', (m) => {
+    if (/Content Security Policy|Refused to (load|apply|execute|connect)/i.test(m.text())) violations.push(m.text())
+  })
+  page.on('pageerror', (e) => violations.push('page error: ' + e.message))
   await page.setViewportSize({ width: 390, height: 844 })
   await signup(page)
   await expect(page.getByTestId('open-menu')).toBeVisible()
@@ -51,4 +57,7 @@ test('phone: top bar, drawer navigation, and no page wider than the screen', asy
   await page.getByTestId('open-menu').click()
   await page.getByTestId('scrim').click()
   await expect(page.locator('.sidebar')).not.toHaveClass(/open/)
+  const csp = await page.request.get('/app')
+  expect(csp.headers()['content-security-policy']).toContain("frame-ancestors 'none'")
+  expect(violations).toEqual([])
 })

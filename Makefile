@@ -58,7 +58,7 @@ build-web:
 # Production-like: Flask serves web/dist, Playwright drives the installed Chrome.
 e2e: build-web db-url
 	cd api && APP_ENV=test FLASK_APP=wsgi.py $(PY)/flask db upgrade
-	( cd api && exec env APP_ENV=test JOBS_INLINE=1 AI_PROVIDER=fake FLASK_APP=wsgi.py $(PY)/flask run --port $(E2E_PORT) --no-debugger ) > /tmp/whatnot-ops-e2e-flask.log 2>&1 & \
+	( cd api && exec env APP_ENV=test RATE_LIMITS=off JOBS_INLINE=1 AI_PROVIDER=fake FLASK_APP=wsgi.py $(PY)/flask run --port $(E2E_PORT) --no-debugger ) > /tmp/whatnot-ops-e2e-flask.log 2>&1 & \
 	  pid=$$!; trap "kill $$pid 2>/dev/null" EXIT; \
 	  for i in $$(seq 1 30); do curl -sf http://localhost:$(E2E_PORT)/api/health >/dev/null && break; sleep 0.5; done; \
 	  cd web && E2E_BASE_URL=http://localhost:$(E2E_PORT) npx playwright test

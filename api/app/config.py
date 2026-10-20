@@ -17,6 +17,20 @@ class ConfigError(RuntimeError):
     pass
 
 
+APP_ENVS = ("development", "test", "production")
+#: Environments where development conveniences (dev-only secret, open sign-up,
+#: invite / reset links returned in API responses) are allowed. Anything else,
+#: including a missing APP_ENV, behaves as production: fail closed.
+DEV_ENVS = ("development", "test")
+#: Largest request body accepted anywhere (ingest batches of 500 rows × 4000
+#: chars fit with room to spare; CSV imports are far smaller).
+MAX_BODY_BYTES = 8 * 1024 * 1024
+
+
+def is_dev(app_env: str | None) -> bool:
+    return app_env in DEV_ENVS
+
+
 def db_host(url: str) -> str:
     """Host:port/dbname of a database URL, with no credentials."""
     parts = urlsplit(url)
@@ -25,12 +39,16 @@ def db_host(url: str) -> str:
 
 class Config:
     def __init__(self, *, testing: bool = False) -> None:
-        self.APP_ENV = os.environ.get("APP_ENV", "development")
+        app_env = (os.environ.get("APP_ENV") or "production").strip().lower()
+        if app_env not in APP_ENVS:
+            raise ConfigError(f"APP_ENV must be one of {', '.join(APP_ENVS)} (got {app_env!r})")
+        self.APP_ENV = app_env
         testing = testing or self.APP_ENV == "test"
         self.TESTING = testing
         self.SECRET_KEY = os.environ.get("SECRET_KEY", "") or (
-            "dev-only-secret" if os.environ.get("APP_ENV", "development") != "production" else ""
+            "dev-only-secret" if is_dev(self.APP_ENV) else ""
         )
+        self.MAX_CONTENT_LENGTH = MAX_BODY_BYTES
         url = os.environ.get("TEST_DATABASE_URL" if testing else "DATABASE_URL", "")
         if not url:
             which = "TEST_DATABASE_URL" if testing else "DATABASE_URL"

@@ -34,6 +34,14 @@ export class Controller {
 
   constructor() {
     const p = this.panel
+    // The page's own scripts can reach the panel (open shadow root) and dispatch
+    // synthetic clicks/inputs. Only a person's real input may drive it.
+    const root = p.host.shadowRoot
+    for (const type of ['click', 'input', 'change', 'keydown']) {
+      root?.addEventListener(type, (e) => {
+        if (!e.isTrusted) e.stopImmediatePropagation()
+      }, true)
+    }
     p.el('start').onclick = () => {
       p.el('resumeRow').hidden = true
       this.startPicking()
@@ -108,6 +116,7 @@ export class Controller {
   }
 
   private onPick(e: MouseEvent): void {
+    if (!e.isTrusted) return // a page script cannot choose what gets recorded
     if (e.composedPath().includes(this.panel.host)) return // clicks on our own panel
     e.preventDefault()
     e.stopPropagation()

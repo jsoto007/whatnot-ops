@@ -135,7 +135,7 @@ def test_invalid_batch_is_400_with_details_and_stores_nothing(client, app, auth)
     r = client.post("/api/ingest", json=load("batch-invalid-bad-id.json"), headers=auth)
     assert r.status_code == 400
     assert r.get_json()["error"] == "invalid batch"
-    assert any("does not match" in d for d in r.get_json()["details"])
+    assert any("fails pattern" in d for d in r.get_json()["details"])
     with app.app_context():
         assert db.session.scalar(select(Show)) is None
 

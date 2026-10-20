@@ -65,12 +65,21 @@ def create_product():
 def update_product(product_id: int):
     p = catalog.get_product(g.u.organization_id, product_id)
     d = _body()
-    if "name" in d and d["name"].strip():
-        p.name = d["name"].strip()
+    before = {"name": p.name, "active": p.active}
+    if isinstance(d.get("name"), str) and d["name"].strip():
+        p.name = d["name"].strip()[:160]
     if "notes" in d:
-        p.notes = d["notes"]
+        p.notes = d["notes"] if isinstance(d["notes"], str) else None
     if "active" in d:
         p.active = bool(d["active"])
+    audit.record(
+        g.u.organization_id,
+        "product.updated",
+        user=g.u,
+        target_type="product",
+        target_id=p.id,
+        details={"before": before, "after": {"name": p.name, "active": p.active}},
+    )
     db.session.commit()
     return jsonify({"product": serializers.product(p)})
 
@@ -90,7 +99,30 @@ def add_sku(product_id: int):
 @bp.patch("/skus/<int:sku_id>")
 @require("inventory.write")
 def update_sku(sku_id: int):
-    s = catalog.update_sku(g.u.organization_id, sku_id, **_body())
+    d = _body()
+    fields = {k: d[k] for k in ("code", "name", "priceCents", "lowStockAt", "active") if k in d}
+    for k in ("code", "name"):
+        if k in fields and fields[k] is not None and not isinstance(fields[k], str):
+            raise CatalogError(f"{k} must be text")
+    if "lowStockAt" in fields and fields["lowStockAt"] is not None:
+        try:
+            fields["lowStockAt"] = int(fields["lowStockAt"])
+        except (TypeError, ValueError):
+            raise CatalogError("lowStockAt must be a whole number") from None
+    old = catalog.get_sku(g.u.organization_id, sku_id)
+    before = {"code": old.code, "priceCents": old.price_cents, "lowStockAt": old.low_stock_at}
+    s = catalog.update_sku(g.u.organization_id, sku_id, **fields)
+    audit.record(
+        g.u.organization_id,
+        "sku.updated",
+        user=g.u,
+        target_type="sku",
+        target_id=s.id,
+        details={
+            "before": before,
+            "after": {"code": s.code, "priceCents": s.price_cents, "lowStockAt": s.low_stock_at},
+        },
+    )
     db.session.commit()
     return jsonify({"sku": serializers.sku(s)})
 
@@ -99,7 +131,16 @@ def update_sku(sku_id: int):
 @require("inventory.write")
 def add_alias(sku_id: int):
     s = catalog.get_sku(g.u.organization_id, sku_id)
-    a = catalog.add_alias(g.u.organization_id, s, _body().get("alias", ""))
+    alias = _body().get("alias", "")
+    a = catalog.add_alias(g.u.organization_id, s, alias if isinstance(alias, str) else "")
+    audit.record(
+        g.u.organization_id,
+        "alias.added",
+        user=g.u,
+        target_type="sku",
+        target_id=s.id,
+        details={"alias": a.alias},
+    )
     db.session.commit()
     return jsonify({"alias": serializers.alias(a)}), 201
 
@@ -108,6 +149,13 @@ def add_alias(sku_id: int):
 @require("inventory.write")
 def remove_alias(alias_id: int):
     catalog.remove_alias(g.u.organization_id, alias_id)
+    audit.record(
+        g.u.organization_id,
+        "alias.removed",
+        user=g.u,
+        target_type="alias",
+        target_id=alias_id,
+    )
     db.session.commit()
     return ("", 204)
 

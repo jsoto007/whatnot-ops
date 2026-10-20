@@ -16,6 +16,9 @@ databases:
     plan: basic-256mb
     databaseName: whatnot_ops
     user: whatnot_ops
+    # No connections from the internet: the services use the private network
+    # (connectionString). Add a specific IP here only when one is needed.
+    ipAllowList: []
 
 services:
   - type: web
@@ -51,6 +54,10 @@ services:
       # production never opens sign-up. Set it in the dashboard before first visit.
       - key: ADMIN_EMAIL
         sync: false
+      # One-time code for creating the shop (read it in Render → Environment).
+      # Knowing ADMIN_EMAIL alone is not enough to claim the shop.
+      - key: SETUP_TOKEN
+        generateValue: true
       # APP_URL (links in invite / reset emails) — set once a custom domain exists;
       # until then the app uses RENDER_EXTERNAL_URL.
       # - key: APP_URL
@@ -75,7 +82,10 @@ services:
       - key: APP_ENV
         value: production
       - key: SECRET_KEY
-        sync: false # paste the web service's value
+        fromService:
+          type: web
+          name: whatnot-ops
+          envVarKey: SECRET_KEY
       - key: DATABASE_URL
         fromDatabase:
           name: whatnot-ops-db

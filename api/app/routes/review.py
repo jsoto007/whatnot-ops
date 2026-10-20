@@ -52,7 +52,10 @@ def list_review():
     status = request.args.get("status", "open")
     q = select(ReviewItem).where(ReviewItem.organization_id == g.u.organization_id)
     if status != "all":
-        q = q.where(ReviewItem.status == ReviewStatus(status))
+        try:
+            q = q.where(ReviewItem.status == ReviewStatus(status))
+        except ValueError:
+            return jsonify({"error": f"unknown status {status!r}"}), 400
     items = db.session.scalars(
         q.options(
             selectinload(ReviewItem.message), selectinload(ReviewItem.sale).selectinload(Sale.sku)

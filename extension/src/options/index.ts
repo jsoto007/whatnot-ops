@@ -1,5 +1,5 @@
-import { loadSettings, normaliseUrl, saveSettings } from '../upload/settings'
-import { UploadError, pairDevice, ping } from '../upload/uploader'
+import { forgetConnection, loadSettings, saveConnection, saveServerUrl, serverOrigin } from '../upload/settings'
+import { UploadError, pairDevice, ping, revokeDevice } from '../upload/uploader'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 const url = $<HTMLInputElement>('url')
@@ -31,24 +31,56 @@ async function refreshStats(): Promise<void> {
     const s = (await chrome.runtime.sendMessage({ cmd: 'getUploadStatus' })) as {
       pending: number
       uploaded: number
+      parked?: number
       lastError?: string
       lastSentAt?: number
     }
-    $('stats').innerHTML =
-      `Uploaded <b>${s.uploaded}</b> · pending <b>${s.pending}</b>` +
-      (s.lastSentAt ? ` · last upload ${new Date(s.lastSentAt).toLocaleTimeString()}` : '') +
-      (s.lastError ? ` · <span style="color:#FF8A80">${s.lastError}</span>` : '')
+    // Built from text nodes: lastError can carry text that came from the server or from chat.
+    const el = $('stats')
+    const b = (n: number) => Object.assign(document.createElement('b'), { textContent: String(n) })
+    el.replaceChildren('Uploaded ', b(s.uploaded), ' · pending ', b(s.pending))
+    if (s.parked) el.append(' · set aside ', b(s.parked))
+    if (s.lastSentAt) el.append(` · last upload ${new Date(s.lastSentAt).toLocaleTimeString()}`)
+    if (s.lastError) el.append(' · ', Object.assign(document.createElement('span'), { textContent: s.lastError, style: 'color:#FF8A80' }))
   } catch {
     $('stats').textContent = ''
   }
 }
 
-const flush = () => chrome.runtime.sendMessage({ cmd: 'flushUploads' }).catch(() => {})
+const changed = () => chrome.runtime.sendMessage({ cmd: 'settingsChanged' }).catch(() => {})
+
+/** Validate and save the address field; says why when it is not acceptable. */
+async function serverFromField(): Promise<string | null> {
+  try {
+    const origin = await saveServerUrl(url.value)
+    if (!origin) {
+      say('Enter the web app address first.', 'bad')
+      return null
+    }
+    url.value = origin
+    return origin
+  } catch (err) {
+    say((err as Error).message, 'bad')
+    return null
+  }
+}
+
+/** Store the key for this server; if it belongs to a different shop than before, set unsent lines aside. */
+async function connectWith(origin: string, apiKey: string, organization?: string): Promise<string> {
+  const otherShop = await saveConnection({ apiKey, origin, organization })
+  let note = ''
+  if (otherShop) {
+    const r = (await chrome.runtime.sendMessage({ cmd: 'parkPending' })) as { parked?: number }
+    if (r?.parked) note = ` ${r.parked} unsent lines from the previous shop were set aside and will not be sent here.`
+  }
+  void changed()
+  return note
+}
 
 async function init(): Promise<void> {
   const s = await loadSettings()
   url.value = s.serverUrl
-  key.value = s.apiKey
+  key.value = ''
   showConnected(!!s.apiKey)
   if (s.apiKey && s.serverUrl) {
     try {
@@ -63,18 +95,17 @@ async function init(): Promise<void> {
 }
 
 async function pair(): Promise<void> {
-  const server = normaliseUrl(url.value)
-  if (!server) return say('Enter the web app address first.', 'bad')
   if (code.value.replace(/[^a-z0-9]/gi, '').length !== 8) return say('Enter the 8-character code from the web app.', 'bad')
+  const server = await serverFromField()
+  if (!server) return
   say('Connecting…')
   try {
     const r = await pairDevice(server, code.value)
-    await saveSettings({ serverUrl: server, apiKey: r.key })
-    key.value = r.key
+    const note = await connectWith(server, r.key, r.organization)
+    key.value = ''
     code.value = ''
     showConnected(true, `Connected as "${r.device}" (${r.organization})`)
-    say(`Connected as "${r.device}" (${r.organization}).`, 'good')
-    void flush()
+    say(`Connected as "${r.device}" (${r.organization}).${note}`, 'good')
     setTimeout(refreshStats, 1500)
   } catch (err) {
     say(explain(err, 'code'), 'bad')
@@ -97,18 +128,27 @@ $('test').onclick = async () => {
 }
 
 $('disconnect').onclick = async () => {
-  if (!confirm('Disconnect this laptop? Captured lines stay saved here until you connect again.')) return
-  await saveSettings({ serverUrl: url.value, apiKey: '' })
+  if (!confirm('Disconnect this laptop? Its key stops working on the server. Captured lines stay saved here.')) return
+  const s = await loadSettings()
+  const revoked = s.apiKey ? await revokeDevice(s) : false
+  await forgetConnection()
   key.value = ''
   showConnected(false)
-  say('Disconnected. Captured lines stay on this laptop until you connect again.')
+  void changed()
+  say(revoked ? 'Disconnected; the key no longer works.' : 'Disconnected on this laptop. Remove it in the web app too (Settings → Laptops).')
 }
 
 // Advanced: paste a device key made in the web app instead of using a code.
 $('test-key').onclick = async () => {
   say('Testing…')
+  let origin: string
   try {
-    const r = await ping({ serverUrl: normaliseUrl(url.value), apiKey: key.value.trim() })
+    origin = serverOrigin(url.value)
+  } catch (err) {
+    return say((err as Error).message, 'bad')
+  }
+  try {
+    const r = await ping({ serverUrl: origin, apiKey: key.value.trim() })
     say(`Connected as "${r.device}" (${r.organization}).`, 'good')
   } catch (err) {
     say(explain(err, 'key'), 'bad')
@@ -116,10 +156,19 @@ $('test-key').onclick = async () => {
 }
 
 $('save').onclick = async () => {
-  await saveSettings({ serverUrl: url.value, apiKey: key.value })
-  showConnected(!!key.value.trim())
-  say('Saved.', 'good')
-  void flush()
+  const origin = await serverFromField()
+  if (!origin) return
+  const k = key.value.trim()
+  if (!k) return say('Paste a device key first, or connect with a code.', 'bad')
+  let org: string | undefined
+  try {
+    org = (await ping({ serverUrl: origin, apiKey: k })).organization
+  } catch {
+    /* saved anyway: uploads say what is wrong until the key is fixed */
+  }
+  const note = await connectWith(origin, k, org)
+  showConnected(true, org ? `Connected (${org})` : 'Key saved, but not connected')
+  say('Saved.' + note, 'good')
   setTimeout(refreshStats, 1500)
 }
 

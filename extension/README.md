@@ -42,12 +42,32 @@ load it. Never load `dist-test/` for real use.
 ## Upload
 
 Rows are stored with `uploaded = 0` and drained by `src/upload/uploader.ts`
-in batches of up to 200 per show to `POST /api/ingest`, validated first with
-Ajv against `shared/chat-event-batch.schema.json`. A flush runs 2 s after new
-rows, on a retry alarm with exponential backoff (5 s … 5 min) after a network
-failure, every minute as a sweep, when the settings change, and from the
-Settings page. A rejected key or a 400 stops retries until the settings
-change; rows stay queued. The panel's second line shows
+in batches of up to 200 per show to `POST /api/ingest`. Every row is cut to
+the server's limits (`src/upload/limits.ts`, mirroring
+`shared/chat-event-batch.schema.json`) when it is stored and again when it is
+sent. A flush runs 2 s after new rows, on a retry alarm with exponential
+backoff (5 s … 5 min) after a network failure, every minute as a sweep, when
+the connection changes, and from the Settings page. A rejected key stops
+retries until the connection changes; rows stay queued. A batch the server
+refuses (400) is set aside (`uploaded = 2`) so it can never stall the queue;
+Settings shows how many lines were set aside and why.
+
+## Connection security
+
+- The server address must be `https://` (plain `http://` only for
+  localhost); fetches refuse redirects.
+- The device key lives in the extension's own IndexedDB, not in
+  `chrome.storage.local`, so the content script on whatnot.com cannot read it.
+  It is bound to the server origin it was issued for: change the address and
+  the key is not sent there; pair again.
+- Connecting to a different shop than before sets unsent lines aside instead
+  of uploading another shop's chat. Disconnect revokes the key on the server
+  (`POST /api/ingest/disconnect`).
+- The background only answers messages from this extension
+  (`sender.id`), page-only commands are refused from content scripts, and the
+  panel ignores synthetic (`!isTrusted`) clicks and inputs from page scripts.
+
+The panel's second line shows
 `saved N · uploaded` / `N to upload — <reason>`.
 
 ## Storage

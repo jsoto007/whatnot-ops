@@ -8,7 +8,10 @@ import {
   kvDelete,
   kvGet,
   kvSet,
+  markParked,
   markUploaded,
+  parkAllPending,
+  parkedCount,
   pendingCount,
   pendingRows,
   pruneShows,
@@ -16,6 +19,7 @@ import {
   uploadedCount,
 } from './storage/db'
 import { migrateLegacyStorage } from './storage/migrate'
+import { clampRow, clampUrl } from './upload/limits'
 import { configured, loadSettings } from './upload/settings'
 import { UploadError, type UploadOutcome, backoffSeconds, uploadOnce } from './upload/uploader'
 
@@ -67,12 +71,12 @@ async function flush(): Promise<UploadOutcome> {
     try {
       const settings = await loadSettings()
       const outcome = await uploadOnce(
-        { pendingRows, pendingCount, markUploaded, show: async (id) => (await getShow(id)) ?? undefined },
+        { pendingRows, pendingCount, markUploaded, markParked, show: async (id) => (await getShow(id)) ?? undefined },
         settings,
       )
       if (outcome.status === 'sent') {
         failures = 0
-        lastError = undefined
+        lastError = outcome.parked ? `${outcome.parked} lines set aside (the server refused them): ${outcome.detail ?? ''}` : undefined
         lastSentAt = Date.now()
         if (outcome.remaining > 0) scheduleFlush(250)
       } else if (outcome.status === 'unconfigured') lastError = 'server not configured'
@@ -85,7 +89,7 @@ async function flush(): Promise<UploadOutcome> {
         chrome.alarms.create(ALARM_RETRY, { delayInMinutes: backoffSeconds(failures) / 60 })
         return { status: 'offline', detail: e.message }
       }
-      // auth / rejected: keep the rows, stop retrying until settings change or a sweep.
+      // auth: keep the rows, stop retrying until the connection changes or a sweep.
       return e.kind === 'auth' ? { status: 'auth' } : { status: 'rejected', detail: e.message }
     } finally {
       flushing = null
@@ -99,20 +103,39 @@ async function uploadStatus(): Promise<UploadStatus> {
     configured: configured(await loadSettings()),
     pending: await pendingCount(),
     uploaded: await uploadedCount(),
+    parked: await parkedCount(),
     lastError,
     lastSentAt,
   }
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (changes['cs_server_url'] || changes['cs_api_key'])) {
+  if (area === 'local' && changes['cs_server_url']) {
     failures = 0
     scheduleFlush(100)
   }
 })
 
+/** Commands only the extension's own pages (Settings, Chat Search) may send; content scripts may not. */
+const PAGE_ONLY = new Set<Request['cmd']>(['settingsChanged', 'parkPending'])
+const CMDS = new Set<Request['cmd']>(['rows', 'getSession', 'clearSession', 'openSearch', 'openOptions', 'getUploadStatus', 'flushUploads', 'settingsChanged', 'parkPending'])
+
+/** A content-script batch, cut to the server's limits so one bad line cannot stall uploads. */
+function cleanRows(msg: Extract<Request, { cmd: 'rows' }>): Extract<Request, { cmd: 'rows' }> | null {
+  if (!msg.show || typeof msg.show.id !== 'string' || !Array.isArray(msg.rows) || msg.rows.length > 1000) return null
+  const rows = msg.rows.filter((r) => r && typeof r.id === 'string' && r.id.length <= 64 && typeof r.seq === 'number').map(clampRow)
+  return { cmd: 'rows', show: { ...msg.show, url: clampUrl(msg.show.url) }, rows }
+}
+
 async function handle(msg: Request): Promise<unknown> {
   switch (msg.cmd) {
+    case 'settingsChanged':
+      failures = 0
+      lastError = undefined
+      scheduleFlush(100)
+      return { ok: true }
+    case 'parkPending':
+      return { ok: true, parked: await parkAllPending() }
     case 'rows': {
       await migrateLegacyStorage()
       const meta = await putRows(msg.show, msg.rows)
@@ -147,7 +170,18 @@ async function handle(msg: Request): Promise<unknown> {
   }
 }
 
-chrome.runtime.onMessage.addListener((msg: Request, _sender, sendResponse) => {
-  handle(msg).then(sendResponse, (err: unknown) => sendResponse({ error: String(err) }))
+chrome.runtime.onMessage.addListener((raw: Request, sender, sendResponse) => {
+  // Only this extension's own content scripts and pages; never another extension.
+  if (sender.id !== chrome.runtime.id || !raw || !CMDS.has(raw.cmd)) return false
+  // Extension pages (Settings opens in a tab) have this extension's origin; a content
+  // script's sender.url is the whatnot.com page it runs in.
+  const fromPage = !!sender.url && sender.url.startsWith(chrome.runtime.getURL(''))
+  if (PAGE_ONLY.has(raw.cmd) && !fromPage) return false
+  const msg = raw.cmd === 'rows' ? cleanRows(raw) : raw
+  if (!msg) {
+    sendResponse({ error: 'bad rows message' })
+    return false
+  }
+  handle(msg).then(sendResponse, () => sendResponse({ error: 'request failed' }))
   return true // async response
 })

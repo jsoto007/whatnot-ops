@@ -39,8 +39,22 @@ commands.
   `POST /api/pair` (conditional UPDATE decides the winner). The portal serves
   the built extension at `/api/extension/download` with its own URL baked in.
 - **Admin**: `ADMIN_EMAIL` names the shop's protected owner
-  (`services/admin.py`). Only it may sign up, once; it cannot be demoted or
-  disabled; login restores it. No ADMIN_EMAIL in production = sign-up closed. Rows are idempotent by
+  (`services/admin.py`). Only it may sign up, once, and only with the
+  one-time `SETUP_TOKEN` (required in production); it cannot be demoted or
+  disabled; login restores it. No ADMIN_EMAIL/SETUP_TOKEN in production =
+  sign-up closed.
+- **Fail closed.** `APP_ENV` defaults to production and must be
+  development/test/production; dev conveniences (dev secret, open sign-up,
+  links in API responses) only for development/test (`config.is_dev`).
+- **Rate limits** for unauthenticated endpoints live in
+  `services/ratelimit.py` (Postgres counters, own transaction). Add a limit
+  to any new unauthenticated route. `RATE_LIMITS=off` works only in dev/test
+  (the browser e2e sets it).
+- **Chat is attacker-controlled.** Anyone watching can type in it: never let
+  a viewer line become a sale, a cancel or the current listing without the
+  host/platform or a person. The AI may auto-apply only what
+  `supervisor._corroborated` ties to a host/platform line. Excel cells are
+  always written as text. Security regressions: `api/tests/test_security.py`. Rows are idempotent by
   `(show_id, client_id)`; a batch is all-or-nothing.
 - Deploy: Render Blueprint (`render.yaml`), one Python web service that
   builds `web/dist` and serves it through Flask (`api/app/spa.py`). Same

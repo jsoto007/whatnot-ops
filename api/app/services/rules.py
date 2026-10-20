@@ -23,6 +23,9 @@ QTY_IN_ITEM = re.compile(
     re.I,
 )
 
+ITEM_MAX = 240  # ParsedEvent.item_text / Sale.item_text
+BUYER_MAX = 80  # buyer_username
+
 # Order = priority when several words appear ("Red bundle" counts as red). The
 # sheet tracks Red, Bundles and Ultra/Mega as separate tallies; confirm the
 # precedence with the team once real shows are captured.
@@ -183,10 +186,13 @@ def _build(
 ) -> Classification:
     g = m.groupdict()
     qty, item = _qty_and_item(g.get("item") or "")
+    # Chat is free text: keep what we store within the columns (parsed_events / sales),
+    # or one long line would fail the insert and stop parsing the whole show.
+    item = item[:ITEM_MAX]
     return Classification(
         kind=kind,
         rule=rule,
-        buyer=(g.get("buyer") or "").lstrip("@"),
+        buyer=(g.get("buyer") or "").lstrip("@")[:BUYER_MAX],
         item=item,
         quantity=qty,
         price_cents=_price(g.get("price")),
@@ -219,7 +225,9 @@ def classify(username: str, body: str, raw_text: str, *, host: str | None = None
         m = rx.match(text)
         if m:
             c = _build(EventKind.claim, rule, m, confidence=0.9, text=text)
-            c.buyer = username
+            c.buyer = (username or "")[:BUYER_MAX]
             c.quantity = int(m.groupdict().get("qty") or 1)
             return c
-    return Classification(kind=EventKind.chatter, rule="none", buyer=username, confidence=1.0)
+    return Classification(
+        kind=EventKind.chatter, rule="none", buyer=(username or "")[:BUYER_MAX], confidence=1.0
+    )
