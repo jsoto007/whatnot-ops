@@ -79,6 +79,10 @@ commands.
   fulfilment, which requires every item paid. Payment comes only from
   `services/reconcile.py` (the Seller Hub CSV) or a person in Review; chat
   never marks anything paid.
+- **Numbers.** Dashboard tiles and the Excel sheets both read
+  `services/dashboard.py`; add a metric there, never inline in a route or
+  the workbook builder. Reports are built synchronously with openpyxl
+  (`services/reports.py`); move them to a job if a shop outgrows that.
 - **AI** only proposes. Providers implement `ai/base.py::AiProvider` and are
   chosen by `AI_PROVIDER` (`claude` via the official `anthropic` SDK with
   `output_config.format` structured output, `jev`, `fake` for tests). What may

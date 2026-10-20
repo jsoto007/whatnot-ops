@@ -6,11 +6,12 @@ import { AcceptInvite } from './pages/AcceptInvite'
 import { Login } from './pages/Login'
 import { Forgot, Reset } from './pages/Password'
 import { Signup } from './pages/Signup'
+import { Dashboard } from './pages/app/Dashboard'
 import { Inventory } from './pages/app/Inventory'
 import { AppLayout } from './pages/app/Layout'
 import { OrderDetail, Orders, PickList } from './pages/app/Orders'
-import { Placeholder } from './pages/app/Placeholder'
 import { Products } from './pages/app/Products'
+import { Reports } from './pages/app/Reports'
 import { Settings } from './pages/app/Settings'
 import { Review } from './pages/app/Review'
 import { ShowDetail } from './pages/app/ShowDetail'
@@ -67,7 +68,7 @@ export function App() {
           </Route>
           <Route path="/app" element={<RequireAuth />}>
             <Route element={<AppLayout />}>
-              <Route index element={<Navigate to="/app/shows" replace />} />
+              <Route index element={<Dashboard />} />
               <Route path="shows" element={<Shows />} />
               <Route path="shows/:id" element={<ShowDetail />} />
               <Route path="orders" element={<Orders />} />
@@ -78,7 +79,9 @@ export function App() {
               <Route element={<RequirePermission permission="review.act" />}>
                 <Route path="review" element={<Review />} />
               </Route>
-              <Route path="reports" element={<Placeholder title="Reports" phase={8} />} />
+              <Route element={<RequirePermission permission="reports.view" />}>
+                <Route path="reports" element={<Reports />} />
+              </Route>
               <Route element={<RequirePermission permission="team.view" />}>
                 <Route path="team" element={<Team />} />
               </Route>

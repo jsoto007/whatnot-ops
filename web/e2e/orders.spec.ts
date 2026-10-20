@@ -11,7 +11,7 @@ async function signup(page: Page) {
   await page.getByLabel('Email').fill(`orders-${run}@shop.test`)
   await page.getByLabel('Password (10+ characters)').fill(PW)
   await page.getByRole('button', { name: 'Create shop' }).click()
-  await expect(page).toHaveURL(/\/app\/shows$/)
+  await expect(page).toHaveURL(/\/app$/)
 }
 
 function row(seq: number, username: string, body: string) {

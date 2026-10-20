@@ -10,7 +10,7 @@ async function signup(page: Page, email: string, org: string) {
   await page.getByLabel('Email').fill(email)
   await page.getByLabel('Password (10+ characters)').fill(PW)
   await page.getByRole('button', { name: 'Create shop' }).click()
-  await expect(page).toHaveURL(/\/app\/shows$/)
+  await expect(page).toHaveURL(/\/app$/)
 }
 
 test('owner signs up, creates a device key, invites fulfillment who gets a limited app', async ({ page, browser }) => {
@@ -44,7 +44,7 @@ test('owner signs up, creates a device key, invites fulfillment who gets a limit
   await pat.getByLabel('Your name').fill('Pat Packer')
   await pat.getByLabel('Password (10+ characters)').fill(PW)
   await pat.getByRole('button', { name: 'Create account' }).click()
-  await expect(pat).toHaveURL(/\/app\/shows$/)
+  await expect(pat).toHaveURL(/\/app$/)
   const nav = pat.getByRole('navigation', { name: 'Sections' })
   await expect(nav).toContainText('Orders')
   await expect(nav).not.toContainText('Team')
@@ -67,7 +67,7 @@ test('owner signs up, creates a device key, invites fulfillment who gets a limit
   await expect(page.getByRole('alert')).toHaveText('wrong email or password')
   await page.getByLabel('Password').fill(PW)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page).toHaveURL(/\/app\/shows$/)
+  await expect(page).toHaveURL(/\/app$/)
 })
 
 test('password reset by link', async ({ page }) => {
@@ -82,5 +82,5 @@ test('password reset by link', async ({ page }) => {
   await page.goto(new URL((await link.getAttribute('href'))!).pathname)
   await page.getByLabel('New password (10+ characters)').fill('a-brand-new-password')
   await page.getByRole('button', { name: 'Save password' }).click()
-  await expect(page).toHaveURL(/\/app\/shows$/)
+  await expect(page).toHaveURL(/\/app$/)
 })

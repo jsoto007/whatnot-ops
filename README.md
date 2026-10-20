@@ -9,7 +9,8 @@ rules. Done so far: Phase 0 (scaffold), Phase 1 (self-healing extension
 capture), Phase 2 (extension → API ingest), Phase 3 (accounts, roles,
 invites, device keys from the UI), Phase 4 (products and the inventory
 ledger), Phase 5 (rule-based parser, sales, review queue, job worker), Phase 6 (AI
-supervisor), Phase 7 (orders, payment reconciliation, fulfilment).
+supervisor), Phase 7 (orders, payment reconciliation, fulfilment), Phases 8–9 (dashboard,
+analytics, Excel reports).
 
 ## Layout
 
@@ -112,6 +113,22 @@ nothing.
 **Orders → To fulfil** is the queue of verified orders; the **Pick list**
 for a show totals the quantities per SKU across those orders; an order page
 is the packing slip (print it) with the buyer's history in other shows.
+
+## Dashboard and reports
+
+The **Dashboard** (`/app`) shows the sheet's tiles across all shows (items
+sold, buyers, red / bundles / ultra / mega, gifts, no-picks, cancelled or
+failed, paid and pending revenue, to fulfil, needs review), a live pill
+when a show has had chat in the last 10 minutes, a per-show table, items per
+show, top buyers and top products with sell-through, and low stock. Each
+show page has the same tiles and an **Analytics** tab. Numbers come from
+one module (`api/app/services/dashboard.py`) that the reports use too, so
+the tiles and the spreadsheets always agree.
+
+**Reports** (owners, managers, viewers) downloads an `.xlsx` for one show or
+for a date range with sheets: sales by show, customers, products sold,
+inventory remaining, cancellations and failed payments, revenue by show,
+fulfilment list, stock movements. Money is written as currency cells.
 
 ## AI supervisor
 
