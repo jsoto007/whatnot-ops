@@ -1,0 +1,112 @@
+import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
+import type { CapturedRow, ShowMeta } from '../capture/types'
+import type { ShowRef } from '../shared/messages'
+import { showDate } from '../shared/showDate'
+
+export const DB_NAME = 'chat-scraper'
+export const MAX_SHOWS = 30
+
+interface CsDB extends DBSchema {
+  shows: { key: string; value: ShowMeta; indexes: { 'by-started': string } }
+  rows: { key: string; value: CapturedRow; indexes: { 'by-show-seq': [string, number] } }
+  kv: { key: string; value: unknown }
+}
+
+let dbp: Promise<IDBPDatabase<CsDB>> | null = null
+
+export function getDb(): Promise<IDBPDatabase<CsDB>> {
+  dbp ??= openDB<CsDB>(DB_NAME, 1, {
+    upgrade(db) {
+      const shows = db.createObjectStore('shows', { keyPath: 'id' })
+      shows.createIndex('by-started', 'startedAt')
+      const rows = db.createObjectStore('rows', { keyPath: 'id' })
+      rows.createIndex('by-show-seq', ['showId', 'seq'])
+      db.createObjectStore('kv')
+    },
+  })
+  return dbp
+}
+
+/** Test hook: forget the cached connection (fake-indexeddb is reset between tests). */
+export function resetDbForTests(): void {
+  dbp = null
+}
+
+const showRange = (showId: string) => IDBKeyRange.bound([showId, 0], [showId, Number.MAX_SAFE_INTEGER])
+
+/** Add rows (idempotent by id) and refresh the show's metadata. Returns the new metadata. */
+export async function putRows(show: ShowRef, rows: CapturedRow[]): Promise<ShowMeta> {
+  const db = await getDb()
+  const tx = db.transaction(['rows', 'shows'], 'readwrite')
+  const rowStore = tx.objectStore('rows')
+  for (const r of rows) {
+    if ((await rowStore.getKey(r.id)) === undefined) await rowStore.add(r)
+  }
+  const count = await rowStore.index('by-show-seq').count(showRange(show.id))
+  const prev = await tx.objectStore('shows').get(show.id)
+  const meta: ShowMeta = {
+    id: show.id,
+    startedAt: show.startedAt,
+    updatedAt: Date.now(),
+    count,
+    date: showDate(show.startedAt),
+    url: show.url ?? prev?.url,
+  }
+  await tx.objectStore('shows').put(meta)
+  await tx.done
+  return meta
+}
+
+export async function getRows(showId: string): Promise<CapturedRow[]> {
+  const db = await getDb()
+  return db.getAllFromIndex('rows', 'by-show-seq', showRange(showId))
+}
+
+export async function getShow(showId: string): Promise<ShowMeta | undefined> {
+  return (await getDb()).get('shows', showId)
+}
+
+/** Newest first. */
+export async function listShows(): Promise<ShowMeta[]> {
+  const all = await (await getDb()).getAll('shows')
+  return all.sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+}
+
+export async function deleteShow(showId: string): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction(['rows', 'shows'], 'readwrite')
+  let cur = await tx.objectStore('rows').index('by-show-seq').openCursor(showRange(showId))
+  while (cur) {
+    await cur.delete()
+    cur = await cur.continue()
+  }
+  await tx.objectStore('shows').delete(showId)
+  await tx.done
+}
+
+/** Drop the oldest shows beyond MAX_SHOWS. Returns the ids removed. */
+export async function pruneShows(max = MAX_SHOWS): Promise<string[]> {
+  const shows = await listShows()
+  const drop = shows.slice(max).map((s) => s.id)
+  for (const id of drop) await deleteShow(id)
+  return drop
+}
+
+export async function kvGet<T>(key: string): Promise<T | undefined> {
+  return (await (await getDb()).get('kv', key)) as T | undefined
+}
+
+export async function kvSet(key: string, value: unknown): Promise<void> {
+  await (await getDb()).put('kv', value, key)
+}
+
+export async function kvDelete(key: string): Promise<void> {
+  await (await getDb()).delete('kv', key)
+}
+
+export const KV_SESSION = 'session'
+export const KV_MIGRATED = 'migrated_v1'
+
+export interface SessionRef {
+  showId: string
+}

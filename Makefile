@@ -3,11 +3,12 @@ SHELL := /bin/bash
 PY := .venv/bin
 E2E_PORT ?= 5055
 
-.PHONY: install db-create db-url api web check test lint e2e build-web migrate
+.PHONY: install db-create db-url api web check test lint e2e build-web migrate ext-e2e
 
 install:
 	cd api && python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt
 	cd web && npm install
+	cd extension && npm install
 
 db-url:
 	@grep -E '^(DATABASE_URL|TEST_DATABASE_URL)=' .env | sed -E 's#://[^@/]*@#://***@#'
@@ -29,10 +30,17 @@ web:
 lint:
 	cd api && $(PY)/ruff check . && $(PY)/ruff format --check .
 	cd web && npm run lint && npm run typecheck
+	cd extension && npm run lint && npm run typecheck
 
 test: db-url
 	cd api && $(PY)/pytest
 	cd web && npm test
+	cd extension && npm test
+
+# Builds the extension (extension/dist, load unpacked) and runs its Playwright suite
+# against the fixture chat page with the test build.
+ext-e2e:
+	cd extension && npm run build && npm run test:e2e
 
 check: lint test
 
