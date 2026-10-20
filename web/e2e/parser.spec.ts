@@ -11,7 +11,7 @@ async function signup(page: Page) {
   await page.getByLabel('Email').fill(`parse-${run}@shop.test`)
   await page.getByLabel('Password (10+ characters)').fill(PW)
   await page.getByRole('button', { name: 'Create shop' }).click()
-  await expect(page).toHaveURL(/\/app\/shows$/)
+  await expect(page).toHaveURL(/\/app$/)
 }
 
 function row(seq: number, username: string, body: string) {
@@ -67,8 +67,7 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   // Jobs run inline in e2e, so ingest already parsed the show and the fake AI audit already ran:
   // lani808's "card declined" line was a confident, reversible finding and the AI applied it.
   await page.getByTestId('parse-now').click()
-  await expect(page.getByTestId('tile-parsed')).toContainText('8')
-  await expect(page.getByTestId('tile-sales')).toContainText('1') // cardguy; lani808 and pokemom are in the cancelled tile
+  await expect(page.getByTestId('tile-items')).toContainText('1') // cardguy's; lani808 and pokemom are in the cancelled tile
   await expect(page.getByTestId('tile-cancelled')).toContainText('2')
   await expect(page.getByTestId('tile-review')).toContainText('1')
 

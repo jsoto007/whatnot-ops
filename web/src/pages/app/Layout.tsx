@@ -1,7 +1,8 @@
 import { NavLink, Outlet, useNavigate } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 
-const SECTIONS: { to: string; label: string; permission: string }[] = [
+const SECTIONS: { to: string; label: string; permission: string; end?: boolean }[] = [
+  { to: '/app', label: 'Dashboard', permission: 'shows.view', end: true },
   { to: '/app/shows', label: 'Shows', permission: 'shows.view' },
   { to: '/app/orders', label: 'Orders', permission: 'orders.view' },
   { to: '/app/inventory', label: 'Inventory', permission: 'inventory.view' },
@@ -21,7 +22,7 @@ export function AppLayout() {
         <div className="brand">{me?.organization.name}</div>
         <nav aria-label="Sections">
           {SECTIONS.filter((s) => can(s.permission)).map((s) => (
-            <NavLink key={s.to} to={s.to} className={({ isActive }) => (isActive ? 'active' : '')}>
+            <NavLink key={s.to} to={s.to} end={s.end} className={({ isActive }) => (isActive ? 'active' : '')}>
               {s.label}
             </NavLink>
           ))}

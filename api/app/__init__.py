@@ -13,6 +13,7 @@ from .routes.devices import bp as devices_bp
 from .routes.health import bp as health_bp
 from .routes.ingest import bp as ingest_bp
 from .routes.orders import bp as orders_bp
+from .routes.reports import bp as reports_bp
 from .routes.review import bp as review_bp
 from .routes.shows import bp as shows_bp
 from .routes.team import bp as team_bp
@@ -42,6 +43,7 @@ def create_app(config: Config | None = None) -> Flask:
     app.register_blueprint(catalog_bp, url_prefix="/api")
     app.register_blueprint(review_bp, url_prefix="/api/review")
     app.register_blueprint(orders_bp, url_prefix="/api/orders")
+    app.register_blueprint(reports_bp, url_prefix="/api")
     register_spa(app)
     register_cli(app)
 

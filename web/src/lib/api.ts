@@ -279,3 +279,50 @@ export interface ReconcileRow {
   saleId: number | null
   note: string | null
 }
+
+// ---------- dashboard / reports (Phases 8–9) ----------
+export interface ShowTiles {
+  showId: number
+  date: string
+  startedAt: string
+  updatedAt: string
+  live: boolean
+  messages: number
+  itemsSold: number
+  buyers: number
+  red: number
+  bundles: number
+  ultra: number
+  mega: number
+  gifts: number
+  noPicks: number
+  cancelled: number
+  revenuePaidCents: number
+  revenuePendingCents: number
+  orders: Record<string, number>
+  toFulfil: number
+  openReviews: number
+}
+export interface TopBuyer {
+  buyer: string
+  items: number
+  paidCents: number
+  shows: number
+}
+export interface TopSku {
+  skuId: number
+  code: string
+  product: string
+  variant: string
+  sold: number
+  paidCents: number
+  available: number
+  sellThrough: number | null
+}
+export interface Overview {
+  shows: ShowTiles[]
+  totals: Record<string, number>
+  topBuyers: TopBuyer[]
+  topSkus: TopSku[]
+  lowStock: { skuId: number; code: string; product: string; available: number }[]
+}

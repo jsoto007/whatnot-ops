@@ -105,3 +105,14 @@ tr.low td { background: #fffbeb; }
 .status.shipped { background: #dcfce7; color: #166534; }
 .field textarea { border: 1px solid var(--border); border-radius: var(--radius-s); padding: 8px; font: inherit; }
 @media print { .sidebar, .toolbar, .btn, .app-header { display: none !important; } .app { grid-template-columns: 1fr; } .content { padding: 0; } }
+
+/* ---------- dashboard ---------- */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
+@media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+.bars td:last-child { width: 60%; }
+.bar-row { display: flex; align-items: center; gap: var(--space-2); }
+.bar { height: 12px; background: var(--navy-3); border-radius: 6px; min-width: 2px; }
+.live-pill { background: #dcfce7; color: #166534; border-radius: 12px; padding: 4px 10px; font-size: 13px; text-decoration: none; font-weight: 600; }
+.badge.live { background: #dcfce7; color: #166534; }
+.btn.disabled { opacity: .5; pointer-events: none; }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
