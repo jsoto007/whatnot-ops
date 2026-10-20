@@ -119,3 +119,53 @@ export interface ChatMessage {
   rawText: string
   capturedAt: string
 }
+
+// ---------- inventory (Phase 4) ----------
+export interface Alias {
+  id: number
+  alias: string
+}
+export interface Sku {
+  id: number
+  productId: number
+  code: string
+  name: string
+  priceCents: number | null
+  onHand: number
+  reserved: number
+  available: number
+  lowStockAt: number
+  low: boolean
+  active: boolean
+  aliases: Alias[]
+}
+export interface Product {
+  id: number
+  name: string
+  notes: string | null
+  active: boolean
+  skus: Sku[]
+}
+export interface Movement {
+  id: number
+  kind: 'restock' | 'adjust' | 'reserve' | 'release' | 'commit'
+  quantity: number
+  sourceType: string
+  sourceId: string
+  reason: string | null
+  actor: string
+  onHandAfter: number
+  reservedAfter: number
+  at: string
+}
+export interface ImportRow {
+  item: string
+  quantity: number
+  skuCode: string | null
+  action: 'create' | 'set' | 'unchanged' | 'skip'
+  before: number | null
+  error: string | null
+}
+
+export const money = (cents: number | null | undefined) =>
+  cents == null ? '—' : (cents / 100).toLocaleString(undefined, { style: 'currency', currency: 'USD' })

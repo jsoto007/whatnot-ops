@@ -8,6 +8,7 @@ from .config import Config, db_host
 from .db import db, migrate
 from .routes.audit import bp as audit_bp
 from .routes.auth import bp as auth_bp
+from .routes.catalog import bp as catalog_bp
 from .routes.devices import bp as devices_bp
 from .routes.health import bp as health_bp
 from .routes.ingest import bp as ingest_bp
@@ -35,6 +36,7 @@ def create_app(config: Config | None = None) -> Flask:
     app.register_blueprint(devices_bp, url_prefix="/api/devices")
     app.register_blueprint(audit_bp, url_prefix="/api/audit")
     app.register_blueprint(shows_bp, url_prefix="/api/shows")
+    app.register_blueprint(catalog_bp, url_prefix="/api")
     register_spa(app)
     register_cli(app)
 
