@@ -132,8 +132,8 @@ function SkuRow({ sku, write, onChange }: { sku: Sku; write: boolean; onChange: 
       <td>{sku.name || '—'}</td>
       <td>{money(sku.priceCents)}</td>
       <td className="num">
-        {sku.available}
-        {sku.low && <span className="badge warn">low</span>}
+        <span className={sku.short ? 'neg' : undefined}>{sku.available}</span>
+        {sku.short > 0 ? <span className="badge danger">buy {sku.short}</span> : sku.low && <span className="badge warn">low</span>}
       </td>
       <td>
         <div className="chips">

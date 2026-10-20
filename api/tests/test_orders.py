@@ -79,10 +79,8 @@ def test_reconcile_preview_then_apply_commits_and_releases_stock(app, world):
         ],
     )
     run(app, world["show"])
-    assert level(app, world["red"]) == (
-        3,
-        3,
-    )  # 1 + 2 reserved; kat.c and dave could not (only 3) → detected
+    # 1 + 2 + 1 + 1 reserved against 3 on the shelf: oversold by 2, nothing refused
+    assert level(app, world["red"]) == (3, 5)
     with app.app_context():
         show = db.session.get(Show, world["show"])
         p = reconcile.plan(show, reconcile.parse_csv(CSV))
@@ -91,7 +89,7 @@ def test_reconcile_preview_then_apply_commits_and_releases_stock(app, world):
         dave = db.session.scalar(select(Sale).where(Sale.buyer_username == "dave-77"))
         assert p.uncovered == [dave.id]
         db.session.rollback()
-    assert level(app, world["red"]) == (3, 3)  # preview changed nothing
+    assert level(app, world["red"]) == (3, 5)  # preview changed nothing
     with app.app_context():
         show = db.session.get(Show, world["show"])
         u = owner(app, world["org"])
@@ -103,16 +101,15 @@ def test_reconcile_preview_then_apply_commits_and_releases_stock(app, world):
             ("lani808", "paid", "RED", 1),
             ("lani808", "paid", "RED", 2),
             ("kat.c", "cancelled", "RED", 1),
-            ("dave-77", "detected", "RED", 1),
+            ("dave-77", "reserved", "RED", 1),
         ]
     )
-    assert level(app, world["red"]) == (0, 0)  # 3 committed
+    # 3 committed for lani808, kat.c's refund released hers, dave's 1 still held: 1 to buy
+    assert level(app, world["red"]) == (0, 1)
     assert order_of(app, "lani808") == ("paid", 2, True)
     assert order_of(app, "kat.c") == ("cancelled", 1, False)
-    # dave: no stock + not in the file; stranger: in the file but no sale. kat.c's stock
-    # review was dismissed when the file cancelled her sale.
+    # dave: not in the file; stranger: in the file but no sale.
     assert sorted(r for r, _ in open_reviews(app)) == [
-        "insufficient_stock",
         "no_payment_record",
         "unmatched_payment",
     ]
@@ -134,7 +131,7 @@ def test_reconcile_preview_then_apply_commits_and_releases_stock(app, world):
         )
         db.session.commit()
         assert db.session.scalar(select(db.func.count()).select_from(ReviewItem)) == n
-    assert level(app, world["red"]) == (0, 0)
+    assert level(app, world["red"]) == (0, 1)
 
 
 def test_parse_csv_is_tolerant_about_headers_and_statuses():

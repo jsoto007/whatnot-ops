@@ -115,12 +115,12 @@ def test_unmatched_item_goes_to_review_and_assigning_a_sku_reserves_and_remember
     assert sales(app, world["show"])[-1] == ("kat.c", "reserved", "RED", 1)
 
 
-def test_insufficient_stock_flags_the_sale_for_review(app, world):
+def test_overselling_reserves_the_sale_without_a_review(app, world):
     world["say"](app, [("", "lani808 won Red bundle x5")])
     run(app, world["show"])
-    assert sales(app, world["show"]) == [("lani808", "detected", "RED", 5)]
-    assert [r for r, _ in open_reviews(app)] == ["insufficient_stock"]
-    assert level(app, world["red"]) == (3, 0)
+    assert sales(app, world["show"]) == [("lani808", "reserved", "RED", 5)]
+    assert open_reviews(app) == []
+    assert level(app, world["red"]) == (3, 5)  # 2 short: the shop buys more
 
 
 def test_ambiguous_cancellation_asks_which_sale(app, world):

@@ -105,4 +105,29 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   await expect(page.getByTestId('level-RED').locator('td').nth(3)).toHaveText('1')
   await page.getByRole('link', { name: 'Products' }).click()
   await expect(page.locator('.chip', { hasText: 'mystery box' })).toBeVisible()
+
+  // Overselling: 3 on the shelf, 1 held, kat.c wins 4 more. The sale is reserved anyway and
+  // the shortfall says how many to buy, instead of a "not enough stock" review.
+  const more = await request.post('/api/ingest', {
+    data: { ...batch, rows: [row(9, '', 'kat.c won Red bundle x4')] },
+    headers: { Authorization: 'Bearer ' + key },
+  })
+  expect(more.ok()).toBe(true)
+  await page.getByRole('link', { name: 'Inventory' }).click()
+  const red = page.getByTestId('level-RED')
+  await expect(red.locator('td').nth(3)).toHaveText('5')
+  await expect(red.locator('td').nth(4)).toContainText('-2')
+  await expect(red.locator('td').nth(4)).toContainText('buy 2')
+  await expect(page.getByTestId('to-buy')).toHaveText('1 oversold, buy 2 more')
+  await page.getByRole('link', { name: /^Review/ }).click()
+  await expect(page.getByText('Nothing waiting', { exact: true })).toBeVisible()
+  await page.getByRole('link', { name: 'Dashboard' }).click()
+  await expect(page.locator('.attn-row', { hasText: 'Buy 2 more Red bundle' })).toBeVisible()
+
+  // Buying 5 fills the 2 owed and leaves 3 to sell.
+  await page.getByRole('link', { name: 'Inventory' }).click()
+  await page.getByLabel('Adjust RED').fill('+5')
+  await red.getByRole('button', { name: 'Apply' }).click()
+  await expect(red.locator('td').nth(4)).toHaveText('3')
+  await expect(page.getByTestId('to-buy')).toHaveCount(0)
 })

@@ -87,6 +87,7 @@ def sku(s) -> dict:
         "onHand": s.on_hand,
         "reserved": s.reserved,
         "available": s.available,
+        "short": s.short,
         "lowStockAt": s.low_stock_at,
         "low": s.available <= s.low_stock_at,
         "active": s.active,

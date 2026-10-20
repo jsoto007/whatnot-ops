@@ -167,6 +167,7 @@ def top_skus(org_id: int, *, show_id: int | None = None, limit: int = 10) -> lis
     out = []
     for sku, pname, n, r in db.session.execute(q).all():
         sold = int(n)
+        left = max(0, sku.available)  # an oversold SKU is 100% sold through, not >100%
         out.append(
             {
                 "skuId": sku.id,
@@ -176,9 +177,8 @@ def top_skus(org_id: int, *, show_id: int | None = None, limit: int = 10) -> lis
                 "sold": sold,
                 "paidCents": int(r),
                 "available": sku.available,
-                "sellThrough": round(sold / (sold + sku.available), 3)
-                if sold + sku.available
-                else None,
+                "short": sku.short,
+                "sellThrough": round(sold / (sold + left), 3) if sold + left else None,
             }
         )
     return out
@@ -250,6 +250,7 @@ def overview(org_id: int) -> dict:
             "fulfilItems": fulfil_items,
             "fulfilOldestShow": fulfil_oldest,
             "lowStock": len(low),
+            "oversold": [s for s in low if s["short"]],
             "unreconciledShows": unreconciled,
             "live": live,
         },
@@ -318,6 +319,7 @@ def chat_pace(show_id: int, minutes: int = 30) -> list[int]:
 
 
 def _low_stock(org_id: int) -> list[dict]:
+    """SKUs at or under their low line, most short first (oversold SKUs have available < 0)."""
     skus = db.session.scalars(
         select(Sku)
         .where(
@@ -341,6 +343,7 @@ def _low_stock(org_id: int) -> list[dict]:
             "code": s.code,
             "product": s.product.name,
             "available": s.available,
+            "short": s.short,
             "lowAt": s.low_stock_at,
             "sold": int(sold.get(s.id, 0)),
         }

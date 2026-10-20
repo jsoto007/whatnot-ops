@@ -196,7 +196,7 @@ def build(
     _sheet(
         wb,
         "Inventory remaining",
-        ["Product", "SKU", "On hand", "Reserved", "Available", "Low at", "Price"],
+        ["Product", "SKU", "On hand", "Reserved", "Available", "To buy", "Low at", "Price"],
         [
             [
                 s.product.name,
@@ -204,12 +204,13 @@ def build(
                 s.on_hand,
                 s.reserved,
                 s.available,
+                s.short,
                 s.low_stock_at,
                 s.price_cents,
             ]
             for s in skus
         ],
-        money_cols=(7,),
+        money_cols=(8,),
     )
 
     # 5. Cancellations and failed payments

@@ -71,7 +71,13 @@ class Sku(db.Model):
 
     @property
     def available(self) -> int:
+        """Negative when sales oversold the shelf."""
         return self.on_hand - self.reserved
+
+    @property
+    def short(self) -> int:
+        """How many to buy to fill every sold order (0 unless oversold)."""
+        return max(0, -self.available)
 
 
 class ProductAlias(db.Model):

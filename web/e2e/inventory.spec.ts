@@ -36,7 +36,7 @@ test('products, aliases, adjustments, history and sheet import', async ({ page }
   await expect(row.locator('td').nth(2)).toHaveText('5')
   await page.getByLabel('Adjust RED').fill('-7')
   await row.getByRole('button', { name: 'Apply' }).click()
-  await expect(row).toContainText('cannot adjust below')
+  await expect(row).toContainText('below zero') // 5 on the shelf: a count can't go under 0
   await row.getByRole('button', { name: 'History' }).click()
   await expect(page.locator('.table.small')).toContainText('initial count')
 

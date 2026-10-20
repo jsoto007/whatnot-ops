@@ -1,11 +1,19 @@
 """Inventory ledger with atomic gates.
 
 Every change goes through `move()`, which locks the SKU row (SELECT … FOR
-UPDATE), checks the gate (no reserve beyond what is available, no release
-beyond what is reserved), appends a movement and updates the cached counts in
-the same transaction. A movement with a source (sale 42, import 7) is unique
-per (sku, kind, source), so replaying the same event moves nothing and
-returns the original movement.
+UPDATE), checks the gate (no release or commit beyond what is reserved, no
+count below zero), appends a movement and updates the cached counts in the
+same transaction.
+
+Overselling is allowed on purpose: a live show can sell more than is on the
+shelf, and the shop buys more to fill those orders. A reserve never fails for
+lack of stock; `available` (on_hand - reserved) goes negative instead, and
+`short` says how many to buy. The row lock still matters: it keeps 50
+concurrent reserves from losing each other's updates.
+
+A movement with a source (sale 42, import 7) is unique per (sku, kind,
+source), so replaying the same event moves nothing and returns the original
+movement.
 """
 
 import uuid
@@ -22,10 +30,6 @@ class InventoryError(ValueError):
     def __init__(self, message: str, status: int = 409):
         super().__init__(message)
         self.status = status
-
-
-class InsufficientStock(InventoryError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -88,18 +92,15 @@ def move(
     if kind is MovementKind.restock:
         sku.on_hand += quantity
     elif kind is MovementKind.adjust:
-        if sku.on_hand + quantity < sku.reserved:
+        # A count may land below what open sales hold (that SKU is now short), but a
+        # shelf never holds fewer than zero. Only paid oversells push on_hand negative.
+        if quantity < 0 and sku.on_hand + quantity < 0:
             raise InventoryError(
-                f"cannot adjust below the {sku.reserved} reserved for open sales "
-                f"(on hand {sku.on_hand})"
+                f"cannot count {sku.code} below zero (on hand {sku.on_hand}, change {quantity})"
             )
         sku.on_hand += quantity
     elif kind is MovementKind.reserve:
-        if sku.available < quantity:
-            raise InsufficientStock(
-                f"only {sku.available} of {sku.code} available, {quantity} wanted"
-            )
-        sku.reserved += quantity
+        sku.reserved += quantity  # may oversell: available goes negative, see `Sku.short`
     elif kind is MovementKind.release:
         if sku.reserved < quantity:
             raise InventoryError(

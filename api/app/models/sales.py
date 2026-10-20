@@ -35,7 +35,7 @@ EVENT_ENUM = Enum(EventKind, name="event_kind", values_callable=lambda e: [m.val
 
 
 class SaleStatus(enum.StrEnum):
-    detected = "detected"  # seen, not reserved (unmatched item or no stock)
+    detected = "detected"  # seen, not reserved yet (item not recognised)
     reserved = "reserved"
     paid = "paid"
     cancelled = "cancelled"
