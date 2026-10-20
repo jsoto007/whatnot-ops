@@ -16,8 +16,17 @@ commands.
   radii, spacing and motion. Vitest + Testing Library; Playwright against a
   production build served by Flask (`make e2e`, installed Chrome locally).
   No Tailwind.
-- `extension/`: Chrome MV3 extension, plain JS until Phase 1.
-- `shared/`: JSON Schema contract between extension and API (from Phase 2).
+- `extension/`: Chrome MV3 extension in TypeScript, bundled with esbuild
+  (`build.mjs`). Capture is a pure DOM module (`src/capture/`), storage is
+  IndexedDB in the background worker (`src/storage/`), uploads go through an
+  outbox (`src/upload/`). Vitest in jsdom; Playwright drives the test build
+  on `e2e/fixture/chat.html` and starts the real API on the test DB
+  (`APP_ENV=test`) for `e2e/ingest.spec.ts`.
+- `shared/`: `chat-event-batch.schema.json`, the contract for
+  `POST /api/ingest`; both sides validate the same `shared/fixtures/`.
+- Ingest auth is a per-device API key (`flask devices create`), only its
+  SHA-256 is stored (`api/app/services/devices.py`). Rows are idempotent by
+  `(show_id, client_id)`; a batch is all-or-nothing.
 - Deploy: Render Blueprint (`render.yaml`), one Python web service that
   builds `web/dist` and serves it through Flask (`api/app/spa.py`). Same
   origin, no CORS.

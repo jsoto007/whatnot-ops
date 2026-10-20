@@ -1,9 +1,10 @@
 # Chat Scraper (Chrome extension)
 
 Captures a Whatnot live show's chat with timestamps, survives Whatnot
-re-rendering the chat, and hands every line to the background worker, which
-stores it in IndexedDB (Phase 2 uploads it to the API as well). Chat Search
-(`search.html`) searches saved shows or a downloaded `.txt`.
+re-rendering the chat, hands every line to the background worker, which
+stores it in IndexedDB and uploads it to the API. Chat Search
+(`search.html`) searches saved shows or a downloaded `.txt`; Settings
+(`options.html`) holds the server URL and device key.
 
 ## Build and load
 
@@ -37,6 +38,17 @@ load it. Never load `dist-test/` for real use.
   message in the same batch is still recorded.
 - The content script never observes `document.body`; it watches the chat's
   scroll container, or the row's list when the chat does not overflow yet.
+
+## Upload
+
+Rows are stored with `uploaded = 0` and drained by `src/upload/uploader.ts`
+in batches of up to 200 per show to `POST /api/ingest`, validated first with
+Ajv against `shared/chat-event-batch.schema.json`. A flush runs 2 s after new
+rows, on a retry alarm with exponential backoff (5 s … 5 min) after a network
+failure, every minute as a sweep, when the settings change, and from the
+Settings page. A rejected key or a 400 stops retries until the settings
+change; rows stay queued. The panel's second line shows
+`saved N · uploaded` / `N to upload — <reason>`.
 
 ## Storage
 

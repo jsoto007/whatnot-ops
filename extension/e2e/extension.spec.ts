@@ -41,7 +41,7 @@ test('captures a show end to end: pick, 500 rows with re-renders, class swap, co
     }
   })
   await expect(page.locator(panel('#cnt'))).toHaveText('510')
-  await expect(page.locator(panel('#sync'))).toHaveText('saved 510')
+  await expect(page.locator(panel('#sync'))).toContainText('saved 510')
 
   // A deploy renames every row class; rows keep coming with the new class.
   await page.evaluate(() => window.__chat.swapClasses('msg-row-v2'))
@@ -68,7 +68,7 @@ test('captures a show end to end: pick, 500 rows with re-renders, class swap, co
   await page.evaluate(() => window.__chat.replaceContainer())
   await page.evaluate(() => window.__chat.append('fresh1', 'after container swap'))
   await expect(page.locator(panel('#cnt'))).toHaveText('521', { timeout: 20_000 })
-  await expect(page.locator(panel('#sync'))).toHaveText('saved 521')
+  await expect(page.locator(panel('#sync'))).toContainText('saved 521')
 
   // Chat Search sees the same show, live, with the username split applied.
   const search = await context.newPage()
@@ -89,7 +89,7 @@ test('captures a show end to end: pick, 500 rows with re-renders, class swap, co
   await expect(page.locator(panel('#cnt'))).toHaveText('521')
   await page.evaluate(() => window.__chat.append('resumed1', 'first after resume'))
   await expect(page.locator(panel('#cnt'))).toHaveText('522')
-  await expect(page.locator(panel('#sync'))).toHaveText('saved 522')
+  await expect(page.locator(panel('#sync'))).toContainText('saved 522')
 })
 
 test('says so when the click was not on a list of messages', async ({ page }) => {

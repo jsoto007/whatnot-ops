@@ -5,7 +5,8 @@
   "description": "Captures Whatnot live show chat with timestamps, auto-save, self-healing capture, watch words and built-in Chat Search.",
   "permissions": [
     "storage",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "alarms"
   ],
   "background": {
     "service_worker": "background.js"
@@ -34,5 +35,9 @@
       ],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
 }

@@ -47,13 +47,31 @@ jobs:
 
   extension:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: whatnot_ops_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      # The Playwright suite starts the real API (APP_ENV=test) against this database.
+      DATABASE_URL: postgresql+psycopg://postgres@localhost:5432/whatnot_ops_test
+      TEST_DATABASE_URL: postgresql+psycopg://postgres@localhost:5432/whatnot_ops_test
+      SECRET_KEY: ci
+      FLASK_BIN: flask
     defaults: { run: { working-directory: extension } }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version-file: .node-version, cache: npm, cache-dependency-path: extension/package-lock.json }
       - uses: actions/setup-python@v5
-        with: { python-version-file: .python-version }
+        with: { python-version-file: .python-version, cache: pip, cache-dependency-path: api/requirements.txt }
+      - run: pip install -r ../api/requirements.txt
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck

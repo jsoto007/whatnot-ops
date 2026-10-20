@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "show": { "id": "2026-10-19T20:00:00.000Z", "startedAt": "2026-10-19T20:00:00.000Z" },
+  "rows": [
+    { "id": "not-a-hash", "showId": "2026-10-19T20:00:00.000Z", "username": "", "body": "x", "rawText": "x", "capturedAt": "2026-10-19T20:01:00.000Z", "seq": 1 }
+  ]
+}

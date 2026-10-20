@@ -6,9 +6,13 @@ import {
   getShow,
   kvGet,
   listShows,
+  markUploaded,
+  pendingCount,
+  pendingRows,
   pruneShows,
   putRows,
   resetDbForTests,
+  uploadedCount,
 } from '../src/storage/db'
 import { legacyToRows, migrateLegacyStorage } from '../src/storage/migrate'
 import type { CapturedRow } from '../src/capture/types'
@@ -106,5 +110,24 @@ describe('legacy migration', () => {
 
     const second = await migrateLegacyStorage(fake)
     expect(second).toEqual({ shows: 0, rows: 0 })
+  })
+})
+
+describe('upload outbox', () => {
+  const show = { id: '2026-10-19T20:00:00.000Z', startedAt: '2026-10-19T20:00:00.000Z' }
+
+  it('new rows are pending until marked uploaded, oldest first', async () => {
+    await putRows(show, [row(show.id, 2), row(show.id, 1), row(show.id, 3)])
+    expect(await pendingCount()).toBe(3)
+    expect((await pendingRows(2)).map((r) => r.seq)).toEqual([1, 2])
+    await markUploaded([`${show.id}-1`, `${show.id}-2`])
+    expect(await pendingCount()).toBe(1)
+    expect(await uploadedCount()).toBe(2)
+    expect((await pendingRows(10)).map((r) => r.seq)).toEqual([3])
+    // re-adding an uploaded row does not make it pending again
+    await putRows(show, [row(show.id, 1)])
+    expect(await pendingCount()).toBe(1)
+    // getRows hides the flag
+    expect(Object.keys((await getRows(show.id))[0]!)).not.toContain('uploaded')
   })
 })

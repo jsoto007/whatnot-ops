@@ -5,8 +5,8 @@ chat, a Flask API turns it into sales, inventory movements and orders, and a
 React dashboard gives the fulfillment team everything at a glance.
 
 See `docs/PLAN.md` for the phased build plan and `CLAUDE.md` for working
-rules. Phase 0 (this scaffold) ships an empty app end to end: API health
-route, SPA served by Flask, tests and CI.
+rules. Done so far: Phase 0 (scaffold), Phase 1 (self-healing extension
+capture), Phase 2 (extension → API ingest).
 
 ## Layout
 
@@ -28,4 +28,19 @@ make api                        # Flask on http://localhost:5000
 make web                        # Vite on http://localhost:5173 (proxies /api)
 make check                      # lint + typecheck + unit tests, both sides
 make e2e                        # production build served by Flask + Playwright
+make ext-e2e                    # extension: build, then Playwright against the fixture chat + the real API
 ```
+
+## Connect a laptop (extension device key)
+
+```bash
+cd api && FLASK_APP=wsgi.py .venv/bin/flask devices create --org "Shop name" --name "Front laptop"
+```
+
+Prints the key once (`wn_…`). Paste it with the server URL into the
+extension's Settings page (toolbar icon → Settings, or `chrome://extensions`
+→ Chat Scraper → Details → Extension options). "Test connection" should say
+which device and organization it is. Every captured line is saved on the
+laptop first and uploaded in batches to `POST /api/ingest`; uploads retry
+with backoff when the server is unreachable and resume when the key is
+fixed.

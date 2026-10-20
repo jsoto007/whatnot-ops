@@ -1,7 +1,7 @@
 import { Recorder } from '../capture/recorder'
 import { findRow, buildSelector, scrollParent } from '../capture/row'
 import type { CapturedRow } from '../capture/types'
-import type { Request, SessionReply, ShowRef } from '../shared/messages'
+import type { Request, SessionReply, ShowRef, UploadStatus } from '../shared/messages'
 import { showDate } from '../shared/showDate'
 import { Panel } from './panel'
 
@@ -47,6 +47,8 @@ export class Controller {
       void this.flush().finally(() => send({ cmd: 'openSearch' }).catch(() => {}))
     }
     p.el('backup').onclick = () => this.download('backup')
+    p.el('settings').onclick = () => send({ cmd: 'openOptions' }).catch(() => {})
+    setInterval(() => void this.refreshUpload(), 5000)
     p.el('clear').onclick = () => this.clear()
     p.el<HTMLInputElement>('find').addEventListener('input', (e) => {
       this.findTerm = (e.target as HTMLInputElement).value.trim().toLowerCase()
@@ -180,14 +182,34 @@ export class Controller {
     const batch = this.pending
     this.pending = []
     try {
-      const reply = await send<{ ok?: boolean; count?: number; error?: string }>({ cmd: 'rows', show, rows: batch })
+      const reply = await send<{ ok?: boolean; count?: number; upload?: UploadStatus; error?: string }>({
+        cmd: 'rows',
+        show,
+        rows: batch,
+      })
       if (reply?.ok) {
         this.synced = reply.count ?? this.synced + batch.length
-        this.panel.setSync(`saved ${this.synced}`)
+        this.panel.setSync(`saved ${this.synced}` + this.uploadNote(reply.upload))
       } else throw new Error(reply?.error ?? 'save failed')
     } catch (err) {
       this.pending = batch.concat(this.pending)
       this.panel.setSync(`${this.pending.length} not saved yet — ${String((err as Error).message ?? err)}`)
+    }
+  }
+
+  private uploadNote(u?: UploadStatus): string {
+    if (!u) return ''
+    if (!u.configured) return ' · not uploading (set the server in Settings)'
+    if (u.lastError) return ` · ${u.pending} to upload — ${u.lastError}`
+    return u.pending ? ` · ${u.pending} to upload` : ' · uploaded'
+  }
+
+  async refreshUpload(): Promise<void> {
+    try {
+      const u = await send<UploadStatus>({ cmd: 'getUploadStatus' })
+      if (this.log.length) this.panel.setSync(`saved ${this.synced}` + this.uploadNote(u))
+    } catch {
+      /* background asleep or reloaded */
     }
   }
 
