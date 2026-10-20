@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from ..db import db
 from ..models import Invite, Organization, PasswordReset, Role, User
 from . import audit, mail
+from .admin import admin_email, is_admin
 
 _ph = PasswordHasher()
 MAX_FAILED_LOGINS = 8
@@ -66,18 +67,36 @@ def app_url(path: str) -> str:
     return base.rstrip("/") + path
 
 
-# ---------- sign-up (bootstrap or ALLOW_SIGNUPS) ----------
+# ---------- sign-up (only the ADMIN_EMAIL, only once) ----------
+
+
+def signup_state() -> tuple[bool, bool]:
+    """(open, admin_only). See services/admin.py for the rule."""
+    admin = admin_email()
+    if admin:
+        taken = db.session.scalar(select(User.id).where(User.email == admin)) is not None
+        shops = db.session.scalar(select(func.count()).select_from(Organization)) or 0
+        return (not taken and shops == 0, True)
+    return (current_app.config.get("APP_ENV") != "production", False)
 
 
 def signups_open() -> bool:
-    if os.environ.get("ALLOW_SIGNUPS") == "1" or current_app.config.get("APP_ENV") != "production":
-        return True
-    return (db.session.scalar(select(func.count()).select_from(User)) or 0) == 0
+    return signup_state()[0]
 
 
 def signup(org_name: str, name: str, email: str, password: str) -> User:
-    if not signups_open():
-        raise AccountError("sign-ups are closed; ask an owner for an invite", 403)
+    open_, admin_only = signup_state()
+    if not open_:
+        raise AccountError(
+            "this shop is already set up; ask its owner for an invite"
+            if admin_only
+            else "sign-ups are closed; ask an owner for an invite",
+            403,
+        )
+    if admin_only and not is_admin(email):
+        raise AccountError(
+            "only the shop's admin email can create the shop; ask the owner for an invite", 403
+        )
     email = normalise_email(email)
     check_password_strength(password)
     if not (org_name or "").strip() or not (name or "").strip():
@@ -112,6 +131,8 @@ def login(email: str, password: str) -> User:
     except AccountError:
         raise AccountError("wrong email or password", 401) from None
     user = db.session.scalar(select(User).where(User.email == email))
+    if user is not None and is_admin(user.email):
+        _restore_admin(user)
     if user is None or user.disabled:
         _ph.hash(password or "")  # constant-ish time
         raise AccountError("wrong email or password", 401)
@@ -220,6 +241,8 @@ def accept_invite(token: str, name: str, password: str) -> User:
     invite.accepted_at = now()
     db.session.add(user)
     db.session.flush()
+    if is_admin(user.email):
+        _restore_admin(user)
     audit.record(
         invite.organization_id,
         "invite.accepted",
@@ -257,6 +280,11 @@ def update_user(
     if user is None or user.organization_id != actor.organization_id:
         raise AccountError("user not found", 404)
     changes: dict = {}
+    if is_admin(user.email) and ((role is not None and role != Role.owner) or disabled):
+        raise AccountError(
+            "this is the shop's admin (set by ADMIN_EMAIL); change that setting to hand it over",
+            409,
+        )
     if role is not None and role != user.role:
         if user.role is Role.owner and _owner_count(actor.organization_id) == 1:
             raise AccountError("the last owner cannot be demoted", 409)
@@ -282,6 +310,23 @@ def update_user(
         )
         db.session.commit()
     return user
+
+
+def _restore_admin(user: User) -> None:
+    """ADMIN_EMAIL is the source of truth: that account is an enabled owner."""
+    if user.role is Role.owner and not user.disabled:
+        return
+    before = {"role": user.role.value if user.role else None, "disabled": user.disabled}
+    user.role = Role.owner
+    user.disabled = False
+    user.session_token = secrets.token_hex(16)
+    audit.record(
+        user.organization_id,
+        "user.admin_restored",
+        target_type="user",
+        target_id=user.id,
+        details=before,
+    )
 
 
 def _owner_count(org_id: int) -> int:

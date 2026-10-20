@@ -63,6 +63,8 @@ export interface User {
   name: string
   role: Role
   disabled: boolean
+  /** The shop's admin from ADMIN_EMAIL: always an owner, cannot be demoted or disabled. */
+  isAdmin?: boolean
   createdAt: string
   lastLoginAt: string | null
 }

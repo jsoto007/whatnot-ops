@@ -113,7 +113,8 @@ def register_cli(app: Flask) -> None:
 
     @app.cli.command("e2e-seed")
     def e2e_seed():
-        """Test only: a device whose key is $E2E_DEVICE_KEY. Refused in production."""
+        """Test only: a device whose key is $E2E_DEVICE_KEY (and a pairing code
+        $E2E_PAIRING_CODE when set). Refused in production."""
         if app.config.get("APP_ENV") == "production":
             raise click.ClickException("refused in production")
         key = os.environ.get("E2E_DEVICE_KEY")
@@ -123,5 +124,26 @@ def register_cli(app: Flask) -> None:
 
         if device_for_key(key) is None:
             create_device(_org("E2E Shop"), "e2e device", key=key)
+            db.session.commit()
+        code = os.environ.get("E2E_PAIRING_CODE")
+        if code:
+            # A fresh, unused pairing code with a known value, re-created on every run.
+            from datetime import UTC, datetime, timedelta
+
+            from ..models import DevicePairing
+            from ..services.devices import hash_key, normalise_code
+
+            h = hash_key(normalise_code(code))
+            db.session.execute(db.delete(DevicePairing).where(DevicePairing.code_hash == h))
+            now = datetime.now(UTC)
+            db.session.add(
+                DevicePairing(
+                    organization_id=_org("E2E Shop").id,
+                    name="Paired laptop",
+                    code_hash=h,
+                    created_at=now,
+                    expires_at=now + timedelta(hours=1),
+                )
+            )
             db.session.commit()
         click.echo("e2e device ready")

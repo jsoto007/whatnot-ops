@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { connectLaptop } from './laptop'
 import { cell, receive } from './stock'
 
 const PW = 'correct-horse-battery'
@@ -37,10 +38,7 @@ test('sales become orders; the payment file verifies them; the queue drives pick
   await receive(page, 'RED', 5)
   await expect(cell(page, 'RED', 'on-hand')).toHaveText('5')
 
-  await page.getByRole('link', { name: 'Settings' }).click()
-  await page.getByLabel('Laptop name').fill('Laptop')
-  await page.getByRole('button', { name: 'Create key' }).click()
-  const key = (await page.getByTestId('new-key').locator('code').textContent())!.trim()
+  const key = await connectLaptop(page, request)
   const res = await request.post('/api/ingest', {
     data: {
       version: 1,

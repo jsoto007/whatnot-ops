@@ -1,6 +1,6 @@
 from .accounts import AuditLog, Invite, PasswordReset, Role, User
 from .ai import AiCall
-from .core import ChatMessage, Device, Organization, Show
+from .core import ChatMessage, Device, DevicePairing, Organization, Show
 from .inventory import InventoryMovement, MovementKind, Product, ProductAlias, Sku
 from .orders import Order, OrderStatus
 from .sales import (
@@ -19,6 +19,7 @@ __all__ = [
     "AuditLog",
     "ChatMessage",
     "Device",
+    "DevicePairing",
     "EventKind",
     "InventoryMovement",
     "Invite",

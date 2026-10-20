@@ -199,7 +199,7 @@ export class Controller {
 
   private uploadNote(u?: UploadStatus): string {
     if (!u) return ''
-    if (!u.configured) return ' · not uploading (set the server in Settings)'
+    if (!u.configured) return ' · not uploading (connect this laptop in Settings)'
     if (u.lastError) return ` · ${u.pending} to upload — ${u.lastError}`
     return u.pending ? ` · ${u.pending} to upload` : ' · uploaded'
   }

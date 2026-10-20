@@ -52,7 +52,10 @@ def csrf():
 def me():
     user = current_user()
     if user is None:
-        return jsonify({"error": "not signed in", "signupsOpen": accounts.signups_open()}), 401
+        open_, admin_only = accounts.signup_state()
+        return jsonify(
+            {"error": "not signed in", "signupsOpen": open_, "signupAdminOnly": admin_only}
+        ), 401
     return jsonify(serializers.me(user))
 
 

@@ -12,6 +12,7 @@ const auth: AuthState = {
   },
   loading: false,
   signupsOpen: false,
+  signupAdminOnly: false,
   can: (p) => auth.me!.permissions.includes(p),
   setMe: () => {},
   logout: async () => {},

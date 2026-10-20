@@ -61,6 +61,32 @@ class Device(db.Model):
         return self.revoked_at is None
 
 
+class DevicePairing(db.Model):
+    """A short-lived, single-use code a laptop trades for its device key.
+
+    Only the code's SHA-256 is stored. `used_at` is set by one conditional UPDATE,
+    so two laptops racing on the same code cannot both get a key.
+    """
+
+    __tablename__ = "device_pairings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"))
+
+    device: Mapped["Device | None"] = relationship()
+
+
 class Show(db.Model):
     __tablename__ = "shows"
     __table_args__ = (UniqueConstraint("organization_id", "show_key", name="uq_shows_org_key"),)

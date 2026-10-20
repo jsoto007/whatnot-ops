@@ -5,16 +5,31 @@ import { Field, Form } from '../components/Form'
 import { api, type Me } from '../lib/api'
 
 export function Signup() {
-  const { setMe } = useAuth()
+  const { setMe, signupsOpen, signupAdminOnly, loading } = useAuth()
   const nav = useNavigate()
   const [organization, setOrganization] = useState('')
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  if (!loading && !signupsOpen) {
+    return (
+      <section className="card auth-card" data-testid="signup-closed">
+        <h2>This shop is already set up</h2>
+        <p className="muted">Ask the shop's owner to invite you from the Team page. The invite email has a link to create your account.</p>
+        <p className="muted">
+          Already have an account? <Link to="/login">Sign in</Link>
+        </p>
+      </section>
+    )
+  }
   return (
     <section className="card auth-card">
       <h2>Create your shop</h2>
-      <p className="muted">You become the owner and can invite the team.</p>
+      <p className="muted">
+        {signupAdminOnly
+          ? "Use the shop's admin email (the one set on the server). You become the owner and can invite the team."
+          : 'You become the owner and can invite the team.'}
+      </p>
       <Form
         submitLabel="Create shop"
         onSubmit={async () => {

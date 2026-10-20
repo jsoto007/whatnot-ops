@@ -27,11 +27,17 @@ unset); the worker does. Both read the same `DATABASE_URL`.
 4. Smoke test (also `make smoke BASE_URL=https://…`):
    `GET /api/health` → `{"status":"ok","db":true}`; `/` serves the sign-in
    page; `/some/route` falls back to the SPA; `/api/nope` is 404.
-5. First owner: open `/signup` (the very first account is always allowed), or
-   from the web service's Shell:
+5. Admin: set `ADMIN_EMAIL` on the web service **before** anyone visits.
+   Only that email can create the shop on `/signup`, once; without it
+   production never opens sign-up. That account is always an owner (the app
+   refuses to demote or disable it; logging in restores it). To hand the shop
+   over, invite the new person, then change `ADMIN_EMAIL` to their email.
+   Fallback from the web service's Shell:
    `cd api && flask --app wsgi.py users create-owner --org "Shop" --email you@… --name "You"`.
-6. Settings → set the shop's Whatnot username (host) and create a laptop key;
-   paste it with the service URL into the extension's Settings.
+6. Settings → set the shop's Whatnot username (host). Then **Laptops**:
+   download the extension (the zip already points at this portal), load it
+   unpacked, and **Connect a laptop** → type the 8-character code in the
+   extension's Settings. One code, one laptop, 10 minutes.
 
 ## Day to day
 
@@ -70,10 +76,16 @@ the enum types (see 0004, 0007).
 
 ## Extension for the team
 
+The web service's build also builds `extension/dist`, and **Settings →
+Laptops → Download** serves it as `chat-scraper-<version>.zip` with this
+portal's address (`APP_URL`, else `RENDER_EXTERNAL_URL`) written into
+`defaults.json`. Each laptop then connects with a pairing code; nobody copies
+keys. Bump `extension/manifest.json`'s version when the extension changes so
+the team can tell which build they have. Without Render:
+
 ```bash
 cd extension && DEFAULT_SERVER_URL=https://ops.example.com npm run package
 ```
 
-makes `chat-scraper-<version>.zip` from `dist/` with the server URL baked in
-as the default (each laptop still needs its own key). Load unpacked, or
-publish privately through the Chrome Web Store later.
+Later: an unlisted Chrome Web Store listing gives install-by-link and
+auto-updates (one-time developer registration and Google's review).

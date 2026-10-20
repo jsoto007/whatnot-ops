@@ -40,9 +40,13 @@ make smoke BASE_URL=https://…   # health, SPA, fallback and 404 checks against
 
 ## Accounts
 
-The first visit to `/signup` creates the shop and its owner (always allowed
-for the very first account; afterwards only with `ALLOW_SIGNUPS=1` or
-outside production). Owners invite the team from **Team** with a role:
+The shop's admin is named by the `ADMIN_EMAIL` environment variable. Only
+that email can create the shop on `/signup`, and only once; everyone else
+joins by invite. That account is always an owner: nobody can demote or
+disable it in the app, and logging in restores it if the database says
+otherwise (`api/app/services/admin.py`). Without `ADMIN_EMAIL`, production
+never opens sign-up; development and tests stay open. Owners invite the team
+from **Team** with a role:
 
 | role        | can                                                              |
 |-------------|------------------------------------------------------------------|
@@ -184,18 +188,23 @@ What it does (`api/app/services/supervisor.py`):
 `flask ai-eval` replays the (synthetic) rules corpus through the configured
 provider and prints the agreement.
 
-## Connect a laptop (extension device key)
+## Connect a laptop
 
-**Settings → Laptops → Create key** in the web app (owner or manager), or:
+**Settings → Laptops** (owner or manager):
 
-```bash
-cd api && FLASK_APP=wsgi.py .venv/bin/flask devices create --org "Shop name" --name "Front laptop"
-```
+1. **Download** the extension. The zip is built from `extension/dist` on the
+   server and already points at this portal. Unzip, open
+   `chrome://extensions`, turn on Developer mode, **Load unpacked**.
+2. **Connect a laptop** → name it → the portal shows an 8-character code
+   (valid 10 minutes, single use). In the extension's Settings (toolbar icon
+   → Settings) type the code and press **Connect**. The extension trades it at
+   `POST /api/pair` for its own device key and the portal flips to
+   "connected". Only the code's hash is stored; one conditional `UPDATE`
+   decides who redeems it.
 
-Either shows the key once (`wn_…`). Paste it with the server URL into the
-extension's Settings page (toolbar icon → Settings, or `chrome://extensions`
-→ Chat Scraper → Details → Extension options). "Test connection" should say
-which device and organization it is. Every captured line is saved on the
-laptop first and uploaded in batches to `POST /api/ingest`; uploads retry
-with backoff when the server is unreachable and resume when the key is
-fixed.
+Advanced: **Create a device key instead** (or
+`flask devices create --org "Shop name" --name "Front laptop"`) shows a
+`wn_…` key once, to paste under "Use a device key instead" in the extension.
+Every captured line is saved on the laptop first and uploaded in batches to
+`POST /api/ingest`; uploads retry with backoff when the server is unreachable
+and resume when the key is fixed.

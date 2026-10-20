@@ -43,10 +43,17 @@ export function Team() {
         <tbody>
           {users.map((u) => (
             <tr key={u.id} className={u.disabled ? 'disabled' : ''}>
-              <td>{u.name}</td>
+              <td>
+                {u.name}
+                {u.isAdmin && (
+                  <span className="badge live" title="Set by ADMIN_EMAIL on the server; always an owner">
+                    admin
+                  </span>
+                )}
+              </td>
               <td>{u.email}</td>
               <td>
-                {can('team.manage') && u.id !== me?.user.id ? (
+                {can('team.manage') && u.id !== me?.user.id && !u.isAdmin ? (
                   <select value={u.role} aria-label={`Role for ${u.email}`} onChange={(e) => update.mutate({ id: u.id, role: e.target.value as Role })}>
                     {(['owner', 'manager', 'fulfillment', 'viewer'] as Role[]).map((r) => (
                       <option key={r}>{r}</option>
@@ -59,7 +66,7 @@ export function Team() {
               <td>{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : '—'}</td>
               {can('team.manage') && (
                 <td>
-                  {u.id !== me?.user.id && (
+                  {u.id !== me?.user.id && !u.isAdmin && (
                     <button className="btn small" onClick={() => update.mutate({ id: u.id, disabled: !u.disabled })}>
                       {u.disabled ? 'Enable' : 'Disable'}
                     </button>
