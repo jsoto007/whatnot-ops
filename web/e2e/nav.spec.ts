@@ -1,0 +1,54 @@
+import { expect, test, type Page } from '@playwright/test'
+
+const PW = 'correct-horse-battery'
+const run = Date.now().toString(36)
+
+let n = 0
+async function signup(page: Page) {
+  const id = `${run}-${++n}-${Math.random().toString(36).slice(2, 6)}` // unique per test and per repeat
+  await page.goto('/signup')
+  await page.getByLabel('Shop name').fill(`Nav ${id}`)
+  await page.getByLabel('Your name').fill('Olive Owner')
+  await page.getByLabel('Email').fill(`nav-${id}@shop.test`)
+  await page.getByLabel('Password (10+ characters)').fill(PW)
+  await page.getByRole('button', { name: 'Create shop' }).click()
+  await expect(page).toHaveURL(/\/app$/)
+}
+
+test('desktop: the sidebar collapses to icons and stays collapsed after a reload', async ({ page }) => {
+  await signup(page)
+  const orders = page.getByRole('link', { name: 'Orders' })
+  await expect(orders).toBeVisible()
+  await expect(orders).toHaveText('Orders')
+  await page.getByTestId('collapse-sidebar').click()
+  await expect(page.locator('.app')).toHaveClass(/collapsed/)
+  await expect(orders.locator('.label')).toBeHidden()
+  await expect(orders).toHaveAttribute('title', 'Orders')
+  // the grid track animates for 160 ms
+  await expect.poll(() => page.locator('.sidebar').evaluate((el) => el.getBoundingClientRect().width)).toBeLessThan(80)
+  await page.reload()
+  await expect(page.locator('.app')).toHaveClass(/collapsed/)
+  await page.getByTestId('collapse-sidebar').click()
+  await expect(page.locator('.app')).not.toHaveClass(/collapsed/)
+})
+
+test('phone: top bar, drawer navigation, and no page wider than the screen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await signup(page)
+  await expect(page.getByTestId('open-menu')).toBeVisible()
+  await expect(page.locator('.sidebar')).not.toBeInViewport()
+  await page.getByTestId('open-menu').click()
+  await expect(page.locator('.sidebar')).toHaveClass(/open/)
+  await page.getByRole('link', { name: 'Inventory' }).click()
+  await expect(page).toHaveURL(/\/app\/inventory$/)
+  await expect(page.locator('.sidebar')).not.toHaveClass(/open/)
+  for (const path of ['/app', '/app/shows', '/app/orders', '/app/inventory', '/app/products', '/app/review', '/app/reports', '/app/team', '/app/settings']) {
+    await page.goto(path)
+    const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, viewport: window.innerWidth }))
+    expect(widths.page, path).toBeLessThanOrEqual(widths.viewport)
+  }
+  await page.goto('/app')
+  await page.getByTestId('open-menu').click()
+  await page.getByTestId('scrim').click()
+  await expect(page.locator('.sidebar')).not.toHaveClass(/open/)
+})

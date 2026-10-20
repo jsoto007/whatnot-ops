@@ -49,5 +49,6 @@
   --font: 14px/1.5 var(--font-family);
   --motion: 160ms ease;
   --sidebar-w: 232px;
+  --sidebar-w-compact: 64px;
   --content-max: 1440px;
 }
