@@ -24,6 +24,15 @@ commands.
   (`APP_ENV=test`) for `e2e/ingest.spec.ts`.
 - `shared/`: `chat-event-batch.schema.json`, the contract for
   `POST /api/ingest`; both sides validate the same `shared/fixtures/`.
+- Web sessions: signed cookie (`wn_session`, 14 days) carrying the user's
+  `session_token`, which is rotated on role change, disable, password reset
+  and "log out everywhere". Every non-GET `/api` call from the SPA sends the
+  double-submit `X-CSRF-Token` header (`web/src/lib/api.ts` fetches
+  `/api/auth/csrf` once). Routes declare a permission with
+  `@require("…")` (`api/app/auth.py`); the role → permission matrix is only
+  in `api/app/services/permissions.py`, and the SPA gets the user's list
+  from `/api/auth/me`. Every state change writes `audit_log`
+  (`services/audit.py`).
 - Ingest auth is a per-device API key (`flask devices create`), only its
   SHA-256 is stored (`api/app/services/devices.py`). Rows are idempotent by
   `(show_id, client_id)`; a batch is all-or-nothing.

@@ -6,7 +6,16 @@ from app import create_app
 from app.config import Config
 from app.db import db
 
-TABLES = ["chat_messages", "shows", "devices", "organizations"]
+TABLES = [
+    "audit_log",
+    "password_resets",
+    "invites",
+    "users",
+    "chat_messages",
+    "shows",
+    "devices",
+    "organizations",
+]
 
 
 @pytest.fixture(scope="session")
