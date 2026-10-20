@@ -7,7 +7,8 @@ React dashboard gives the fulfillment team everything at a glance.
 See `docs/PLAN.md` for the phased build plan and `CLAUDE.md` for working
 rules. Done so far: Phase 0 (scaffold), Phase 1 (self-healing extension
 capture), Phase 2 (extension → API ingest), Phase 3 (accounts, roles,
-invites, device keys from the UI).
+invites, device keys from the UI), Phase 4 (products and the inventory
+ledger).
 
 ## Layout
 
@@ -54,6 +55,22 @@ Production bootstrap without sign-ups:
 ```bash
 cd api && FLASK_APP=wsgi.py .venv/bin/flask users create-owner --org "Shop name" --email you@shop.com --name "You"
 ```
+
+## Inventory
+
+Products have one or more SKUs; each SKU keeps `on_hand` and `reserved`
+(`available = on_hand - reserved`) as a cache of the append-only
+`inventory_movements` ledger. Every change is a movement with a kind:
+`restock`, `adjust` (manual, signed), `reserve` (a sale was detected),
+`release` (cancelled / payment failed), `commit` (paid: leaves stock). A
+movement with a source (`sale 42`) is unique per SKU and kind, so replaying
+an event moves nothing, and the SKU row is locked for the duration of each
+movement, so parallel sales can never reserve more than is available.
+
+**Inventory → Import the inventory sheet** takes the team's CSV (an `Item`
+column plus `Current Stock` or `Start of Show Inventory`): preview shows
+what would be created or set, apply does it. Aliases on the Products page
+map the names used in chat ("red", "ultra pack") to SKUs for the parser.
 
 ## Connect a laptop (extension device key)
 

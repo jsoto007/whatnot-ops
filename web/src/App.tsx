@@ -6,8 +6,10 @@ import { AcceptInvite } from './pages/AcceptInvite'
 import { Login } from './pages/Login'
 import { Forgot, Reset } from './pages/Password'
 import { Signup } from './pages/Signup'
+import { Inventory } from './pages/app/Inventory'
 import { AppLayout } from './pages/app/Layout'
 import { Placeholder } from './pages/app/Placeholder'
+import { Products } from './pages/app/Products'
 import { Settings } from './pages/app/Settings'
 import { ShowDetail, Shows } from './pages/app/Shows'
 import { Team } from './pages/app/Team'
@@ -66,8 +68,8 @@ export function App() {
               <Route path="shows" element={<Shows />} />
               <Route path="shows/:id" element={<ShowDetail />} />
               <Route path="orders" element={<Placeholder title="Orders" phase={7} />} />
-              <Route path="inventory" element={<Placeholder title="Inventory" phase={4} />} />
-              <Route path="products" element={<Placeholder title="Products" phase={4} />} />
+              <Route path="inventory" element={<Inventory />} />
+              <Route path="products" element={<Products />} />
               <Route path="review" element={<Placeholder title="Review" phase={6} />} />
               <Route path="reports" element={<Placeholder title="Reports" phase={8} />} />
               <Route element={<RequirePermission permission="team.view" />}>

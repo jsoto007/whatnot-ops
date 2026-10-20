@@ -55,7 +55,11 @@ commands.
   show date rolls at 5 AM, see `docs/PLAN.md`).
 - **Atomic gates.** Inventory reserve/commit/release, single-use codes and
   job claims use `SELECT … FOR UPDATE` (or `SKIP LOCKED` for jobs), never
-  count-then-insert.
+  count-then-insert. All stock changes go through
+  `api/app/services/inventory.py::move()`; nothing writes `Sku.on_hand` or
+  `Sku.reserved` directly. Movements with a `source_type`/`source_id` are
+  idempotent (unique per SKU + kind); `tests/test_inventory.py` has the
+  50-thread oversell test — keep it passing.
 - **Secrets** only from env; never printed, logged or committed. `.env` is
   gitignored.
 - **AI** (Phase 6) only proposes; every applied change goes through the same
