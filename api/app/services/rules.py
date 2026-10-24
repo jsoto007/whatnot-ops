@@ -191,6 +191,48 @@ CLAIM_PATTERNS = [
 ]
 
 
+# ---- a win read from Whatnot's video player (ChatMessage.source == "player") ----
+# The extension writes this line itself (extension/src/capture/player.ts, winBody): the
+# item is the listing title and the price is always "$<dollars>.<cents>". Player rows are
+# read only this way and chat rows never are, so a viewer typing the same sentence in the
+# chat is still just a chat line.
+PLAYER_WIN = re.compile(
+    r"^(?P<buyer>[A-Za-z0-9._-]{1,80}) won the auction for (?P<item>.+) for "
+    r"\$(?P<dollars>[0-9]{1,7})\.(?P<cents>[0-9]{2})$",
+    re.ASCII,
+)
+# "... SAM #760": Whatnot numbers repeated listings. Recorded as a detail; the item keeps the
+# full title, because the number can also be the product ("Charizard #4"). A product named
+# "Red bundle" still matches "Red bundle #752" (match_sku looks for the name inside the text).
+LOT = re.compile(r"\s*#\s?(?P<lot>[0-9]{1,6})$", re.ASCII)
+# The payment-file import treats more than $100,000 per item as a misread; so does this.
+PLAYER_MAX_CENTS = 10_000_000
+
+
+def _player_win(body: str) -> Classification:
+    m = PLAYER_WIN.match(body)
+    if not m:
+        # Not a shape the extension writes: never a sale, and never silently dropped
+        # (the pipeline opens a review for this rule).
+        return Classification(kind=EventKind.chatter, rule="player_unreadable", confidence=1.0)
+    item = re.sub(r"\s+", " ", m["item"]).strip()[:ITEM_MAX]
+    lot = LOT.search(item)
+    cents = int(m["dollars"]) * 100 + int(m["cents"])
+    over = cents > PLAYER_MAX_CENTS
+    return Classification(
+        kind=EventKind.sale,
+        # A price over the cap waits in Review (confidence < 0.8) instead of being trusted.
+        rule="player_win_price_check" if over else "player_win",
+        buyer=m["buyer"][:BUYER_MAX],
+        item=item,
+        quantity=1,
+        price_cents=cents,
+        auction_type=auction_type(item),
+        confidence=0.6 if over else 1.0,
+        details={"lot": lot["lot"]} if lot else {},
+    )
+
+
 def _build(
     kind: EventKind, rule: str, m: re.Match, *, confidence: float = 1.0, text: str = ""
 ) -> Classification:
@@ -212,8 +254,13 @@ def _build(
     )
 
 
-def classify(username: str, body: str, raw_text: str, *, host: str | None = None) -> Classification:
-    """Classify one chat line. `host` is the seller's username when known (host lines carry more weight)."""
+def classify(
+    username: str, body: str, raw_text: str, *, host: str | None = None, source: str = "chat"
+) -> Classification:
+    """Classify one chat line. `host` is the seller's username when known (host lines carry
+    more weight); `source` is "player" for a win read from the video player."""
+    if source == "player":
+        return _player_win((body or "").strip())
     text = (body or raw_text or "").strip()
     is_system = not username  # platform lines have no username element
     is_host = bool(host) and username.lower() == (host or "").lower()

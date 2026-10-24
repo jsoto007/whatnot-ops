@@ -47,6 +47,7 @@ const HTML = `
     <div class="bd" id="bd">
       <div class="st" id="st">Ready. Open the show, then press Start.</div>
       <div class="sync" id="sync"></div>
+      <div class="sync" id="wins" hidden></div>
       <div class="row" id="resumeRow" hidden>
         <button class="b" id="resume">Resume last show</button>
         <button class="b sec" id="fresh">Start fresh</button>
@@ -118,6 +119,12 @@ export class Panel {
 
   setSync(msg: string): void {
     this.el('sync').textContent = msg
+  }
+
+  /** Wins read from the video player; hidden until the first one. */
+  setWins(msg: string): void {
+    this.el('wins').textContent = msg
+    this.el('wins').hidden = !msg
   }
 
   setCount(n: number): void {

@@ -2,6 +2,7 @@ from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -111,13 +112,17 @@ class Show(db.Model):
 
 
 class ChatMessage(db.Model):
-    """One raw chat line, immutable. client_id is the extension's row id (idempotency key)."""
+    """One raw chat line, immutable. client_id is the extension's row id (idempotency key).
+
+    source is "chat" for a line typed in the chat, "player" for a win the extension read
+    from Whatnot's video player (viewers cannot write there; see rules.classify)."""
 
     __tablename__ = "chat_messages"
     __table_args__ = (
         UniqueConstraint("show_id", "client_id", name="uq_chat_messages_show_client"),
         Index("ix_chat_messages_show_seq", "show_id", "seq"),
         Index("ix_chat_messages_show_username", "show_id", "username"),
+        CheckConstraint("source IN ('chat', 'player')", name="ck_chat_messages_source"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -128,6 +133,9 @@ class ChatMessage(db.Model):
     username: Mapped[str] = mapped_column(String(80), nullable=False, default="")
     body: Mapped[str] = mapped_column(Text, nullable=False)
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="chat", server_default="chat"
+    )
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow

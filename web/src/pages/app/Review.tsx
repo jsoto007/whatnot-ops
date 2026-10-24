@@ -16,6 +16,9 @@ const REASON_LABEL: Record<string, string> = {
   missing_sale: 'AI: possible missed sale',
   duplicate_sale: 'AI: possible duplicate',
   other: 'AI: something to check',
+  possible_duplicate: 'Same win twice?',
+  player_unreadable: 'Win not readable',
+  price_mismatch: 'Price differs from the payment file',
 }
 const ACTION_LABEL: Record<string, string> = {
   assign_sku: 'Assign the suggested SKU',
@@ -150,6 +153,18 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
         {item.reason === 'low_confidence' && (
           <button className="btn primary" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'confirm_sale' })} data-testid="confirm-sale">
             Record as a sale
+          </button>
+        )}
+        {/* A chat line about a win the video player already recorded: cancel the extra sale,
+            or record the line if it really is a separate sale. "Ignore" keeps things as they are. */}
+        {item.reason === 'possible_duplicate' && item.sale && (
+          <button className="btn primary" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'set_status', status: 'cancelled' })} data-testid="cancel-duplicate">
+            Cancel this sale
+          </button>
+        )}
+        {item.reason === 'possible_duplicate' && !item.sale && (
+          <button className="btn" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'confirm_sale' })} data-testid="confirm-separate-sale">
+            It is a separate sale
           </button>
         )}
         {!!item.proposal?.action && item.proposal.action !== 'none' && item.proposal.action !== 'dismiss' && (

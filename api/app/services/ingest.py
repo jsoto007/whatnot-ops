@@ -70,6 +70,9 @@ def validate(payload: object) -> dict:
         _when(r["capturedAt"], f"rows/{i}/capturedAt")
         if not 0 <= r["seq"] <= MAX_SEQ:
             raise BatchInvalid([f"rows/{i}/seq: out of range"])
+        if r.get("source") == "player" and r["username"]:
+            # A player row is the platform speaking; it never has a sender.
+            raise BatchInvalid([f"rows/{i}/username: must be empty on a player row"])
     return payload
 
 
@@ -122,6 +125,7 @@ def ingest(device: Device, payload: dict) -> IngestResult:
             "username": _clean(r["username"]),
             "body": _clean(r["body"]),
             "raw_text": _clean(r["rawText"]),
+            "source": r.get("source", "chat"),
             "captured_at": _parse_dt(r["capturedAt"]),
         }
         for r in batch["rows"]

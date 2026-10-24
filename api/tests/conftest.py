@@ -96,9 +96,10 @@ def world(app):  # shared by the pipeline and AI tests
         ids = {"org": org.id, "red": red.id, "show": show.id}
 
     def say(app, lines):
+        """Lines are (username, body) chat lines, or (username, body, "player") wins."""
         with app.app_context():
             n = db.session.scalar(select(db.func.count()).select_from(ChatMessage)) or 0
-            for i, (u, b) in enumerate(lines, start=n + 1):
+            for i, (u, b, *source) in enumerate(lines, start=n + 1):
                 db.session.add(
                     ChatMessage(
                         show_id=ids["show"],
@@ -107,6 +108,7 @@ def world(app):  # shared by the pipeline and AI tests
                         username=u,
                         body=b,
                         raw_text=f"{u} {b}".strip(),
+                        source=source[0] if source else "chat",
                         captured_at=datetime.now(UTC),
                     )
                 )

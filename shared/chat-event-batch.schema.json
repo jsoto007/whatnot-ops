@@ -37,7 +37,11 @@
         "body": { "type": "string", "maxLength": 4000 },
         "rawText": { "type": "string", "minLength": 1, "maxLength": 4000 },
         "capturedAt": { "type": "string", "format": "date-time" },
-        "seq": { "type": "integer", "minimum": 1 }
+        "seq": { "type": "integer", "minimum": 1 },
+        "source": {
+          "const": "player",
+          "description": "Only on a win read from Whatnot's video player (\"<winner> won the auction for <item> for $<d.cc>\"). Absent on chat lines."
+        }
       }
     }
   }

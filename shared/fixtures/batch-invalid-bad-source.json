@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "show": { "id": "s", "startedAt": "2026-10-19T20:00:00.000Z" },
+  "rows": [
+    {"id": "0123456789abcdef", "showId": "s", "username": "lani808", "body": "lani808 won the auction for Red bundle for $1.00", "rawText": "lani808 won the auction for Red bundle for $1.00", "capturedAt": "2026-10-19T20:01:00.000Z", "seq": 1, "source": "chat"}
+  ]
+}

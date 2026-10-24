@@ -7,6 +7,7 @@ functions a person uses (actor "ai", audited); the rest wait in review.
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
@@ -16,6 +17,7 @@ from ..models import (
     AiCall,
     AuditLog,
     ChatMessage,
+    EventKind,
     ReviewItem,
     ReviewStatus,
     Sale,
@@ -23,7 +25,7 @@ from ..models import (
     Show,
     Sku,
 )
-from . import catalog, pipeline
+from . import catalog, pipeline, rules
 from .ai import AiError, Decision, get_provider, provider_name
 from .ai.policy import may_auto_apply
 from .inventory import Actor
@@ -46,11 +48,21 @@ LINE_CHARS = 300
 
 
 def _authoritative(message: ChatMessage | None, host: str | None) -> bool:
-    """A line the shop can act on without a person: from the host or the platform."""
-    if message is None:
+    """A line the shop can act on without a person: from the host or the platform.
+
+    Not a win read from the video player: it is the platform, but all it says is who won,
+    so the AI never acts alone on one (it cannot confirm a price or prove a cancellation)."""
+    if message is None or message.source == "player":
         return False
     author = (message.username or "").strip().lower()
     return author == "" or (bool(host) and author == (host or "").strip().lower())
+
+
+CANCEL_WORDS = re.compile(
+    r"\b(?:cancel\w*|refund\w*|declin\w*|fail\w*|unpaid|didn'?t\s+pay|no\s+payment|"
+    r"backed\s+out|relist\w*|void\w*|chargeback\w*)",
+    re.I,
+)
 
 
 def _corroborated(show: Show, seq, buyer: str) -> bool:
@@ -61,10 +73,19 @@ def _corroborated(show: Show, seq, buyer: str) -> bool:
     m = db.session.scalar(
         select(ChatMessage).where(ChatMessage.show_id == show.id, ChatMessage.seq == seq)
     )
-    if not _authoritative(m, show.organization.host_username):
+    host = show.organization.host_username
+    if not _authoritative(m, host):
         return False
-    text = (m.raw_text or m.body or "").lower()
-    return bool(buyer) and buyer.lower() in text
+    # A line that reads as a win is not evidence that the win was cancelled or unpaid.
+    if rules.classify(m.username, m.body, m.raw_text, host=host).kind is EventKind.sale:
+        return False
+    text = m.raw_text or m.body or ""
+    # The line has to name the buyer as a word (not "sam" inside "samples") and say
+    # something went wrong: "congrats lani808!" or "lani808 joined" proves nothing.
+    names_buyer = bool(buyer) and re.search(
+        rf"(?<![A-Za-z0-9._-]){re.escape(buyer)}(?![A-Za-z0-9._-])", text, re.I
+    )
+    return bool(names_buyer and CANCEL_WORDS.search(text))
 
 
 def ask(
