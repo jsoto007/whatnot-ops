@@ -32,6 +32,6 @@ if (test) {
   manifest.content_scripts[0].matches.push('http://127.0.0.1/*', 'http://localhost/*')
 }
 writeFileSync(`${out}/manifest.json`, JSON.stringify(manifest, null, 2))
-for (const f of ['search.html', 'options.html', 'icon16.png', 'icon48.png', 'icon128.png']) cpSync(f, `${out}/${f}`)
+for (const f of ['search.html', 'options.html', 'icon16.png', 'icon32.png', 'icon48.png', 'icon128.png']) cpSync(f, `${out}/${f}`)
 writeFileSync(`${out}/defaults.json`, JSON.stringify(defaults))
 console.log(`built ${out}/`)
