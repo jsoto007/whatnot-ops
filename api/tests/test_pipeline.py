@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import select
 
 from app.db import db
@@ -325,3 +326,111 @@ def test_split_winner_line_waits_in_review_instead_of_becoming_a_sale(app, world
         item = db.session.scalar(select(ReviewItem))
         assert item.reason == "low_confidence"
         assert "winner line for lani808" in item.summary and "sender" in item.summary
+
+
+def _owner(org_id):
+    from app.models import User
+
+    existing = db.session.scalar(select(User).where(User.email == "o@x.test"))
+    if existing is not None:
+        return existing
+    user = User(
+        organization_id=org_id,
+        email="o@x.test",
+        name="O",
+        password_hash="x",
+        role="owner",
+        session_token="t",
+    )
+    db.session.add(user)
+    db.session.flush()
+    return user
+
+
+def test_a_person_can_record_a_low_confidence_line_as_a_sale(app, world):
+    """The human half of the split-winner-line fix: Review's "Record as a sale" goes through
+    create_sale (SKU match from the listing, reserve, order), once, and never twice."""
+    world["say"](
+        app,
+        [
+            ("", "Auction #1: Red bundle"),
+            ("lani808", "won the auction!"),  # platform line, winner arrived as the sender
+            ("randomguy", "sold to randomguy"),  # a viewer saying it: still only a person decides
+            ("host_shop", "cancelled for nobody"),  # not a sale line at all
+        ],
+    )
+    run(app, world["show"])
+    assert sales(app, world["show"]) == []
+    with app.app_context():
+        user = _owner(world["org"])
+        items = {
+            r.summary: r
+            for r in db.session.scalars(
+                select(ReviewItem).where(ReviewItem.status == ReviewStatus.open)
+            )
+        }
+        split = next(r for r in items.values() if "lani808" in r.summary)
+        viewer = next(r for r in items.values() if "randomguy" in r.summary)
+        no_sale = next(r for r in items.values() if r.reason == "no_open_sale")
+
+        pipeline.resolve(split, "confirm_sale", {}, user=user)
+        assert split.status is ReviewStatus.resolved
+        assert split.resolution["action"] == "confirm_sale" and split.resolution["reserved"]
+        assert split.resolved_by_id == user.id
+
+        # A line that is not a sale cannot be recorded as one.
+        with pytest.raises(pipeline.ReviewError) as e:
+            pipeline.resolve(no_sale, "confirm_sale", {}, user=user)
+        assert "not a sale line" in str(e.value)
+
+        # The viewer-shaped line: recorded with the item from the listing, no SKU price in chat.
+        pipeline.resolve(viewer, "confirm_sale", {}, user=user)
+        db.session.commit()
+
+    # Both wins are real sales now: item from the listing context, stock held, orders open.
+    assert sales(app, world["show"]) == [
+        ("lani808", "reserved", "RED", 1),
+        ("randomguy", "reserved", "RED", 1),
+    ]
+    assert level(app, world["red"]) == (3, 2)
+    assert [r for r, _ in open_reviews(app)] == ["no_open_sale"]  # the cancel, untouched
+    with app.app_context():
+        from app.models import Order
+
+        assert sorted(
+            o.buyer_username
+            for o in db.session.scalars(select(Order).where(Order.show_id == world["show"]))
+        ) == ["lani808", "randomguy"]
+        # Resolving again is refused (the item is closed), and so is recording the same
+        # line through a second item: one sale per chat line, ever.
+        split = db.session.scalar(select(ReviewItem).where(ReviewItem.summary.contains("lani808")))
+        with pytest.raises(pipeline.ReviewError):
+            pipeline.resolve(split, "confirm_sale", {}, user=_owner(world["org"]))
+        again = pipeline.open_review(
+            world["org"],
+            "low_confidence",
+            "same line again",
+            show_id=world["show"],
+            message_id=split.message_id,
+            event_id=split.event_id,
+            dedupe=False,
+        )
+        with pytest.raises(pipeline.ReviewError) as e:
+            pipeline.resolve(again, "confirm_sale", {}, user=_owner(world["org"]))
+        assert "already sale" in str(e.value)
+        db.session.rollback()
+    # Re-parsing never touches the confirmed sales.
+    run(app, world["show"], reparse=True)
+    assert len(sales(app, world["show"])) == 2
+
+
+def test_recording_a_sale_with_an_unknown_item_opens_the_sku_question(app, world):
+    world["say"](app, [("", "Auction #2: Mystery box"), ("kat.c", "won the auction!")])
+    run(app, world["show"])
+    with app.app_context():
+        item = db.session.scalar(select(ReviewItem))
+        pipeline.resolve(item, "confirm_sale", {}, user=_owner(world["org"]))
+        db.session.commit()
+    assert sales(app, world["show"]) == [("kat.c", "detected", None, 1)]
+    assert [r for r, _ in open_reviews(app)] == ["unmatched_item"]
+    assert level(app, world["red"]) == (3, 0)

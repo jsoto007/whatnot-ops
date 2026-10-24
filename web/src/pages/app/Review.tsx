@@ -23,6 +23,7 @@ const ACTION_LABEL: Record<string, string> = {
   cancel: 'Cancel the sale',
   payment_failed: 'Mark payment failed',
   classify_sale: 'Record it as a sale',
+  confirm_sale: 'Record it as a sale',
   dismiss: 'Ignore this line',
 }
 
@@ -145,6 +146,11 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
               </button>
             ))}
           </>
+        )}
+        {item.reason === 'low_confidence' && (
+          <button className="btn primary" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'confirm_sale' })} data-testid="confirm-sale">
+            Record as a sale
+          </button>
         )}
         {!!item.proposal?.action && item.proposal.action !== 'none' && item.proposal.action !== 'dismiss' && (
           <button className="btn primary" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'apply_proposal' })} data-testid="apply-proposal">

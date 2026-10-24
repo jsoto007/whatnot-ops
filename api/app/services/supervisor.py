@@ -16,7 +16,6 @@ from ..models import (
     AiCall,
     AuditLog,
     ChatMessage,
-    ParsedEvent,
     ReviewItem,
     ReviewStatus,
     Sale,
@@ -294,12 +293,10 @@ def _candidates(org_id: int) -> list[dict]:
 
 
 def _apply_classify_sale(item: ReviewItem) -> Sale | None:
-    ev = db.session.get(ParsedEvent, item.event_id) if item.event_id else None
-    show = db.session.get(Show, item.show_id)
-    if ev is None or show is None:
-        return None
-    sku = pipeline.match_sku(show.organization_id, ev.item_text) if ev.item_text else None
-    sale = pipeline.create_sale(show, ev, sku=sku)
+    try:
+        sale = pipeline.record_sale_from_event(item)
+    except pipeline.ReviewError:
+        return None  # not a sale line, or already recorded by a person
     item.status = ReviewStatus.resolved
     item.resolution = {"action": "classify_sale", "saleId": sale.id, "by": "ai"}
     item.resolved_at = datetime.now(UTC)
