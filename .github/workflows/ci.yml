@@ -84,6 +84,9 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+      # Portal → download → pair → capture → parsed sales; needs the web app built.
+      - run: npm ci --prefix ../web
+      - run: npm run test:full
       - uses: actions/upload-artifact@v4
         if: failure()
         with: { name: extension-playwright-report, path: extension/playwright-report }

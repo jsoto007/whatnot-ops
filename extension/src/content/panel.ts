@@ -4,6 +4,8 @@ export const HOST_ID = 'cs-host'
 const HTML = `
   <style>
     :host { all: initial; }
+    /* .row and friends set display, which would otherwise beat the hidden attribute. */
+    [hidden] { display: none !important; }
     .p { width: 290px; font: 13px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; color: #fff;
          background: #002244; border: 2px solid #69BE28; border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.4); overflow: hidden; }
     .hd { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #001833; cursor: default; }
