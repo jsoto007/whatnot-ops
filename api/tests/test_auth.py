@@ -228,7 +228,11 @@ def test_invite_sends_through_mailgun_when_configured(client, monkeypatch):
     assert url == "https://api.mailgun.net/v3/mg.example.com/messages"
     assert kwargs["auth"] == ("api", "key-test")
     assert kwargs["data"]["to"] == "mia@shop.test"
-    assert re.search(r"/invite/[A-Za-z0-9_-]{20,}", kwargs["data"]["text"])
+    assert kwargs["data"]["subject"] == "Olive Owner invited you to join My Shop on Sales Ops"
+    link = re.search(r"https?://\S+/invite/[A-Za-z0-9_-]{20,}", kwargs["data"]["text"])
+    assert link
+    assert link.group(0) in kwargs["data"]["html"]  # HTML twin carries the same link
+    assert "/logo.png" in kwargs["data"]["html"]
 
 
 # ---------- team management ----------
