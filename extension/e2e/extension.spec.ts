@@ -78,6 +78,11 @@ test('captures a show end to end: pick, 500 rows with re-renders, class swap, co
   await search.locator('#q').fill('buyer77')
   await expect(search.locator('#summary')).toContainText('1 message matching')
   await expect(search.locator('.line.m')).toContainText('buyer77 I will take')
+  // Off Whatnot the toolbar icon lands here, so pairing must be one click away.
+  const [settings] = await Promise.all([context.waitForEvent('page'), search.locator('#settings').click()])
+  await expect(settings).toHaveURL(`chrome-extension://${extensionId}/options.html`)
+  await expect(settings.locator('#pair')).toBeVisible()
+  await settings.close()
   await search.close()
 
   // Reload mid-show: the panel offers to resume and does not double count what is on screen.
