@@ -48,7 +48,12 @@ test('owner signs up, creates a device key, invites fulfillment who gets a limit
   await pat.getByLabel('Password (10+ characters)').fill(PW)
   await pat.getByRole('button', { name: 'Create account' }).click()
   await expect(pat).toHaveURL(/\/app$/)
+  // The landing page must actually render for this role, not just route there.
+  await expect(pat.getByRole('heading', { name: 'Needs attention' })).toBeVisible()
+  await expect(pat.getByText('No shows yet')).toBeVisible()
+  await expect(pat.getByText('Could not load the dashboard.')).toHaveCount(0)
   const nav = pat.getByRole('navigation', { name: 'Sections' })
+  await expect(nav).toContainText('Dashboard')
   await expect(nav).toContainText('Orders')
   await expect(nav).not.toContainText('Team')
   await pat.goto('/app/team')
