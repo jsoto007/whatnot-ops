@@ -97,6 +97,41 @@ test('captures a show end to end: pick, 500 rows with re-renders, class swap, co
   await expect(page.locator(panel('#sync'))).toContainText('saved 522')
 })
 
+test('Resume / Start fresh only after a reload, and Start fresh keeps the earlier show', async ({ page, context, extensionId }) => {
+  const resumeRow = page.locator(panel('#resumeRow'))
+  await page.goto('/chat.html')
+  await expect(resumeRow).toBeHidden()
+  await page.locator(panel('#start')).click()
+  await page.locator('.msg-row .msg-text').nth(2).click()
+  await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
+  await expect(resumeRow).toBeHidden()
+  await page.evaluate(() => ['a', 'b', 'c'].forEach((u) => window.__chat.append('first_' + u, 'line')))
+  await expect(page.locator(panel('#sync'))).toContainText('saved 13')
+  await expect(resumeRow).toBeHidden()
+
+  await page.reload()
+  await expect(page.locator(panel('#st'))).toContainText('Found 13 saved messages')
+  await expect(resumeRow).toBeVisible()
+  await page.locator(panel('#fresh')).click()
+  await expect(page.locator(panel('#st'))).toHaveText('Ready. Press Start.')
+  await expect(page.locator(panel('#cnt'))).toHaveText('0')
+  await expect(resumeRow).toBeHidden()
+
+  // A new show: the reloaded fixture's seed lines plus two more, all saved.
+  await page.locator(panel('#start')).click()
+  await page.locator('.msg-row .msg-text').nth(2).click()
+  await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
+  await page.evaluate(() => ['x', 'y'].forEach((u) => window.__chat.append('second_' + u, 'line')))
+  await expect(page.locator(panel('#cnt'))).toHaveText('12')
+  await expect(page.locator(panel('#sync'))).toContainText('saved 12')
+
+  const search = await context.newPage()
+  await search.goto(`chrome-extension://${extensionId}/search.html`)
+  await expect(search.locator('#show option')).toHaveCount(2)
+  await expect(search.locator('#show')).toContainText('13 msgs')
+  await expect(search.locator('#show')).toContainText('12 msgs')
+})
+
 test('says so when the click was not on a list of messages', async ({ page }) => {
   await page.goto('/chat.html')
   await page.locator(panel('#start')).click()

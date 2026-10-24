@@ -9,6 +9,7 @@ const FLASK = process.env.FLASK_BIN ?? '.venv/bin/flask'
 export default defineConfig({
   testDir: '.',
   testMatch: /.*\.spec\.ts/,
+  testIgnore: 'full/**', // the portal flow, `npm run test:full`
   timeout: 60_000,
   retries: process.env.CI ? 1 : 0,
   workers: 1,

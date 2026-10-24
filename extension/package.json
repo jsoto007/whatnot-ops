@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "npm run build:test && playwright test -c e2e/playwright.config.ts",
+    "test:full": "npm run build && npm --prefix ../web run build && playwright test -c e2e/full/playwright.config.ts",
     "package": "npm run build && node package.mjs"
   },
   "dependencies": {

@@ -13,7 +13,12 @@ npm install
 npm run build          # dist/ — load this folder unpacked at chrome://extensions
 npm run test           # Vitest unit tests (capture module, storage, migration)
 npm run test:e2e       # builds dist-test/ and drives it with Playwright on the fixture page
+npm run test:full      # the whole laptop process against the real portal on the test DB (needs web deps)
 ```
+
+`test:full` signs up in the portal, downloads the extension from Settings →
+Laptops, loads that zip, pairs it with a code, records the fixture chat served
+as `www.whatnot.com`, and checks the parsed sales and Review in the portal.
 
 `dist-test/` is the same bundle with `http://127.0.0.1/*` added to the
 content-script matches so the fixture page at `e2e/fixture/chat.html` can

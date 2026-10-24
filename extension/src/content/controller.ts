@@ -47,7 +47,7 @@ export class Controller {
       this.startPicking()
     }
     p.el('stop').onclick = () => {
-      this.stopRecording()
+      void this.stopRecording()
       this.download('show')
       this.render()
     }
@@ -68,13 +68,20 @@ export class Controller {
       p.setStatus('Resumed ' + this.log.length + ' saved messages.', 'good')
       this.startPicking()
     }
-    p.el('fresh').onclick = () => {
+    p.el('fresh').onclick = async () => {
+      // Only offered before recording. If it is ever reached mid-show, stop and save first: with no
+      // show the recorder would keep counting lines that flush() can never save.
+      await this.stopRecording()
       this.log = []
+      this.pending = []
       this.startedAt = null
-      send({ cmd: 'clearSession' }).catch(() => {})
+      this.synced = 0
+      this.state = 'idle'
+      await send({ cmd: 'clearSession' }).catch(() => {})
       p.el('resumeRow').hidden = true
       this.rebuildFlags()
       p.setStatus('Ready. Press Start.')
+      p.setSync('')
       this.render()
     }
     window.addEventListener('beforeunload', () => void this.flush())
@@ -170,12 +177,12 @@ export class Controller {
     else if (!this.flushTimer) this.flushTimer = setTimeout(() => void this.flush(), FLUSH_MS)
   }
 
-  private stopRecording(): void {
+  private stopRecording(): Promise<void> {
     this.recorder?.stop()
     this.recorder = null
     document.removeEventListener('click', this.onPickBound, true)
     this.state = this.log.length ? 'stopped' : 'idle'
-    void this.flush()
+    return this.flush()
   }
 
   // ---------- persistence (background owns IndexedDB) ----------
