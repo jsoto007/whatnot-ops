@@ -2,15 +2,15 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
-import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleStatus, type Show, type ShowTiles, type TopBuyer, type TopSku } from '../../lib/api'
+import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleStatus, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway } from '../../lib/api'
 import { fmtLongDate } from '../../lib/format'
 import { Kpis, Tally, TopLists } from './Dashboard'
 import { Reconcile } from './Reconcile'
 
-const KIND_LABEL: Record<string, string> = { sale: 'Sale', claim: 'Claim', gift: 'Gift', cancel: 'Cancel', payment_failed: 'Payment failed', no_pick: 'No pick', listing: 'Listing', chatter: 'Chatter' }
-const TABS = ['sales', 'payments', 'events', 'messages', 'analytics'] as const
+const KIND_LABEL: Record<string, string> = { sale: 'Sale', claim: 'Claim', gift: 'Gift', cancel: 'Cancel', payment_failed: 'Payment failed', no_pick: 'No winner', listing: 'Listing', chatter: 'Chatter' }
+const TABS = ['sales', 'walkaways', 'payments', 'events', 'messages', 'analytics'] as const
 type Tab = (typeof TABS)[number]
-const TAB_LABEL: Record<Tab, string> = { sales: 'Sales', payments: 'Payments', events: 'Parsed lines', messages: 'Chat', analytics: 'Analytics' }
+const TAB_LABEL: Record<Tab, string> = { sales: 'Sales', walkaways: 'Walked away', payments: 'Payments', events: 'Parsed lines', messages: 'Chat', analytics: 'Analytics' }
 
 export function ShowDetail() {
   const { id = '' } = useParams()
@@ -24,7 +24,7 @@ export function ShowDetail() {
     setParams(next, { replace: true })
   }
   const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats }>(`/api/shows/${id}`) })
-  const dash = useQuery({ queryKey: ['show-dashboard', id], queryFn: () => apiGet<{ tiles: ShowTiles; topBuyers: TopBuyer[]; topSkus: TopSku[] }>(`/api/dashboard/shows/${id}`) })
+  const dash = useQuery({ queryKey: ['show-dashboard', id], queryFn: () => apiGet<{ tiles: ShowTiles; topBuyers: TopBuyer[]; topSkus: TopSku[]; winnersWithoutPurchase: WalkAway[] }>(`/api/dashboard/shows/${id}`) })
   const sales = useQuery({ queryKey: ['sales', id], queryFn: () => apiGet<{ sales: Sale[] }>(`/api/shows/${id}/sales`) })
   const parse = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/parse`), onSuccess: () => qc.invalidateQueries() })
   const aiAudit = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/ai-audit`), onSuccess: () => qc.invalidateQueries() })
@@ -32,6 +32,7 @@ export function ShowDetail() {
   const t = dash.data?.tiles
   const s = show.data?.show
   const list = sales.data?.sales ?? []
+  const walkaways = dash.data?.winnersWithoutPurchase ?? []
   const counts = useMemo(() => countBy(list), [list])
   const started = s ? new Date(s.startedAt) : null
   const updated = s ? new Date(s.updatedAt) : null
@@ -70,17 +71,19 @@ export function ShowDetail() {
       {t && <Kpis t={t} label="This show" />}
       {list.length > 0 && <SaleStatusBar counts={counts} />}
       {t && <Tally t={t} />}
-      {t && s && <NextSteps t={t} counts={counts} showId={id} canReconcile={can('orders.reconcile')} canReview={can('review.act')} onTab={setTab} />}
+      {t && s && <NextSteps t={t} counts={counts} walkaways={walkaways.length} showId={id} canReconcile={can('orders.reconcile')} canReview={can('review.act')} onTab={setTab} />}
 
       <div className="tabs" role="tablist">
         {TABS.map((k) => (
           <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>
             {TAB_LABEL[k]}
             {k === 'sales' && list.length ? <span className="tab-count">{list.length}</span> : null}
+            {k === 'walkaways' && walkaways.length ? <span className="tab-count">{walkaways.length}</span> : null}
           </button>
         ))}
       </div>
       {tab === 'sales' && <SalesTab sales={list} loading={sales.isPending} />}
+      {tab === 'walkaways' && <WalkawaysTab rows={walkaways} loading={dash.isPending} canReview={can('review.act')} onTab={setTab} />}
       {tab === 'payments' && (can('orders.reconcile') ? <Reconcile showId={id} /> : <p className="card muted">Only owners and managers can reconcile payments.</p>)}
       {tab === 'events' && <EventsTab showId={id} />}
       {tab === 'messages' && <MessagesTab showId={id} />}
@@ -136,8 +139,9 @@ function SaleStatusBar({ counts }: { counts: Counts }) {
   )
 }
 
-function NextSteps({ t, counts, showId, canReconcile, canReview, onTab }: { t: ShowTiles; counts: Counts; showId: string; canReconcile: boolean; canReview: boolean; onTab: (t: Tab) => void }) {
+function NextSteps({ t, counts, walkaways, showId, canReconcile, canReview, onTab }: { t: ShowTiles; counts: Counts; walkaways: number; showId: string; canReconcile: boolean; canReview: boolean; onTab: (t: Tab) => void }) {
   const steps: React.ReactNode[] = []
+  if (walkaways) steps.push(<li key="w">{walkaways} winner{walkaways === 1 ? '' : 's'} walked away (nothing picked, cancelled, unpaid) — <a href="#walkaways" onClick={(e) => { e.preventDefault(); onTab('walkaways') }}>see who</a></li>)
   if (canReview && t.openReviews) steps.push(<li key="r">{t.openReviews} line{t.openReviews === 1 ? '' : 's'} need{t.openReviews === 1 ? 's' : ''} a decision — <Link to="/app/review">open Review</Link></li>)
   const open = (counts.reserved?.n ?? 0) + (counts.detected?.n ?? 0)
   if (canReconcile && open && !t.live) steps.push(<li key="p">{open} sale{open === 1 ? '' : 's'} await{open === 1 ? 's' : ''} the payment file — <a href="#payments" onClick={(e) => { e.preventDefault(); onTab('payments') }}>reconcile payments</a></li>)
@@ -225,6 +229,62 @@ function SalesTab({ sales, loading }: { sales: Sale[]; loading: boolean }) {
               </tr>
             )),
           )}
+        </tbody>
+      </table>
+    </>
+  )
+}
+
+const WALKAWAY_CLASS: Record<WalkAway['outcome'], string> = { no_item: 'detected', cancelled: 'cancelled', payment_failed: 'payment_failed', unpaid: 'reserved', unconfirmed: 'detected' }
+
+/** Winners with nothing to pack: who won, why nothing is going out, and the chat line to check. */
+function WalkawaysTab({ rows, loading, canReview, onTab }: { rows: WalkAway[]; loading: boolean; canReview: boolean; onTab: (t: Tab) => void }) {
+  if (loading) return <p className="muted">Loading…</p>
+  if (!rows.length)
+    return (
+      <div className="empty" data-testid="walkaways-empty">
+        <b>Every winner has something to pack</b>
+        Buyers who won and picked nothing, cancelled, failed to pay or are missing from the payment file will show here.
+      </div>
+    )
+  const unconfirmed = rows.filter((r) => r.outcome === 'unconfirmed').length
+  return (
+    <>
+      <p className="muted small">
+        One row per win that ended with nothing to pack. "Won, nothing picked" is the sheet's No-Pick; the line number finds the moment in <a href="#messages" onClick={(e) => { e.preventDefault(); onTab('messages') }}>Chat</a>.
+        {unconfirmed > 0 && canReview && (
+          <>
+            {' '}
+            {unconfirmed} win{unconfirmed === 1 ? ' is' : 's are'} waiting for a decision in <Link to="/app/review">Review</Link>.
+          </>
+        )}
+      </p>
+      <table className="table walkaways" data-testid="walkaways">
+        <thead>
+          <tr>
+            <th>Buyer</th>
+            <th>Outcome</th>
+            <th>Item</th>
+            <th className="num">Qty</th>
+            <th className="num">#</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={`${r.outcome}-${r.saleId ?? r.seq ?? i}`} data-testid={`walkaway-${r.buyer}`}>
+              <td>
+                <b>{r.buyer}</b>
+              </td>
+              <td>
+                <span className={`status ${WALKAWAY_CLASS[r.outcome]}`}>{r.label}</span>
+              </td>
+              <td>{r.item || <span className="muted">nothing named</span>}</td>
+              <td className="num">{r.quantity}</td>
+              <td className="num muted">{r.seq ?? ''}</td>
+              <td className="muted small">{r.note}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </>

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 
 from ..db import db
-from ..models import Order, OrderStatus, Sale, SaleStatus, Show, Sku
+from ..models import EventKind, Order, OrderStatus, ParsedEvent, Sale, SaleStatus, Show, Sku
 from ..models.orders import FULFILLMENT
 
 STANDING = (SaleStatus.detected, SaleStatus.reserved, SaleStatus.paid, SaleStatus.fulfilled)
@@ -60,9 +60,15 @@ def verified(order: Order) -> bool:
 
 
 def advance(
-    order: Order, new_status: OrderStatus, *, actor_label: str, tracking: str | None = None
+    order: Order,
+    new_status: OrderStatus,
+    *,
+    actor_label: str,
+    tracking: str | None = None,
+    packed_by: str | None = None,
 ) -> Order:
-    """picking → packed → shipped, only for verified orders; shipped marks the sales fulfilled."""
+    """picking → packed → shipped, only for verified orders; shipped marks the sales fulfilled.
+    `packed_by` (the packer's name) is written on the first move to packed, as on the paper slip."""
     from . import pipeline
     from .inventory import Actor
 
@@ -86,6 +92,7 @@ def advance(
         order.picked_at = now
     elif new_status is OrderStatus.packed:
         order.packed_at = now
+        order.packed_by = order.packed_by or (packed_by or "").strip()[:80] or None
     elif new_status is OrderStatus.shipped:
         order.shipped_at = now
         order.tracking = (tracking or order.tracking or "").strip() or None
@@ -98,6 +105,31 @@ def advance(
                     actor=Actor("user", None, actor_label),
                 )
     return order
+
+
+def gifts_for(order: Order) -> list[dict]:
+    """Gift lines the host or platform gave this buyer in the order's show (the slip's Gift
+    rows). Gifts are events, not sales: they hold no stock and carry no price."""
+    rows = db.session.execute(
+        select(ParsedEvent.item_text, ParsedEvent.message_id)
+        .where(
+            ParsedEvent.show_id == order.show_id,
+            ParsedEvent.kind == EventKind.gift,
+            ParsedEvent.confidence >= 0.8,
+            func.lower(ParsedEvent.buyer_username) == order.buyer_username.lower(),
+        )
+        .order_by(ParsedEvent.id)
+    ).all()
+    from ..models import ChatMessage
+
+    seqs = dict(
+        db.session.execute(
+            select(ChatMessage.id, ChatMessage.seq).where(
+                ChatMessage.id.in_([m for _, m in rows] or [0])
+            )
+        ).all()
+    )
+    return [{"item": item, "seq": seqs.get(mid)} for item, mid in rows]
 
 
 def pick_list(show: Show) -> list[dict]:

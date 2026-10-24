@@ -34,6 +34,8 @@ AUCTION_TYPES = [
     ("mega", re.compile(r"\bmega\b", re.I)),
     ("ultra", re.compile(r"\bultra\b", re.I)),
     ("bundle", re.compile(r"\bbundle\b", re.I)),
+    # On the shop's packing sheet ("Quick Hit 188"); how it reads in chat is unconfirmed.
+    ("quick_hit", re.compile(r"\bquick\s*-?\s*hits?\b", re.I)),
 ]
 
 
@@ -162,6 +164,14 @@ LISTING_PATTERNS = [
         ),
     ),
 ]
+# The split case (see classify): only the unmistakable platform shapes are rejoined, so a
+# viewer's "won last week too" or "got it, thanks" stays chatter instead of filling Review.
+SPLIT_VERB = re.compile(r"^(?:won|purchased|bought)\b", re.I)
+SPLIT_PATTERNS = [
+    (EventKind.gift, "won_giveaway", dict(GIFT_PATTERNS)["won_giveaway"]),
+    (EventKind.sale, "won_auction", dict(SALE_PATTERNS)["won_auction"]),
+    (EventKind.sale, "won_item_for", dict(SALE_PATTERNS)["won_item_for"]),  # needs a price
+]
 CLAIM_PATTERNS = [
     (
         "claim_qty",
@@ -221,6 +231,18 @@ def classify(username: str, body: str, raw_text: str, *, host: str | None = None
             m = rx.match(text)
             if m:
                 return _build(kind, rule, m, confidence=authority, text=text)
+    # The extension splits "<name> won the auction!" into username=<name>, body="won the
+    # auction!" when the platform renders the winner's handle in its own element. Rejoin
+    # them, but only with viewer authority: from here the line is indistinguishable from a
+    # viewer typing "won the auction!" themselves, so the pipeline sends it to Review
+    # (confidence < 0.8) instead of creating a sale. A real capture will tell us whether
+    # platform rows carry a marker the extension can forward (see audit 2026-10-24).
+    if username and not is_host and SPLIT_VERB.match(text):
+        joined = f"{username} {text}"
+        for kind, rule, rx in SPLIT_PATTERNS:
+            m = rx.match(joined)
+            if m:
+                return _build(kind, f"{rule}_split", m, confidence=0.6, text=joined)
     for rule, rx in CLAIM_PATTERNS:
         m = rx.match(text)
         if m:

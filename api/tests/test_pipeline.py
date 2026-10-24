@@ -314,3 +314,14 @@ def test_review_and_show_routes(client, app, world):
     assert stats["sales"] == {"reserved": 2} and stats["openReviews"] == 0
     actions = [e["action"] for e in client.get("/api/audit").get_json()["entries"]]
     assert "review.resolved" in actions and "show.parsed" in actions
+
+
+def test_split_winner_line_waits_in_review_instead_of_becoming_a_sale(app, world):
+    world["say"](app, [("", "Auction #1: Red bundle"), ("lani808", "won the auction!")])
+    run(app, world["show"])
+    assert sales(app, world["show"]) == []
+    assert level(app, world["red"]) == (3, 0)
+    with app.app_context():
+        item = db.session.scalar(select(ReviewItem))
+        assert item.reason == "low_confidence"
+        assert "winner line for lani808" in item.summary and "sender" in item.summary

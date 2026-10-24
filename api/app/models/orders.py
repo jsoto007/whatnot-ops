@@ -43,6 +43,8 @@ class Order(db.Model):
     tracking: Mapped[str | None] = mapped_column(String(120))
     picked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     packed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # "Packed by" on the shop's paper slip: the packer's name or initials.
+    packed_by: Mapped[str | None] = mapped_column(String(80))
     shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow

@@ -58,8 +58,9 @@ def test_show_tiles_match_the_sheet_and_the_money(app, world):
         t["bundles"],
         t["gifts"],
         t["noPicks"],
+        t["noWinner"],
         t["cancelled"],
-    ) == (2, 1, 2, 0, 1, 1, 1)
+    ) == (2, 1, 2, 0, 1, 0, 1, 1)
     assert t["revenuePaidCents"] == 5000 and t["revenuePendingCents"] == 0
     assert t["toFulfil"] == 1 and t["orders"] == {"paid": 1, "cancelled": 1}
     assert t["live"] is True
@@ -97,6 +98,7 @@ def test_workbook_sheets_rows_and_currency_cells(app, world):
         "Inventory remaining",
         "Cancellations",
         "Revenue",
+        "Walked away",
         "Fulfilment",
         "Stock movements",
     ]
@@ -112,7 +114,10 @@ def test_workbook_sheets_rows_and_currency_cells(app, world):
     customers = list(wb["Customers"].iter_rows(values_only=True))
     assert customers[1] == ("lani808", 2, 50.0, 1, sales[1][0])
     revenue = list(wb["Revenue"].iter_rows(values_only=True))[1]
-    assert revenue[2:5] == (2, 1, 50.0) and revenue[7:9] == (1, 1)
+    assert revenue[2:5] == (2, 1, 50.0) and revenue[7:10] == (1, 0, 1)
+    walked = list(wb["Walked away"].iter_rows(values_only=True))
+    assert walked[0] == ("Show", "Buyer", "Outcome", "Item", "Qty", "Line #", "Note")
+    assert [w[1:3] for w in walked[1:]] == [("kat.c", "Cancelled")]
     fulfil = list(wb["Fulfilment"].iter_rows(values_only=True))
     assert fulfil[1][1:6] == ("lani808", "paid", "RED", "Red bundle", 2)
     inv = list(wb["Inventory remaining"].iter_rows(values_only=True))[1]
@@ -228,3 +233,52 @@ def test_oversold_sku_reports_how_many_to_buy(app, world):
         assert [s["code"] for s in d["attention"]["oversold"]] == ["RED"]
         top = next(t for t in dashboard.top_skus(world["org"]) if t["code"] == "RED")
         assert top["sellThrough"] == 1.0
+
+
+def test_winners_without_purchase_lists_every_way_a_win_went_nowhere(app, world):
+    world["say"](
+        app,
+        [
+            ("", "dave-77 won the auction!"),  # no listing yet: won, nothing picked
+            ("", "Auction #1: Red bundle"),
+            ("", "lani808 won Red bundle"),
+            ("", "kat.c won Red bundle"),
+            ("host_shop", "cancelled for kat.c"),
+            ("", "pokemom_22 won Red bundle"),
+            ("host_shop", "payment failed for pokemom_22"),
+            ("cardguy", "won the auction!"),  # the split shape: waits in Review
+            ("newbie", "won last week too"),  # chatter, not a walk-away
+        ],
+    )
+    run(app, world["show"])
+    with app.app_context():
+        show = db.session.get(Show, world["show"])
+        reconcile.apply(
+            show,
+            reconcile.plan(
+                show, reconcile.parse_csv("Buyer,Product,Status\nnobody,Red bundle,paid\n")
+            ),
+            actor=Actor("user", None, "t"),
+            import_id="i2",
+        )
+        db.session.commit()
+        rows = dashboard.winners_without_purchase(show)
+        tiles = dashboard.show_tiles(show)
+    assert [(r["buyer"], r["outcome"]) for r in rows] == [
+        ("dave-77", "no_item"),
+        ("kat.c", "cancelled"),
+        ("pokemom_22", "payment_failed"),
+        ("lani808", "unpaid"),
+        ("cardguy", "unconfirmed"),
+    ]
+    assert rows[0]["seq"] == 1 and rows[-1]["note"] == "cardguy won the auction!"
+    assert tiles["noPicks"] == 1 and tiles["noWinner"] == 0
+
+
+def test_quick_hit_is_tallied_like_the_other_auction_types(app, world):
+    world["say"](app, [("", "lani808 won Quick Hit 188 for $6"), ("", "kat.c won Red bundle")])
+    run(app, world["show"])
+    with app.app_context():
+        t = dashboard.show_tiles(db.session.get(Show, world["show"]))
+    assert (t["quickHit"], t["red"], t["itemsSold"]) == (1, 1, 2)
+    assert "quickHit" in dashboard.totals([t])

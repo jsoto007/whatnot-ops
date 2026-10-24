@@ -32,15 +32,15 @@ export function Kpis({ t, totals, label }: { t?: ShowTiles; totals?: Record<stri
       {tile('Paid revenue', money(v('revenuePaidCents')), 'paid', v('revenuePendingCents') ? `${money(v('revenuePendingCents'))} still awaiting payment` : 'nothing awaiting payment')}
       {tile('Items sold', v('itemsSold'), 'items', `${v('cancelled')} cancelled or failed`)}
       {tile('Buyers', buyers, 'buyers', buyers ? `${money(avg)} paid per buyer` : 'no buyers yet')}
-      {tile('Messages', v('messages'), 'messages', `${v('gifts')} gifts · ${v('noPicks')} no-picks`)}
+      {tile('Messages', v('messages'), 'messages', `${v('gifts')} gifts · ${v('noPicks')} no-picks · ${v('noWinner')} no winner`)}
     </div>
   )
 }
 
 /** The team's spreadsheet tally for one show, in their words and order. */
 export function Tally({ t }: { t: ShowTiles }) {
-  const cell = (label: string, value: string | number, id: string) => (
-    <div className="tile" data-testid={`tile-${id}`}>
+  const cell = (label: string, value: string | number, id: string, title?: string) => (
+    <div className="tile" data-testid={`tile-${id}`} title={title}>
       <div className="tile-value">{value}</div>
       <div className="tile-label">{label}</div>
     </div>
@@ -51,9 +51,10 @@ export function Tally({ t }: { t: ShowTiles }) {
       {cell('Buyers', t.buyers, 'tally-buyers')}
       {cell('Red', t.red, 'red')}
       {cell('Gifts', t.gifts, 'gifts')}
-      {cell('No-picks', t.noPicks, 'nopicks')}
+      {cell('No-picks', t.noPicks, 'nopicks', 'Buyers who won and picked nothing (see the Walked away tab)')}
       {cell('Bundles', t.bundles, 'bundles')}
       {cell('Ultra / Mega', `${t.ultra} · ${t.mega}`, 'ultramega')}
+      {cell('Quick Hit', t.quickHit, 'quickhit')}
     </div>
   )
 }

@@ -241,10 +241,12 @@ def build(
             "Cancelled / failed",
             "Gifts",
             "No-picks",
+            "No winner",
             "Red",
             "Bundles",
             "Ultra",
             "Mega",
+            "Quick Hit",
         ],
         [
             [
@@ -257,17 +259,48 @@ def build(
                 t["cancelled"],
                 t["gifts"],
                 t["noPicks"],
+                t["noWinner"],
                 t["red"],
                 t["bundles"],
                 t["ultra"],
                 t["mega"],
+                t["quickHit"],
             ]
             for t in tiles
         ],
         money_cols=(5, 6),
     )
 
-    # 7. Fulfilment list (verified orders not yet shipped)
+    # 7. Winners with nothing to pack (same rows as the show page's "Walked away" tab)
+    shows_for_walkaways = (
+        [show]
+        if show
+        else db.session.scalars(
+            select(Show)
+            .where(Show.id.in_({s.show_id for s in sales} or {0}))
+            .order_by(Show.started_at)
+        ).all()
+    )
+    _sheet(
+        wb,
+        "Walked away",
+        ["Show", "Buyer", "Outcome", "Item", "Qty", "Line #", "Note"],
+        [
+            [
+                sh.show_date.isoformat(),
+                r["buyer"],
+                r["label"],
+                r["item"],
+                r["quantity"],
+                r["seq"],
+                r["note"],
+            ]
+            for sh in shows_for_walkaways
+            for r in dashboard.winners_without_purchase(sh)
+        ],
+    )
+
+    # 8. Fulfilment list (verified orders not yet shipped)
     oq = (
         select(Order)
         .where(Order.organization_id == org.id, Order.status.in_(("paid", "picking", "packed")))

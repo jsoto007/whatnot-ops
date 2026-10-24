@@ -38,6 +38,7 @@ def get_show_dashboard(show_id: int):
             "tiles": dashboard.show_tiles(show),
             "topBuyers": dashboard.top_buyers(g.u.organization_id, show_id=show.id),
             "topSkus": dashboard.top_skus(g.u.organization_id, show_id=show.id),
+            "winnersWithoutPurchase": dashboard.winners_without_purchase(show),
         }
     )
 

@@ -287,9 +287,13 @@ export interface Order {
   tracking: string | null
   pickedAt: string | null
   packedAt: string | null
+  /** The packer's name or initials ("Packed by" on the paper slip); set on the first move to packed. */
+  packedBy: string | null
   shippedAt: string | null
   createdAt: string
   sales: Sale[] | null
+  /** Gift lines the host gave this buyer in the show (detail view only; gifts are not sales). */
+  gifts: { item: string; seq: number | null }[] | null
 }
 export interface PickItem {
   skuId: number
@@ -325,14 +329,30 @@ export interface ShowTiles {
   bundles: number
   ultra: number
   mega: number
+  quickHit: number
   gifts: number
+  /** Wins where nothing was picked (the sale names no item). */
   noPicks: number
+  /** Auctions that ended without a winner. */
+  noWinner: number
   cancelled: number
   revenuePaidCents: number
   revenuePendingCents: number
   orders: Record<string, number>
   toFulfil: number
   openReviews: number
+}
+export type WalkAwayOutcome = 'no_item' | 'cancelled' | 'payment_failed' | 'unpaid' | 'unconfirmed'
+/** A winner with nothing to pack for the show (dashboard.winners_without_purchase). */
+export interface WalkAway {
+  buyer: string
+  outcome: WalkAwayOutcome
+  label: string
+  item: string
+  quantity: number
+  seq: number | null
+  saleId: number | null
+  note: string
 }
 export interface TopBuyer {
   buyer: string

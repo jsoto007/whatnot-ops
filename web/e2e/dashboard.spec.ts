@@ -67,7 +67,11 @@ test('dashboard tiles, show analytics and the Excel report agree', async ({ page
   await expect(page.getByTestId('tile-items')).toContainText('3')
   await expect(page.getByTestId('tile-red')).toContainText('3')
   await expect(page.getByTestId('tile-gifts')).toContainText('1')
-  await expect(page.getByTestId('tile-nopicks')).toContainText('1')
+  await expect(page.getByTestId('tile-nopicks')).toContainText('0') // nobody won without picking
+  await expect(page.getByTestId('tile-messages')).toContainText('1 no winner') // "No bids"
+  await page.getByRole('tab', { name: 'Walked away' }).click()
+  await expect(page.getByTestId('walkaways-empty')).toBeVisible()
+  await page.getByRole('tab', { name: 'Sales' }).click()
   await expect(page.getByTestId('status-bar')).toContainText('2 reserved')
   await page.getByRole('tab', { name: 'Analytics' }).click()
   await expect(page.getByTestId('top-skus')).toContainText('75%')

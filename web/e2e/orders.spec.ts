@@ -94,7 +94,13 @@ test('sales become orders; the payment file verifies them; the queue drives pick
   await expect(page.getByTestId('order-lani808')).toContainText('picking')
   await page.getByTestId('order-lani808').getByRole('link').click()
   await expect(page.getByTestId('packing-slip')).toContainText('all paid')
+  // the slip reads like the shop's paper sheet: header, a tick box per unit, footer lines
+  await expect(page.getByTestId('slip-title')).toHaveText(/Username: lani808 – 3 Items/)
+  await expect(page.getByTestId('packing-slip')).toContainText('Product checklist')
+  await expect(page.getByTestId('packing-slip').getByTestId('tick')).toHaveCount(3) // one box per unit
+  await expect(page.getByTestId('slip-foot')).toContainText('Packed by:')
   await page.getByTestId('advance').click() // packed
+  await expect(page.getByTestId('slip-foot')).toContainText('Packed by: Olive Owner')
   await page.getByLabel('Tracking number').fill('1Z999')
   await page.getByTestId('advance').click() // shipped
   await expect(page.locator('.status.shipped').first()).toBeVisible()

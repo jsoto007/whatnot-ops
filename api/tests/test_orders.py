@@ -249,6 +249,10 @@ def test_order_routes_and_permissions(client, app, world):
     )
     r = client.post(f"/api/orders/{oid}/status", json={"status": "picking"}, headers=h)
     assert r.get_json()["order"]["status"] == "picking"
+    # the slip's "Packed by": initials typed in advance stay once the order is packed
+    r = client.patch(f"/api/orders/{oid}", json={"packedBy": " JS "}, headers=h)
+    assert r.get_json()["order"]["packedBy"] == "JS"
+    assert client.get(f"/api/orders/{oid}").get_json()["order"]["gifts"] == []
     assert client.get("/api/orders/buyers/LANI808").get_json()["orders"][0]["id"] == oid
     # fulfillment can pick but not reconcile
     token = (
@@ -269,9 +273,48 @@ def test_order_routes_and_permissions(client, app, world):
         pat.post(f"/api/orders/{oid}/status", json={"status": "packed"}, headers=hp).status_code
         == 200
     )
+    assert client.get(f"/api/orders/{oid}").get_json()["order"]["packedBy"] == "JS"
     assert (
         pat.post(
             f"/api/orders/shows/{world['show']}/reconcile", json={"csv": "x"}, headers=hp
         ).status_code
         == 403
     )
+
+
+def test_packing_slip_gets_packer_name_and_the_buyer_gift_lines(app, world):
+    world["say"](
+        app,
+        [
+            ("", "lani808 won Red bundle"),
+            ("", "lani808 won the giveaway!"),
+            ("host_shop", "gift to lani808 - sticker pack"),
+            ("viewer", "gift to lani808 - a car"),  # a viewer's line never reaches the slip
+            ("host_shop", "gift to kat.c - sticker pack"),
+        ],
+    )
+    run(app, world["show"])
+    with app.app_context():
+        show = db.session.get(Show, world["show"])
+        u = owner(app, world["org"])
+        reconcile.apply(
+            show,
+            reconcile.plan(
+                show, reconcile.parse_csv("Buyer,Product,Status\nlani808,Red bundle,paid\n")
+            ),
+            actor=Actor.user(u),
+            import_id="i",
+        )
+        o = db.session.scalar(select(Order).where(Order.buyer_username == "lani808"))
+        assert orders.gifts_for(o) == [
+            {"item": "", "seq": 2},
+            {"item": "sticker pack", "seq": 3},
+        ]
+        orders.advance(o, OrderStatus.picking, actor_label="o")
+        orders.advance(o, OrderStatus.packed, actor_label="o", packed_by="Olive Owner")
+        assert o.packed_by == "Olive Owner" and o.packed_at is not None
+        # the first packer's name stays even if the order is packed again
+        orders.advance(o, OrderStatus.picking, actor_label="o")
+        orders.advance(o, OrderStatus.packed, actor_label="o", packed_by="Someone Else")
+        assert o.packed_by == "Olive Owner"
+        db.session.rollback()
