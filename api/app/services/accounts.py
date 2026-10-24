@@ -13,7 +13,7 @@ from sqlalchemy import func, select, update
 from ..config import is_dev
 from ..db import db
 from ..models import Invite, Organization, PasswordReset, Role, User
-from . import audit, mail
+from . import audit, mail, mail_templates
 from .admin import admin_email, is_admin
 
 # OWASP's argon2id minimum (19 MiB, t=2, p=1): the 64 MiB library default let a
@@ -314,15 +314,14 @@ def create_invite(inviter: User, email: str, role: Role) -> tuple[Invite, str]:
         target_id=invite.id,
         details={"email": email, "role": role.value},
     )
-    url = app_url(f"/invite/{token}")
     mail.send(
-        mail.Message(
+        mail_templates.invite(
             to=email,
-            subject=f"{inviter.organization.name} invited you to Sales Ops",
-            text=(
-                f"{inviter.name} invited you to join {inviter.organization.name} on Sales Ops as "
-                f"{role.value}.\n\nAccept the invite (valid {INVITE_DAYS} days):\n{url}\n"
-            ),
+            inviter_name=inviter.name,
+            organization=inviter.organization.name,
+            role=role.value,
+            url=app_url(f"/invite/{token}"),
+            days=INVITE_DAYS,
         )
     )
     db.session.commit()
@@ -529,14 +528,7 @@ def request_password_reset(email: str) -> str | None:
         user.organization_id, "password.reset_requested", target_type="user", target_id=user.id
     )
     mail.send(
-        mail.Message(
-            to=email,
-            subject="Reset your Sales Ops password",
-            text=(
-                f"Reset your password (link valid {RESET_HOURS} hours):\n"
-                f"{app_url('/reset/' + token)}\n\nIf you did not ask for this, ignore this email."
-            ),
-        )
+        mail_templates.password_reset(to=email, url=app_url("/reset/" + token), hours=RESET_HOURS)
     )
     db.session.commit()
     return token
