@@ -43,3 +43,10 @@
 {"u": "", "b": "lani808 joined", "kind": "chatter"}
 {"u": "", "b": "pokemom_22 is following", "kind": "chatter"}
 {"u": "cardguy", "b": "sold to my brother last time", "kind": "chatter"}
+{"u": "lani808", "b": "won the auction!", "kind": "sale", "buyer": "lani808", "item": ""}
+{"u": "pokemom_22", "b": "won the auction for Red bundle for $25", "kind": "sale", "buyer": "pokemom_22", "item": "Red bundle", "price": 2500, "type": "red"}
+{"u": "kat.c", "b": "won the giveaway!", "kind": "gift", "buyer": "kat.c"}
+{"u": "cardguy", "b": "won last week too", "kind": "chatter"}
+{"u": "dave-77", "b": "got it, thanks", "kind": "chatter"}
+{"u": "", "b": "dave-77 won Quick Hit 188 for $6", "kind": "sale", "buyer": "dave-77", "item": "Quick Hit 188", "price": 600, "type": "quick_hit"}
+{"u": "host_shop", "b": "Up next - quick hit 189", "kind": "listing", "item": "quick hit 189", "type": "quick_hit"}

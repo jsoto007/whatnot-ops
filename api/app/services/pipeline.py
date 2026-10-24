@@ -349,8 +349,14 @@ def process_show(show_id: int, *, reparse: bool = False, host: str | None = None
                 open_review(
                     show.organization_id,
                     "low_confidence",
-                    f'"{m.raw_text}" looks like a sale but was not said by the host '
-                    "or the platform",
+                    (
+                        f'"{m.raw_text}" reads like the platform\'s winner line for '
+                        f"{c.buyer}, but the name arrived as the sender — confirm it is "
+                        "the platform, not a viewer"
+                        if c.rule.endswith("_split")
+                        else f'"{m.raw_text}" looks like a sale but was not said by the '
+                        "host or the platform"
+                    ),
                     show_id=show.id,
                     message_id=m.id,
                     event_id=ev.id,

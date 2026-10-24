@@ -23,7 +23,7 @@ from ..models import (
 STANDING = (SaleStatus.detected, SaleStatus.reserved, SaleStatus.paid, SaleStatus.fulfilled)
 PAID = (SaleStatus.paid, SaleStatus.fulfilled)
 LOST = (SaleStatus.cancelled, SaleStatus.payment_failed)
-TYPES = ("red", "bundle", "ultra", "mega")
+TYPES = ("red", "bundle", "ultra", "mega", "quick_hit")
 LIVE_WINDOW = timedelta(minutes=10)
 
 
@@ -73,12 +73,29 @@ def show_tiles(show: Show) -> dict:
             ],
         ).where(Sale.show_id == show.id)
     ).one()
+    # Gifts and no-winner auctions are lines, not sales; only host/platform lines count,
+    # or a viewer typing "won the giveaway!" would move the tile.
     events = dict(
         db.session.execute(
             select(ParsedEvent.kind, func.count())
-            .where(ParsedEvent.show_id == show.id)
+            .where(ParsedEvent.show_id == show.id, ParsedEvent.confidence >= 0.8)
             .group_by(ParsedEvent.kind)
         ).all()
+    )
+    # The sheet's "No-Picks": buyers who won and then picked nothing (the sale names no
+    # item), not auctions that ended without a winner (that is `noWinner`).
+    no_picks = (
+        db.session.scalar(
+            select(func.count())
+            .select_from(Sale)
+            .where(
+                Sale.show_id == show.id,
+                Sale.status.in_(STANDING),
+                Sale.sku_id.is_(None),
+                Sale.item_text == "",
+            )
+        )
+        or 0
     )
     orders = dict(
         db.session.execute(
@@ -114,8 +131,10 @@ def show_tiles(show: Show) -> dict:
         "bundles": int(row.bundle),
         "ultra": int(row.ultra),
         "mega": int(row.mega),
+        "quickHit": int(row.quick_hit),
         "gifts": int(events.get(EventKind.gift, 0)),
-        "noPicks": int(events.get(EventKind.no_pick, 0)),
+        "noPicks": int(no_picks),
+        "noWinner": int(events.get(EventKind.no_pick, 0)),
         "cancelled": int(row.lost),
         "revenuePaidCents": int(row.paid),
         "revenuePendingCents": int(row.pending),
@@ -129,6 +148,82 @@ def show_tiles(show: Show) -> dict:
         ),
         "openReviews": int(open_reviews),
     }
+
+
+# Why a winner has nothing to pack, in the order the team cares about.
+WALKAWAY = {
+    "no_item": "Won, nothing picked",
+    "cancelled": "Cancelled",
+    "payment_failed": "Payment failed",
+    "unpaid": "Not in the payment file",
+    "unconfirmed": "Win not confirmed (in Review)",
+}
+
+
+def winners_without_purchase(show: Show) -> list[dict]:
+    """Every buyer who won something in the show and has nothing to pack for it: a win with
+    no item picked, a cancelled or failed sale, a sale the payment file did not cover, or a
+    win the rules could not trust (a viewer-shaped line waiting in Review). One row per
+    sale (or per unconfirmed line), chat line number included so it can be checked."""
+    unpaid = set(
+        db.session.scalars(
+            select(ReviewItem.sale_id).where(
+                ReviewItem.show_id == show.id,
+                ReviewItem.reason == "no_payment_record",
+                ReviewItem.status == ReviewStatus.open,
+            )
+        )
+    )
+    rows: list[dict] = []
+    sales = db.session.scalars(select(Sale).where(Sale.show_id == show.id).order_by(Sale.id)).all()
+    for s in sales:
+        if s.status in LOST:
+            outcome = s.status.value
+        elif s.sku_id is None and not s.item_text and s.status in STANDING:
+            outcome = "no_item"  # also absent from the payment file, but this says why
+        elif s.id in unpaid:
+            outcome = "unpaid"
+        else:
+            continue
+        rows.append(
+            {
+                "buyer": s.buyer_username,
+                "outcome": outcome,
+                "label": WALKAWAY[outcome],
+                "item": s.sku.product.name if s.sku else s.item_text,
+                "quantity": s.quantity,
+                "seq": s.event.message.seq if s.event else None,
+                "saleId": s.id,
+                "note": s.status_reason or "",
+            }
+        )
+    confirmed = select(Sale.event_id).where(Sale.show_id == show.id, Sale.event_id.is_not(None))
+    pending = db.session.scalars(
+        select(ParsedEvent)
+        .where(
+            ParsedEvent.show_id == show.id,
+            ParsedEvent.kind == EventKind.sale,
+            ParsedEvent.confidence < 0.8,
+            ParsedEvent.id.not_in(confirmed),
+        )
+        .order_by(ParsedEvent.id)
+    ).all()
+    for ev in pending:
+        rows.append(
+            {
+                "buyer": ev.buyer_username,
+                "outcome": "unconfirmed",
+                "label": WALKAWAY["unconfirmed"],
+                "item": ev.item_text,
+                "quantity": ev.quantity,
+                "seq": ev.message.seq,
+                "saleId": None,
+                "note": ev.message.raw_text,
+            }
+        )
+    order = list(WALKAWAY)
+    rows.sort(key=lambda r: (order.index(r["outcome"]), r["seq"] or 0))
+    return rows
 
 
 def top_buyers(org_id: int, *, show_id: int | None = None, limit: int = 10) -> list[dict]:
@@ -205,8 +300,10 @@ def totals(rows: list[dict]) -> dict:
         "bundles",
         "ultra",
         "mega",
+        "quickHit",
         "gifts",
         "noPicks",
+        "noWinner",
         "cancelled",
         "revenuePaidCents",
         "revenuePendingCents",

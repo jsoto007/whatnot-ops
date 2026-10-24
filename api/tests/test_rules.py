@@ -67,3 +67,21 @@ def test_quantity_price_and_type_extraction():
         1250,
         "ultra",
     )
+
+
+def test_split_winner_lines_are_recognised_but_never_trusted():
+    """The extension may hand us username="lani808", body="won the auction!" for a platform
+    line. The rules rejoin it (so the win is not lost) at viewer authority (so a viewer typing
+    the same words cannot make themselves a sale)."""
+    c = classify("lani808", "won the auction!", "lani808 won the auction!", host=HOST)
+    assert (c.kind, c.rule, c.buyer) == (EventKind.sale, "won_auction_split", "lani808")
+    assert c.confidence == 0.6
+    c = classify("kat.c", "won the auction for Red bundle for $25", "", host=HOST)
+    assert (c.kind, c.item, c.price_cents) == (EventKind.sale, "Red bundle", 2500)
+    assert c.confidence == 0.6
+    assert classify("kat.c", "won the giveaway!", "", host=HOST).rule == "won_giveaway_split"
+    # ordinary chat that happens to start with the same verbs stays chatter
+    for body in ("won last week too", "got it, thanks", "bought one yesterday", "won Red bundle"):
+        assert classify("cardguy", body, "", host=HOST).kind is EventKind.chatter, body
+    # the host's own name never becomes the buyer
+    assert classify(HOST, "won the auction!", "", host=HOST).kind is EventKind.chatter
