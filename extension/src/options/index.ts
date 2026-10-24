@@ -180,5 +180,18 @@ $('flush').onclick = async () => {
   await refreshStats()
 }
 
-setInterval(refreshStats, 5000)
-void init()
+if (globalThis.chrome?.storage?.local) {
+  setInterval(refreshStats, 5000)
+  void init()
+} else {
+  // Double-clicked in the unzipped folder: a file page has no extension APIs, so nothing here can save.
+  const p = Object.assign(document.createElement('p'), {
+    className: 'msg bad',
+    textContent:
+      'This copy of Settings was opened as a file, so it cannot connect anything. ' +
+      'Install the folder with Load unpacked in chrome://extensions, then open Settings from Chrome: ' +
+      'click the Chat Scraper icon in the toolbar and choose Settings, or right-click the icon and choose Options.',
+  })
+  p.id = 'not-installed'
+  document.querySelector('main')!.replaceChildren(p)
+}

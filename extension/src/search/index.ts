@@ -193,6 +193,8 @@ $('del').onclick = async () => {
 
 $<HTMLSelectElement>('show').onchange = (e) => void openShow((e.target as HTMLSelectElement).value)
 $('go').onclick = run
+// The toolbar icon opens this page off Whatnot, so Settings (pairing) has to be reachable from here.
+$('settings').onclick = () => void chrome.runtime.openOptionsPage()
 let typing: ReturnType<typeof setTimeout> | undefined
 $('q').addEventListener('input', () => {
   clearTimeout(typing)
