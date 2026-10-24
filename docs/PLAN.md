@@ -1,4 +1,4 @@
-# Whatnot Ops — phased build plan
+# Sales Ops — phased build plan
 
 Goal: turn the Chat Scraper extension + the team's spreadsheet into a role-based
 web app that captures live-show chat, turns it into sales, reserves/commits

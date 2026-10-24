@@ -1,15 +1,15 @@
 # Runbook
 
-How Whatnot Ops is deployed and operated. Nothing here runs on its own: every
+How Sales Ops is deployed and operated. Nothing here runs on its own: every
 dashboard action, deploy and database write outside a laptop needs Javier's OK.
 
 ## Topology (Render Blueprint, `render.yaml`)
 
 | piece | what |
 |---|---|
-| `whatnot-ops` (web, Python) | builds `web/dist`, runs `flask db upgrade`, serves the API and the SPA with gunicorn |
-| `whatnot-ops-worker` (worker, Python) | `python -m app.worker`: parse shows, AI supervision; polls the `jobs` table |
-| `whatnot-ops-db` (Postgres, basic-256mb) | the only state |
+| `sales-ops` (web, Python) | builds `web/dist`, runs `flask db upgrade`, serves the API and the SPA with gunicorn |
+| `sales-ops-worker` (worker, Python) | `python -m app.worker`: parse shows, AI supervision; polls the `jobs` table |
+| `whatnot-ops-db` (Postgres, basic-256mb) | the only state (name kept: renaming would create an empty database) |
 
 The web service never runs jobs in production (`JOBS_INLINE` must stay
 unset); the worker does. Both read the same `DATABASE_URL`.
