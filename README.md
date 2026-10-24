@@ -112,7 +112,9 @@ it again on a cancel / payment-failed line for that buyer. Anything a person
 must decide lands in **Review**: unknown item (pick the SKU, optionally
 remember the name), which of several open sales to
 cancel, a sale-looking line from someone who is not the host or the
-platform. Set the shop's Whatnot handle under **Settings** so host lines
+platform ("Not sure": **Record as a sale** makes it a real sale through the
+same path the rules use, item from the last listing, stock held, order
+opened; or Ignore it). Set the shop's Whatnot handle under **Settings** so host lines
 are trusted.
 
 Overselling is allowed: a sale for more than is on the shelf is still

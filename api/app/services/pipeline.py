@@ -415,6 +415,23 @@ class ReviewError(ValueError):
         self.status = status
 
 
+def record_sale_from_event(item: ReviewItem) -> Sale:
+    """Turn the sale-shaped line behind a review item into a real sale: the same
+    create_sale() the rules use (SKU match, reserve, or an unmatched_item review).
+    Idempotent: a line that already has a sale is refused, never duplicated."""
+    ev = db.session.get(ParsedEvent, item.event_id) if item.event_id else None
+    show = db.session.get(Show, item.show_id) if item.show_id else None
+    if ev is None or show is None or ev.kind is not EventKind.sale:
+        raise ReviewError("this line is not a sale line; nothing to record")
+    existing = db.session.scalar(select(Sale.id).where(Sale.event_id == ev.id))
+    if existing is not None:
+        raise ReviewError(f"this line is already sale #{existing}", 409)
+    if not ev.buyer_username:
+        raise ReviewError("the line names no buyer; nothing to record")
+    sku = match_sku(show.organization_id, ev.item_text) if ev.item_text else None
+    return create_sale(show, ev, sku=sku)
+
+
 def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
     if item.status is not ReviewStatus.open:
         raise ReviewError("already resolved", 409)
@@ -422,6 +439,17 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
     if action == "dismiss":
         item.status = ReviewStatus.dismissed
         item.resolution = {"action": "dismiss"}
+    elif action == "confirm_sale":
+        # A person vouches for a sale-shaped line the rules could not trust (a viewer-shaped
+        # line, or the platform's winner line that arrived with the winner as the sender).
+        sale = record_sale_from_event(item)
+        item.status = ReviewStatus.resolved
+        item.resolution = {
+            "action": "confirm_sale",
+            "saleId": sale.id,
+            "skuId": sale.sku_id,
+            "reserved": sale.status is SaleStatus.reserved,
+        }
     elif action == "assign_sku":
         sale = item.sale
         if sale is None:
