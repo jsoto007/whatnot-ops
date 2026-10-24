@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
-import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Show } from '../../lib/api'
+import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleStatus, type Show } from '../../lib/api'
+import { fmtLongDate } from '../../lib/format'
 
 const NEXT: Partial<Record<OrderStatus, { label: string; to: OrderStatus }>> = {
   paid: { label: 'Start picking', to: 'picking' },
@@ -158,14 +159,15 @@ export function OrderDetail() {
   const q = useQuery({ queryKey: ['order', id], queryFn: () => apiGet<{ order: Order }>(`/api/orders/${id}`) })
   const [tracking, setTracking] = useState('')
   const [notes, setNotes] = useState<string | null>(null)
+  const [packedBy, setPackedBy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const status = useMutation({
-    mutationFn: (to: OrderStatus) => api('POST', `/api/orders/${id}/status`, { status: to, tracking: tracking || undefined }),
+    mutationFn: (to: OrderStatus) => api('POST', `/api/orders/${id}/status`, { status: to, tracking: tracking || undefined, packedBy: packedBy ?? undefined }),
     onSuccess: () => qc.invalidateQueries(),
     onError: (e) => setError(e instanceof ApiError ? e.message : 'failed'),
   })
   const save = useMutation({
-    mutationFn: () => api('PATCH', `/api/orders/${id}`, { notes, tracking }),
+    mutationFn: () => api('PATCH', `/api/orders/${id}`, { notes, tracking, ...(packedBy !== null ? { packedBy } : {}) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['order', id] }),
   })
   if (q.isPending) return <p className="muted">Loading…</p>
@@ -183,44 +185,16 @@ export function OrderDetail() {
         </h2>
         <span className={`status ${o.status}`}>{o.status}</span>
       </div>
-      <div className="card slip" data-testid="packing-slip">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Item</th>
-              <th>SKU</th>
-              <th className="num">Qty</th>
-              <th>Price</th>
-              <th>Payment</th>
-            </tr>
-          </thead>
-          <tbody>
-            {o.sales?.map((s) => (
-              <tr key={s.id} className={['cancelled', 'payment_failed'].includes(s.status) ? 'disabled' : ''}>
-                <td>{s.sku ? `${s.sku.productName} ${s.sku.name}`.trim() : s.item}</td>
-                <td>{s.sku ? <code>{s.sku.code}</code> : <span className="badge warn">unmatched</span>}</td>
-                <td className="num">{s.quantity}</td>
-                <td>{money(s.priceCents)}</td>
-                <td>
-                  <span className={`status ${s.status}`}>{s.status.replace('_', ' ')}</span>
-                  {s.externalOrderId && <span className="muted small"> · #{s.externalOrderId}</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <p className="muted small">
-          {o.items} item{o.items === 1 ? '' : 's'} · {money(o.totalCents)} · {o.verified ? 'all paid' : 'not all paid'}
-        </p>
-        <button className="btn small" onClick={() => window.print()}>
-          Print packing slip
-        </button>
-      </div>
+      <PackingSlip o={o} />
       {can('orders.fulfill') && (
-        <div className="card">
+        <div className="card no-print">
           <label className="field">
             <span>Tracking number</span>
             <input value={tracking || o.tracking || ''} onChange={(e) => setTracking(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>Packed by (name or initials)</span>
+            <input value={packedBy ?? o.packedBy ?? ''} onChange={(e) => setPackedBy(e.target.value)} maxLength={80} />
           </label>
           <label className="field">
             <span>Notes</span>
@@ -246,6 +220,125 @@ export function OrderDetail() {
       )}
       <BuyerHistory buyer={o.buyer} current={o.id} />
     </section>
+  )
+}
+
+const TYPE_LABEL: Record<string, string> = { red: 'Red', bundle: 'Bundle', ultra: 'Ultra', mega: 'Mega', quick_hit: 'Quick Hit' }
+const NOT_SHIPPING: SaleStatus[] = ['cancelled', 'payment_failed']
+
+/** One empty tick box per unit, so a packer can tick each physical item like on the paper sheet. */
+function Ticks({ n }: { n: number }) {
+  const boxes = Math.min(n, 24)
+  return (
+    <span className="ticks" aria-label={`${n} to pack`}>
+      {Array.from({ length: boxes }, (_, i) => (
+        <span className="tick" data-testid="tick" key={i} />
+      ))}
+      {n > boxes && <span className="muted small"> ×{n}</span>}
+    </span>
+  )
+}
+
+/**
+ * The shop's per-buyer packing sheet: header "Username: <buyer> - <N> Items", a row per
+ * auction with a tick per unit, gift lines, and the "Ready to ship / Gift(s) included /
+ * Packed by / date" footer. Whatnot's auction number is not in chat, so the Auction column
+ * shows the auction type (or "Listing", as on the sheet) and the chat line it came from.
+ */
+function PackingSlip({ o }: { o: Order }) {
+  const shipping = (o.sales ?? []).filter((s) => !NOT_SHIPPING.includes(s.status))
+  const dropped = (o.sales ?? []).filter((s) => NOT_SHIPPING.includes(s.status))
+  const gifts = o.gifts ?? []
+  const date = fmtLongDate(o.showDate)
+  const count = o.items + gifts.length // the sheet counts gift lines among the items
+  const label = (s: Sale) => `${TYPE_LABEL[s.auctionType] ?? 'Listing'}${s.seq ? ` · line ${s.seq}` : ''}`
+  return (
+    <div className="card slip" data-testid="packing-slip">
+      <div className="slip-head">
+        <div className="slip-title" data-testid="slip-title">
+          Username: <b>{o.buyer}</b> – {count} Item{count === 1 ? '' : 's'}
+        </div>
+        <div className="muted small">
+          Auction date {date} · order #{o.id} · {o.verified ? 'all paid' : 'not all paid'}
+        </div>
+      </div>
+      <table className="table slip-table">
+        <thead>
+          <tr>
+            <th>Auction date</th>
+            <th>Auction</th>
+            <th>Username</th>
+            <th>Product checklist</th>
+            <th>Gift</th>
+            <th className="no-print">Payment</th>
+            <th className="slip-notes">Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {shipping.map((s) => (
+            <tr key={s.id} data-testid={`slip-sale-${s.id}`}>
+              <td className="muted">{o.showDate}</td>
+              <td>{label(s)}</td>
+              <td>{o.buyer}</td>
+              <td>
+                <Ticks n={s.quantity} /> {s.sku ? `${s.sku.productName} ${s.sku.name}`.trim() : s.item}
+                {s.sku ? <code className="sku">{s.sku.code}</code> : <span className="badge warn">unmatched</span>}
+                {s.quantity > 1 && <span className="muted small"> × {s.quantity}</span>}
+              </td>
+              <td />
+              <td className="no-print">
+                <span className={`status ${s.status}`}>{s.status.replace('_', ' ')}</span>
+                {s.externalOrderId && <span className="muted small"> · #{s.externalOrderId}</span>}
+              </td>
+              <td className="slip-notes" />
+            </tr>
+          ))}
+          {gifts.map((g, i) => (
+            <tr key={`gift-${i}`} className="gift" data-testid="slip-gift">
+              <td className="muted">{o.showDate}</td>
+              <td>Gift{g.seq ? ` · line ${g.seq}` : ''}</td>
+              <td>{o.buyer}</td>
+              <td>
+                <Ticks n={1} /> {g.item || 'Gift'}
+              </td>
+              <td>✓</td>
+              <td className="no-print muted small">gift · no charge</td>
+              <td className="slip-notes" />
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {dropped.length > 0 && (
+        <p className="muted small no-print">
+          Not shipping: {dropped.map((s) => `${s.sku ? s.sku.productName : s.item} (${s.status.replace('_', ' ')})`).join(', ')}
+        </p>
+      )}
+      {o.notes && (
+        <p className="slip-order-notes">
+          <b>Notes:</b> {o.notes}
+        </p>
+      )}
+      <div className="slip-foot" data-testid="slip-foot">
+        <span>
+          <span className={'tick' + (o.status === 'shipped' ? ' on' : '')} /> Ready to ship
+        </span>
+        <span>
+          <span className={'tick' + (gifts.length ? ' on' : '')} /> Gift(s) included (if applicable)
+        </span>
+        <span>
+          Packed by: {o.packedBy ? <b>{o.packedBy}</b> : <span className="blank" />}
+        </span>
+        <span>
+          Date: {o.packedAt ? new Date(o.packedAt).toLocaleDateString() : <span className="blank" />}
+        </span>
+      </div>
+      <p className="muted small no-print">
+        {o.items} item{o.items === 1 ? '' : 's'} · {money(o.totalCents)} · {o.verified ? 'all paid' : 'not all paid'}
+      </p>
+      <button className="btn small" onClick={() => window.print()}>
+        Print packing slip
+      </button>
+    </div>
   )
 }
 

@@ -64,7 +64,7 @@ def get_order(order_id: int):
     o = _order_or_404(order_id)
     if o is None:
         return jsonify({"error": "order not found"}), 404
-    return jsonify({"order": serializers.order(o)})
+    return jsonify({"order": serializers.order(o, with_gifts=True)})
 
 
 @bp.post("/<int:order_id>/status")
@@ -78,7 +78,13 @@ def set_status(order_id: int):
         status = OrderStatus(d.get("status", ""))
     except ValueError:
         return jsonify({"error": "unknown status"}), 400
-    orders.advance(o, status, actor_label=g.u.email, tracking=d.get("tracking"))
+    orders.advance(
+        o,
+        status,
+        actor_label=g.u.email,
+        tracking=d.get("tracking"),
+        packed_by=d.get("packedBy") if isinstance(d.get("packedBy"), str) else g.u.name,
+    )
     if "notes" in d:
         o.notes = (d.get("notes") or "").strip() or None
     audit.record(
@@ -90,7 +96,7 @@ def set_status(order_id: int):
         details={"status": status.value},
     )
     db.session.commit()
-    return jsonify({"order": serializers.order(_order_or_404(o.id))})
+    return jsonify({"order": serializers.order(_order_or_404(o.id), with_gifts=True)})
 
 
 @bp.patch("/<int:order_id>")
@@ -100,23 +106,29 @@ def update_order(order_id: int):
     if o is None:
         return jsonify({"error": "order not found"}), 404
     d = request.get_json(silent=True) or {}
-    before = {"notes": o.notes, "tracking": o.tracking}
+    before = {"notes": o.notes, "tracking": o.tracking, "packedBy": o.packed_by}
     if "notes" in d:
         v = d.get("notes")
         o.notes = (v.strip()[:2000] or None) if isinstance(v, str) else None
     if "tracking" in d:
         v = d.get("tracking")
         o.tracking = (v.strip()[:120] or None) if isinstance(v, str) else None
+    if "packedBy" in d:
+        v = d.get("packedBy")
+        o.packed_by = (v.strip()[:80] or None) if isinstance(v, str) else None
     audit.record(
         g.u.organization_id,
         "order.updated",
         user=g.u,
         target_type="order",
         target_id=o.id,
-        details={"before": before, "after": {"notes": o.notes, "tracking": o.tracking}},
+        details={
+            "before": before,
+            "after": {"notes": o.notes, "tracking": o.tracking, "packedBy": o.packed_by},
+        },
     )
     db.session.commit()
-    return jsonify({"order": serializers.order(o)})
+    return jsonify({"order": serializers.order(o, with_gifts=True)})
 
 
 @bp.get("/buyers/<path:username>")

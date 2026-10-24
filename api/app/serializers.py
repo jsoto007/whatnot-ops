@@ -211,8 +211,9 @@ def review_item(r, context) -> dict:
     }
 
 
-def order(o, *, with_sales: bool = True) -> dict:
-    from .services.orders import verified
+def order(o, *, with_sales: bool = True, with_gifts: bool = False) -> dict:
+    """`with_gifts` adds the buyer's gift lines for the show (one query; detail view only)."""
+    from .services.orders import gifts_for, verified
 
     standing = [
         s for s in o.sales if s.status.value in ("detected", "reserved", "paid", "fulfilled")
@@ -230,9 +231,11 @@ def order(o, *, with_sales: bool = True) -> dict:
         "tracking": o.tracking,
         "pickedAt": o.picked_at.isoformat() if o.picked_at else None,
         "packedAt": o.packed_at.isoformat() if o.packed_at else None,
+        "packedBy": o.packed_by,
         "shippedAt": o.shipped_at.isoformat() if o.shipped_at else None,
         "createdAt": o.created_at.isoformat(),
         "sales": [sale(s) for s in o.sales] if with_sales else None,
+        "gifts": gifts_for(o) if with_gifts else None,
     }
 
 
