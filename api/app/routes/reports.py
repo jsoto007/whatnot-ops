@@ -16,7 +16,7 @@ def _date(s: str | None) -> date | None:
 
 
 @bp.get("/dashboard")
-@require("reports.view")
+@require("shows.view")  # the landing page for every role; it shows nothing the show pages do not
 def get_dashboard():
     return jsonify(dashboard.overview(g.u.organization_id))
 
