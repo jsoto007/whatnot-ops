@@ -74,6 +74,25 @@ def register_cli(app: Flask) -> None:
         db.session.commit()
         click.echo(f"owner {email} created for '{organization.name}'")
 
+    @app.cli.command("ensure-support")
+    def ensure_support():
+        """Create or repair the IT_SUPPORT account (run at every start, before gunicorn)."""
+        from ..services import support
+        from ..services.accounts import AccountError
+
+        click.echo(f"database: {db_host(app.config['SQLALCHEMY_DATABASE_URI'])}")
+        if not (support.support_email() or support.support_password()):
+            click.echo("IT_SUPPORT not set; no support account")
+            return
+        try:
+            user = support.ensure_support_account()
+        except AccountError as e:
+            raise click.ClickException(f"IT_SUPPORT is misconfigured: {e}") from None
+        if user is None:
+            click.echo("support account skipped (see the log): no shop yet, or a variable missing")
+        else:
+            click.echo(f"support account {user.email} is an owner of '{user.organization.name}'")
+
     @app.cli.command("ai-eval")
     def ai_eval():
         """Replay the rules corpus through the configured AI provider and report agreement."""

@@ -46,7 +46,7 @@ export function Team() {
               <td>
                 {u.name}
                 {u.isAdmin && (
-                  <span className="badge live" title="Set by ADMIN_EMAIL on the server; always an owner">
+                  <span className="badge live" title="Set by ADMIN_EMAIL or IT_SUPPORT on the server; always an owner">
                     admin
                   </span>
                 )}

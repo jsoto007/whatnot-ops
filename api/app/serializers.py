@@ -1,5 +1,5 @@
 from .models import AuditLog, Device, Invite, Organization, Show, User
-from .services.admin import is_admin
+from .services.admin import is_protected
 from .services.permissions import permissions_for
 
 
@@ -14,7 +14,7 @@ def user(u: User) -> dict:
         "name": u.name,
         "role": u.role.value,
         "disabled": u.disabled,
-        "isAdmin": is_admin(u.email),
+        "isAdmin": is_protected(u.email),
         "createdAt": u.created_at.isoformat(),
         "lastLoginAt": u.last_login_at.isoformat() if u.last_login_at else None,
     }

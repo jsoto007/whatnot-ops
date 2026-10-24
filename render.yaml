@@ -43,6 +43,7 @@ services:
       && pip install -r requirements.txt
     startCommand: >-
       cd api && flask --app wsgi.py db upgrade
+      && flask --app wsgi.py ensure-support
       && gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120
     healthCheckPath: /api/health
     autoDeploy: true
@@ -68,6 +69,10 @@ services:
       # Knowing ADMIN_EMAIL alone is not enough to claim the shop.
       - key: SETUP_TOKEN
         generateValue: true
+      # Optional developer support account (services/support.py): an owner the
+      # shop cannot demote or disable, created/repaired at every start from these
+      # two values. Set both in the dashboard or neither.
+      #   IT_SUPPORT=<email>  IT_SUPPORT_PASSWORD=<10+ characters>
       # APP_URL (links in invite / reset emails) — set once a custom domain exists;
       # until then the app uses RENDER_EXTERNAL_URL.
       # - key: APP_URL

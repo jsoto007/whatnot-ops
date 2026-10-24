@@ -20,3 +20,11 @@ def admin_email() -> str | None:
 def is_admin(email: str | None) -> bool:
     admin = admin_email()
     return bool(admin) and (email or "").strip().lower() == admin
+
+
+def is_protected(email: str | None) -> bool:
+    """Accounts the app keeps as enabled owners: the admin and the developer's
+    support account (services/support.py)."""
+    from .support import is_support
+
+    return is_admin(email) or is_support(email)

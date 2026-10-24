@@ -37,6 +37,12 @@ unset); the worker does. Both read the same `DATABASE_URL`.
    over, invite the new person, then change `ADMIN_EMAIL` to their email.
    Fallback from the web service's Shell:
    `cd api && flask --app wsgi.py users create-owner --org "Shop" --email you@… --name "You"`.
+   **Support account** (optional): set `IT_SUPPORT` (email) and
+   `IT_SUPPORT_PASSWORD` (10+ characters) on the web service. The start
+   command's `flask ensure-support` and the shop's sign-up create or repair that
+   account as an owner of the shop: it cannot be demoted or disabled from Team,
+   logging in restores it, and a changed `IT_SUPPORT_PASSWORD` takes effect at
+   the next deploy. Set both or neither; a weak password fails the deploy.
 6. Settings → set the shop's Whatnot username (host). Then **Laptops**:
    download the extension (the zip already points at this portal), load it
    unpacked, and **Connect a laptop** → type the 8-character code in the
