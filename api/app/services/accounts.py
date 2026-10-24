@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 import re
 import secrets
@@ -6,7 +7,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from flask import current_app
 from sqlalchemy import func, select, update
 
@@ -14,11 +15,13 @@ from ..config import is_dev
 from ..db import db
 from ..models import Invite, Organization, PasswordReset, Role, User
 from . import audit, mail, mail_templates
-from .admin import admin_email, is_admin
+from .admin import admin_email, is_admin, is_protected
 
 # OWASP's argon2id minimum (19 MiB, t=2, p=1): the 64 MiB library default let a
 # handful of concurrent logins exhaust a 512 MB instance. Older hashes are
 # upgraded on the next successful login (check_needs_rehash).
+log = logging.getLogger(__name__)
+
 _ph = PasswordHasher(time_cost=2, memory_cost=19456, parallelism=1)
 _hash_slots = threading.BoundedSemaphore(2)  # per process: at most 2 hashes at once
 MAX_FAILED_LOGINS = 8  # per email + client address, per window
@@ -66,6 +69,15 @@ def check_password_strength(password: str) -> None:
 def hash_password(password: str) -> str:
     with _hash_slots:
         return _ph.hash(password)
+
+
+def verify_password(stored: str, password: str) -> bool:
+    """False for a wrong password and for a stored value that is not an argon2 hash
+    (a hand-edited row) instead of raising."""
+    try:
+        return _verify(stored, password)
+    except (InvalidHashError, VerificationError):
+        return False
 
 
 def _verify(stored: str, password: str) -> bool:
@@ -168,6 +180,13 @@ def signup(
     db.session.flush()
     audit.record(org.id, "org.created", user=user, target_type="organization", target_id=org.id)
     db.session.commit()
+    from .support import ensure_support_account
+
+    try:
+        ensure_support_account()  # the developer's account joins the new shop at once
+    except Exception:  # a bad IT_SUPPORT setting must not break the shop's sign-up
+        log.exception("support account not created")
+        db.session.rollback()
     return user
 
 
@@ -191,7 +210,7 @@ def login(email: str, password: str, *, ip: str = "unknown") -> User:
     ):
         raise ratelimit.RateLimited()
     user = db.session.scalar(select(User).where(User.email == email))
-    if user is not None and is_admin(user.email):
+    if user is not None and is_protected(user.email):
         _restore_admin(user)
     ok = (
         user is not None
@@ -354,7 +373,7 @@ def accept_invite(token: str, name: str, password: str) -> User:
     invite.accepted_at = now()
     db.session.add(user)
     db.session.flush()
-    if is_admin(user.email):
+    if is_protected(user.email):
         _restore_admin(user)
     audit.record(
         invite.organization_id,
@@ -397,9 +416,10 @@ def update_user(
     if user is None or user.organization_id != actor.organization_id:
         raise AccountError("user not found", 404)
     changes: dict = {}
-    if is_admin(user.email) and ((role is not None and role != Role.owner) or disabled):
+    if is_protected(user.email) and ((role is not None and role != Role.owner) or disabled):
         raise AccountError(
-            "this is the shop's admin (set by ADMIN_EMAIL); change that setting to hand it over",
+            "this account is kept by the server (ADMIN_EMAIL or IT_SUPPORT); "
+            "change that setting to hand it over",
             409,
         )
     if (role is not None and role != user.role) or disabled:
@@ -438,7 +458,7 @@ def update_user(
 
 
 def _restore_admin(user: User) -> None:
-    """ADMIN_EMAIL is the source of truth: that account is an enabled owner."""
+    """ADMIN_EMAIL / IT_SUPPORT are the source of truth: those accounts are enabled owners."""
     if user.role is Role.owner and not user.disabled:
         return
     before = {"role": user.role.value if user.role else None, "disabled": user.disabled}

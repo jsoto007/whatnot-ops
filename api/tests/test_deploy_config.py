@@ -14,6 +14,7 @@ def test_render_blueprint_shape():
     assert web["type"] == "web" and worker["type"] == "worker"
     assert web["healthCheckPath"] == "/api/health"
     assert "db upgrade" in web["startCommand"] and "gunicorn wsgi:app" in web["startCommand"]
+    assert web["startCommand"].index("ensure-support") < web["startCommand"].index("gunicorn")
     assert "--bind 0.0.0.0:$PORT" in web["startCommand"] and "--chdir" not in web["startCommand"]
     assert "npm run build" in web["buildCommand"]
     assert worker["startCommand"].strip() == "cd api && python -m app.worker"
