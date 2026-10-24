@@ -1,6 +1,7 @@
 // Chat Search — reads shows saved by Chat Scraper (IndexedDB) or a downloaded .txt file.
 import type { CapturedRow, ShowMeta } from '../capture/types'
 import type { Broadcast } from '../shared/messages'
+import { isExtensionPage, showOpenedAsFile } from '../shared/openedAsFile'
 import { deleteShow, getRows, getShow, listShows } from '../storage/db'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
@@ -202,16 +203,22 @@ $('q').addEventListener('input', () => {
 })
 $('ctx').onchange = run
 
-// Live updates while the show is still recording.
-chrome.runtime.onMessage.addListener((msg: Broadcast) => {
-  if (msg.cmd !== 'showUpdated') return
-  void (async () => {
-    index = await listShows()
-    const keep = $<HTMLSelectElement>('show').value
-    fillShows(keep)
-    if (current && current.id === msg.showId) await openShow(msg.showId)
-  })()
-})
-setInterval(() => $('live').classList.toggle('on', isLive()), 15_000)
+if (isExtensionPage()) {
+  // Live updates while the show is still recording.
+  chrome.runtime.onMessage.addListener((msg: Broadcast) => {
+    if (msg.cmd !== 'showUpdated') return
+    void (async () => {
+      index = await listShows()
+      const keep = $<HTMLSelectElement>('show').value
+      fillShows(keep)
+      if (current && current.id === msg.showId) await openShow(msg.showId)
+    })()
+  })
+  setInterval(() => $('live').classList.toggle('on', isLive()), 15_000)
 
-void loadIndex()
+  void loadIndex()
+} else {
+  // A file page's IndexedDB is not the extension's: it would show an empty list as if nothing was saved.
+  $('settings').hidden = true
+  showOpenedAsFile('Chat Search', 'see the shows saved on this laptop')
+}
