@@ -43,7 +43,12 @@ def test_shared_valid_fixture_passes():
 
 @pytest.mark.parametrize(
     "name",
-    ["batch-invalid-bad-id.json", "batch-invalid-empty.json", "batch-invalid-extra-field.json"],
+    [
+        "batch-invalid-bad-id.json",
+        "batch-invalid-empty.json",
+        "batch-invalid-extra-field.json",
+        "batch-invalid-bad-source.json",
+    ],
 )
 def test_shared_invalid_fixtures_fail(name):
     with pytest.raises(BatchInvalid):

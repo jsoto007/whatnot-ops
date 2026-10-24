@@ -8,12 +8,15 @@ export const LIMITS = { showId: 64, username: 80, body: 4000, rawText: 4000, url
 const cut = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s)
 
 export function clampRow(r: CapturedRow): CapturedRow {
+  const { source, ...rest } = r
   return {
-    ...r,
+    ...rest,
     showId: cut(r.showId, LIMITS.showId),
     username: cut(r.username ?? '', LIMITS.username),
     body: cut(r.body ?? '', LIMITS.body),
     rawText: cut(r.rawText || r.body || '?', LIMITS.rawText),
+    // Only the exact marker survives; chat rows go out without the field, as before.
+    ...(source === 'player' ? { source } : {}),
   }
 }
 

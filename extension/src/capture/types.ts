@@ -9,6 +9,12 @@ export interface CapturedRow {
   capturedAt: string
   /** 1-based order within the show on this device */
   seq: number
+  /**
+   * Set only on a win read from Whatnot's video player (see player.ts). Chat rows have
+   * no source. Viewers can type in chat but not in the player, so the server lets only
+   * player rows say who won what for how much.
+   */
+  source?: 'player'
 }
 
 export interface ShowMeta {

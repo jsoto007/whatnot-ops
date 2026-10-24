@@ -6,11 +6,12 @@ re-evaluates only messages whose event led nowhere (chatter / claims /
 unresolved listings); sales that exist are never rewritten by rules.
 """
 
+import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from ..db import db
 from ..models import (
@@ -32,6 +33,15 @@ log = logging.getLogger(__name__)
 RULE_ACTOR = Actor("rule", None, "rules")
 OPEN = (SaleStatus.detected, SaleStatus.reserved)
 DEAD_END = (EventKind.chatter, EventKind.claim, EventKind.listing)
+# The same player win seen in another show this close in time is a second laptop or a
+# restarted recording of one auction, not a second sale.
+PLAYER_DUPLICATE_WINDOW = timedelta(minutes=10)
+# A chat line about a win this long before the player recorded it is probably the same win.
+CHAT_DUPLICATE_WINDOW = timedelta(minutes=3)
+
+
+def money(cents: int | None) -> str:
+    return "$?" if cents is None else f"${cents // 100}.{cents % 100:02d}"
 
 
 @dataclass
@@ -317,8 +327,18 @@ def process_show(show_id: int, *, reparse: bool = False, host: str | None = None
         .order_by(ChatMessage.seq)
     ).all()
     current_listing: str = ""
+    # Once the video player is recording wins for this show, a chat line about a win is at
+    # best the same win again (the host typing "sold to X"): it waits for a person.
+    has_player = (
+        db.session.scalar(
+            select(ChatMessage.id)
+            .where(ChatMessage.show_id == show.id, ChatMessage.source == "player")
+            .limit(1)
+        )
+        is not None
+    )
     for m in messages:
-        c = rules.classify(m.username, m.body, m.raw_text, host=host)
+        c = rules.classify(m.username, m.body, m.raw_text, host=host, source=m.source)
         ev = ParsedEvent(
             organization_id=show.organization_id,
             show_id=show.id,
@@ -336,27 +356,87 @@ def process_show(show_id: int, *, reparse: bool = False, host: str | None = None
         db.session.add(ev)
         db.session.flush()
         stats.parsed += 1
+        if c.rule == "player_unreadable":
+            open_review(
+                show.organization_id,
+                "player_unreadable",
+                f'A win from the video player could not be read: "{(m.raw_text or "")[:200]}"',
+                show_id=show.id,
+                message_id=m.id,  # not the event: a reparse deletes chatter events
+            )
+            continue
         if c.kind is EventKind.listing:
             # Only the host or the platform announces what is up next; a viewer typing
             # "Now selling - <expensive item>" must not decide what the next win was.
             if c.confidence >= 0.8:
                 current_listing = c.item
         elif c.kind is EventKind.sale:
-            if not ev.item_text and current_listing:
+            from_player = m.source == "player"
+            if not from_player and not ev.item_text and current_listing:
                 ev.item_text = current_listing
                 ev.auction_type = rules.auction_type(current_listing)
-            if c.confidence < 0.8:
+            if not from_player and has_player:
                 open_review(
                     show.organization_id,
-                    "low_confidence",
-                    (
+                    "possible_duplicate",
+                    f'"{m.raw_text}" says {c.buyer} won, but this show\'s wins come from the '
+                    "video player — record it only if it is a separate sale",
+                    show_id=show.id,
+                    message_id=m.id,
+                    event_id=ev.id,
+                )
+                stats.reviews += 1
+                continue
+            if c.confidence < 0.8:
+                if c.rule == "player_win_price_check":
+                    summary = (
+                        f"The video player says {c.buyer} won {ev.item_text} for "
+                        f"{money(c.price_cents)}, more than $100,000 — check the price "
+                        "before recording it"
+                    )
+                elif c.rule.endswith("_split"):
+                    summary = (
                         f'"{m.raw_text}" reads like the platform\'s winner line for '
                         f"{c.buyer}, but the name arrived as the sender — confirm it is "
                         "the platform, not a viewer"
-                        if c.rule.endswith("_split")
-                        else f'"{m.raw_text}" looks like a sale but was not said by the '
+                    )
+                else:
+                    summary = (
+                        f'"{m.raw_text}" looks like a sale but was not said by the '
                         "host or the platform"
-                    ),
+                    )
+                open_review(
+                    show.organization_id,
+                    "low_confidence",
+                    summary,
+                    show_id=show.id,
+                    message_id=m.id,
+                    event_id=ev.id,
+                )
+                stats.reviews += 1
+                continue
+            # Two parses (the worker and "Parse now", or two laptops' shows) must not both
+            # miss each other's sale for the same buyer: one at a time per buyer.
+            _lock_buyer(show.organization_id, c.buyer)
+            if not from_player and (win := _player_win_near(show, c.buyer, m)) is not None:
+                open_review(
+                    show.organization_id,
+                    "possible_duplicate",
+                    f'"{m.raw_text}" says {c.buyer} won, but the video player already recorded '
+                    f"{c.buyer} winning (sale #{win.id}) — record it only if it is a separate sale",
+                    show_id=show.id,
+                    message_id=m.id,
+                    event_id=ev.id,
+                )
+                stats.reviews += 1
+                continue
+            if from_player and (other := _same_win_elsewhere(show, ev, m)) is not None:
+                open_review(
+                    show.organization_id,
+                    "possible_duplicate",
+                    f"{c.buyer} won {ev.item_text} for {money(c.price_cents)} — the same win "
+                    f"is already sale #{other.id} in another recording of this show (a second "
+                    "laptop, or recording restarted); record it only if it is a separate sale",
                     show_id=show.id,
                     message_id=m.id,
                     event_id=ev.id,
@@ -364,8 +444,10 @@ def process_show(show_id: int, *, reparse: bool = False, host: str | None = None
                 stats.reviews += 1
                 continue
             sku = match_sku(show.organization_id, ev.item_text) if ev.item_text else None
-            create_sale(show, ev, sku=sku)
+            sale = create_sale(show, ev, sku=sku)
             stats.sales += 1
+            if from_player:
+                _flag_chat_sale_for_the_same_win(show, sale, m)
         elif c.kind in (EventKind.cancel, EventKind.payment_failed):
             if c.confidence >= 0.8:
                 close_sale(
@@ -389,6 +471,85 @@ def process_show(show_id: int, *, reparse: bool = False, host: str | None = None
 
         schedule_audit(show)
     return stats
+
+
+def _lock_buyer(org_id: int, buyer: str) -> None:
+    """Transaction-scoped lock on (shop, buyer) around the duplicate checks and the sale
+    insert, so the check and the insert are one step (the atomic-gate rule)."""
+    digest = hashlib.sha256(f"win:{org_id}:{(buyer or '').lower()}".encode()).digest()
+    db.session.execute(
+        text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": int.from_bytes(digest[:8], "big", signed=True)},
+    )
+
+
+def _player_sales_near(org_id: int, buyer: str, at, window):
+    return (
+        select(Sale, ChatMessage)
+        .join(ParsedEvent, Sale.event_id == ParsedEvent.id)
+        .join(ChatMessage, ParsedEvent.message_id == ChatMessage.id)
+        .where(
+            Sale.organization_id == org_id,
+            Sale.status.in_(OPEN + (SaleStatus.paid, SaleStatus.fulfilled)),
+            func.lower(Sale.buyer_username) == (buyer or "").lower(),
+            ChatMessage.captured_at.between(at - window, at + window),
+        )
+    )
+
+
+def _player_win_near(show: Show, buyer: str, m: ChatMessage) -> Sale | None:
+    """A player-win sale for this buyer, in any show of the shop, close in time: a chat line
+    in a recording without player rows (another laptop) is then the same win again."""
+    q = _player_sales_near(show.organization_id, buyer, m.captured_at, CHAT_DUPLICATE_WINDOW)
+    q = q.where(ParsedEvent.rule == "player_win").order_by(Sale.id).limit(1)
+    found = db.session.execute(q).first()
+    return found[0] if found else None
+
+
+def _same_win_elsewhere(show: Show, ev: ParsedEvent, m: ChatMessage) -> Sale | None:
+    """A player-win sale in another show of the shop with the same buyer, item and price,
+    captured within PLAYER_DUPLICATE_WINDOW: two laptops (each laptop's show key is its own
+    start time) or a restarted recording saw one auction."""
+    return db.session.scalar(
+        select(Sale)
+        .join(ParsedEvent, Sale.event_id == ParsedEvent.id)
+        .join(ChatMessage, ParsedEvent.message_id == ChatMessage.id)
+        .where(
+            Sale.organization_id == show.organization_id,
+            Sale.show_id != show.id,
+            ParsedEvent.rule == "player_win",
+            func.lower(Sale.buyer_username) == ev.buyer_username.lower(),
+            func.lower(Sale.item_text) == (ev.item_text or "").lower(),
+            Sale.price_cents == ev.price_cents,
+            ChatMessage.captured_at.between(
+                m.captured_at - PLAYER_DUPLICATE_WINDOW, m.captured_at + PLAYER_DUPLICATE_WINDOW
+            ),
+        )
+        .order_by(Sale.id)
+        .limit(1)
+    )
+
+
+def _flag_chat_sale_for_the_same_win(show: Show, sale: Sale, m: ChatMessage) -> None:
+    """A sale the rules made from a chat line close in time to this player win, in this show
+    or another laptop's, is probably the same win: ask, never cancel."""
+    q = _player_sales_near(
+        show.organization_id, sale.buyer_username, m.captured_at, CHAT_DUPLICATE_WINDOW
+    )
+    q = q.where(Sale.id != sale.id, ChatMessage.source == "chat", Sale.status.in_(OPEN))
+    for chat_sale, chat_line in db.session.execute(q).all():
+        if chat_sale.show_id == show.id and chat_line.seq > m.seq:
+            continue  # after the win in this show: that line was routed to Review already
+        open_review(
+            show.organization_id,
+            "possible_duplicate",
+            f"The video player recorded {sale.buyer_username} winning {sale.item_text} for "
+            f"{money(sale.price_cents)} (sale #{sale.id}); this chat line made sale "
+            f"#{chat_sale.id} too — cancel it if it is the same win",
+            show_id=chat_sale.show_id,
+            message_id=chat_line.id,
+            sale_id=chat_sale.id,
+        )
 
 
 @handler("parse_show")

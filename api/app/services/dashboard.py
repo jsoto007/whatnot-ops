@@ -208,7 +208,16 @@ def winners_without_purchase(show: Show) -> list[dict]:
         )
         .order_by(ParsedEvent.id)
     ).all()
+    # A chat line about a win, for a buyer the video player already recorded winning, is the
+    # same win told twice (it waits in Review as a possible duplicate), not a walk-away.
+    player_buyers = {
+        s.buyer_username.lower()
+        for s in sales
+        if s.event is not None and s.event.rule == "player_win" and s.status in STANDING
+    }
     for ev in pending:
+        if ev.message.source == "chat" and ev.buyer_username.lower() in player_buyers:
+            continue
         rows.append(
             {
                 "buyer": ev.buyer_username,

@@ -20,3 +20,12 @@ export function rowId(showId: string, username: string, body: string, capturedAt
   const bucket = Math.floor(capturedAtMs / ID_BUCKET_MS)
   return fnv1a64(`${showId}\u0000${username}\u0000${body}\u0000${bucket}`)
 }
+
+/**
+ * Idempotency key for a win read from the player: no time bucket, because the same
+ * "won!" stays on screen for seconds and is read again after a reload. `occurrence`
+ * tells a genuine second win of the same item, by the same buyer, at the same price apart.
+ */
+export function winId(showId: string, key: string, occurrence: number): string {
+  return fnv1a64(`${showId}\u0000player\u0000${key}\u0000${occurrence}`)
+}

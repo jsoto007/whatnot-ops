@@ -1,4 +1,5 @@
 import { Recorder } from '../capture/recorder'
+import { WinWatcher } from '../capture/player'
 import { findRow, buildSelector, scrollParent } from '../capture/row'
 import type { CapturedRow } from '../capture/types'
 import type { Request, SessionReply, ShowRef, UploadStatus } from '../shared/messages'
@@ -8,6 +9,7 @@ import { Panel } from './panel'
 const WORDS_KEY = 'cs_watchwords'
 const FLUSH_MS = 1500
 const FLUSH_AT = 50
+const WIN_POLL_MS = 500
 
 type State = 'idle' | 'picking' | 'recording' | 'stopped'
 
@@ -24,6 +26,10 @@ export class Controller {
   private state: State = 'idle'
   private startedAt: string | null = null
   private recorder: Recorder | null = null
+  private wins: WinWatcher | null = null
+  private winTimer: ReturnType<typeof setInterval> | null = null
+  private playerObserver: MutationObserver | null = null
+  private observedPlayer: Element | null = null
   private pending: CapturedRow[] = []
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private synced = 0
@@ -82,6 +88,7 @@ export class Controller {
       this.rebuildFlags()
       p.setStatus('Ready. Press Start.')
       p.setSync('')
+      this.renderWins()
       this.render()
     }
     window.addEventListener('beforeunload', () => void this.flush())
@@ -103,6 +110,7 @@ export class Controller {
         this.panel.el('resumeRow').hidden = false
         this.panel.setStatus('Found ' + this.log.length + ' saved messages from earlier. Resume or start fresh?', 'info')
         this.rebuildFlags()
+        this.renderWins()
       }
     } catch {
       this.panel.setStatus('Extension was reloaded. Refresh this page.', 'bad')
@@ -160,14 +168,48 @@ export class Controller {
         this.panel.setDot('warn')
       }
     })
-    const known = this.log.map((r) => r.rawText) // whole show: whatever is still on screen is already saved
+    // Whole show: whatever chat is still on screen is already saved. Wins are not chat lines.
+    const known = this.log.filter((r) => r.source !== 'player').map((r) => r.rawText)
     this.recorder.start(box, selector, this.log.length, known)
+    // Whatnot shows who won what only in the video player, never in the chat: read it too.
+    if (this.winTimer) clearInterval(this.winTimer)
+    this.wins = new WinWatcher(this.startedAt)
+    this.wins.remember(this.log)
+    this.winTimer = setInterval(() => this.checkPlayer(), WIN_POLL_MS)
+    this.checkPlayer()
     this.state = 'recording'
     this.panel.setStatus('Watching chat.', 'good')
     this.render()
   }
 
+  private checkPlayer(): void {
+    if (!this.wins) return // not recording (a late observer callback after Stop)
+    this.watchPlayer()
+    const row = this.wins.check(document)
+    if (!row) return
+    this.onRow(row)
+    this.renderWins()
+  }
+
+  /** Check on every change to the player too: Chrome slows timers in a hidden or muted tab, not observers. */
+  private watchPlayer(): void {
+    const player = document.querySelector('[data-testid="live-player"]')
+    if (player === this.observedPlayer) return
+    this.playerObserver?.disconnect()
+    this.observedPlayer = player
+    this.playerObserver = player ? new MutationObserver(() => this.checkPlayer()) : null
+    this.playerObserver?.observe(player!, { childList: true, subtree: true, characterData: true })
+  }
+
+  private renderWins(): void {
+    const wins = this.log.filter((r) => r.source === 'player')
+    const last = wins[wins.length - 1]
+    this.panel.setWins(last ? `wins ${wins.length} · last: ${last.body}` : '')
+  }
+
   private onRow(row: CapturedRow): void {
+    // One numbering for chat lines and player wins, so they never share a seq.
+    row.seq = this.log.length + 1
     this.log.push(row)
     this.pending.push(row)
     if (this.matchWord(row.rawText)) this.addFlag(row)
@@ -180,6 +222,12 @@ export class Controller {
   private stopRecording(): Promise<void> {
     this.recorder?.stop()
     this.recorder = null
+    if (this.winTimer) clearInterval(this.winTimer)
+    this.winTimer = null
+    this.wins = null
+    this.playerObserver?.disconnect()
+    this.playerObserver = null
+    this.observedPlayer = null
     document.removeEventListener('click', this.onPickBound, true)
     this.state = this.log.length ? 'stopped' : 'idle'
     return this.flush()
@@ -268,6 +316,7 @@ export class Controller {
     this.rebuildFlags()
     this.panel.setStatus('Cleared.')
     this.panel.setSync('')
+    this.renderWins()
     this.render()
   }
 

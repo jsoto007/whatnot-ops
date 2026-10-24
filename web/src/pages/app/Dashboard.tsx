@@ -186,6 +186,9 @@ const REASON_WORDS: Record<string, [string, string]> = {
   payment_failed: ['payment problem', 'payment problems'],
   missing_sale: ['possible missed sale', 'possible missed sales'],
   duplicate_sale: ['possible duplicate', 'possible duplicates'],
+  possible_duplicate: ['win seen twice', 'wins seen twice'],
+  player_unreadable: ['unreadable win', 'unreadable wins'],
+  price_mismatch: ['price to check', 'prices to check'],
 }
 
 function joinDates(dates: string[]): string {

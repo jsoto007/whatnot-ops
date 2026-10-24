@@ -101,11 +101,21 @@ test('download → pair → record a show → parsed sales in the portal', async
     })
     await expect(show.locator(panel('#cnt'))).toHaveText('16')
     await expect(show.locator(panel('#sync'))).toHaveText('saved 16 · uploaded', { timeout: 20_000 })
+    // Whatnot shows the next win only in the video player, never in the chat.
+    await show.evaluate(() => window.__player.bidding('ladyyy03', '$190', 'Red bundle #752'))
+    await show.waitForTimeout(700)
+    await show.evaluate(() => window.__player.won('chonwhite828', '$195', 'Red bundle #752'))
+    await expect(show.locator(panel('#wins'))).toHaveText('wins 1 · last: chonwhite828 won the auction for Red bundle #752 for $195.00')
+    await expect(show.locator(panel('#cnt'))).toHaveText('17')
+    // The host says it in chat too: the same win, so it must not become a second sale.
+    await show.evaluate(() => window.__chat.append('shop_host', 'sold to chonwhite828 - red bundle'))
+    await expect(show.locator(panel('#cnt'))).toHaveText('18')
+    await expect(show.locator(panel('#sync'))).toHaveText('saved 18 · uploaded', { timeout: 20_000 })
     await expect(resumeRow).toBeHidden()
     await show.locator(panel('#stop')).click()
 
     await options.reload()
-    await expect(options.locator('#stats')).toContainText('Uploaded 16 · pending 0', { timeout: 10_000 })
+    await expect(options.locator('#stats')).toContainText('Uploaded 18 · pending 0', { timeout: 10_000 })
   } finally {
     await laptop.close()
   }
@@ -114,10 +124,15 @@ test('download → pair → record a show → parsed sales in the portal', async
   await page.reload()
   await expect(page.getByTestId('devices').locator('tr', { hasText: 'Front laptop' })).toContainText(/Uploading now|Seen/)
   await page.getByRole('link', { name: /^Shows/ }).click()
-  await expect(page.getByRole('row', { name: /Sat|Sun|Mon|Tue|Wed|Thu|Fri/ }).first()).toContainText('16')
+  await expect(page.getByRole('row', { name: /Sat|Sun|Mon|Tue|Wed|Thu|Fri/ }).first()).toContainText('18')
   await page.getByRole('link', { name: /show|\d{4}/ }).first().click()
-  await expect(page.getByTestId('tile-items')).toContainText('2')
+  await expect(page.getByTestId('tile-items')).toContainText('3')
   const sales = page.getByTestId('sales')
+  // The player win: buyer, item without the lot number, the price paid, stock held.
+  const win = sales.locator('tr', { hasText: 'chonwhite828' })
+  await expect(win).toContainText('Red bundle')
+  await expect(win).toContainText('$195.00')
+  await expect(win).toContainText('reserved')
   await expect(sales.locator('tr', { hasText: 'lani808' })).toContainText('Red bundle')
   await expect(sales.locator('tr', { hasText: 'lani808' })).toContainText('$25.00')
   await expect(sales.locator('tr', { hasText: 'cardguy' })).toContainText('$10.00')
@@ -131,4 +146,7 @@ test('download → pair → record a show → parsed sales in the portal', async
   await expect(page.locator('.review', { has: page.getByRole('heading', { name: /^Item not recognised/ }) })).toContainText(
     'cardguy bought "mystery box"',
   )
+  const twice = page.locator('.review', { has: page.getByRole('heading', { name: /^Same win twice\?/ }) })
+  await expect(twice).toHaveCount(1)
+  await expect(twice).toContainText("this show's wins come from the video player")
 })

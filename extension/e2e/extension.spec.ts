@@ -11,6 +11,11 @@ declare global {
       replaceContainer(): void
       count(): number
     }
+    __player: {
+      idle(title: string, price?: string): void
+      bidding(name: string, price: string, title: string): void
+      won(name: string, price: string, title: string): void
+    }
   }
 }
 
@@ -130,6 +135,54 @@ test('Resume / Start fresh only after a reload, and Start fresh keeps the earlie
   await expect(search.locator('#show option')).toHaveCount(2)
   await expect(search.locator('#show')).toContainText('13 msgs')
   await expect(search.locator('#show')).toContainText('12 msgs')
+})
+
+test('wins come from the video player: one row each, shown in the panel and in Chat Search', async ({
+  page,
+  context,
+  extensionId,
+}) => {
+  await page.goto('/chat.html')
+  // A "won!" already up when recording starts ended before it: never recorded.
+  await page.evaluate(() => window.__player.won('earlybird', '$5', 'Lot #751'))
+  await page.locator(panel('#start')).click()
+  await page.locator('.msg-row .msg-text').nth(2).click()
+  await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
+  await page.waitForTimeout(1500)
+  await expect(page.locator(panel('#wins'))).toBeHidden()
+  await page.evaluate(() => window.__player.bidding('ladyyy03', '$190', 'Lot #752'))
+
+  await page.evaluate(() => window.__player.won('chonwhite828', '$195', 'Lot #752'))
+  await expect(page.locator(panel('#wins'))).toHaveText('wins 1 · last: chonwhite828 won the auction for Lot #752 for $195.00')
+  await expect(page.locator(panel('#cnt'))).toHaveText('11') // 10 seed lines + the win
+  // "won!" stays up and re-renders for seconds: still one win.
+  await page.waitForTimeout(1200)
+  await page.evaluate(() => window.__player.won('chonwhite828', '$195', 'Lot #752'))
+  await page.waitForTimeout(1200)
+  await expect(page.locator(panel('#cnt'))).toHaveText('11')
+
+  // The next lot, same buyer: a new win.
+  await page.evaluate(() => window.__player.idle('Lot #753'))
+  await page.evaluate(() => window.__player.bidding('trickmon2', '$40', 'Lot #753'))
+  await page.waitForTimeout(700)
+  await page.evaluate(() => window.__player.won('chonwhite828', '$45', 'Lot #753'))
+  await expect(page.locator(panel('#wins'))).toHaveText('wins 2 · last: chonwhite828 won the auction for Lot #753 for $45.00')
+  await expect(page.locator(panel('#sync'))).toContainText('saved 12')
+
+  const search = await context.newPage()
+  await search.goto(`chrome-extension://${extensionId}/search.html`)
+  await search.locator('#q').fill('won the auction')
+  await expect(search.locator('#summary')).toContainText('2 messages matching')
+
+  // A reload while "won!" is still on screen does not record it again.
+  await page.reload()
+  await page.evaluate(() => window.__player.won('chonwhite828', '$45', 'Lot #753'))
+  await page.locator(panel('#resume')).click()
+  await page.locator('.msg-row .msg-text').nth(2).click()
+  await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
+  await expect(page.locator(panel('#wins'))).toHaveText('wins 2 · last: chonwhite828 won the auction for Lot #753 for $45.00')
+  await page.waitForTimeout(1200)
+  await expect(page.locator(panel('#cnt'))).toHaveText('12')
 })
 
 test('says so when the click was not on a list of messages', async ({ page }) => {

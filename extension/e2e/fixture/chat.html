@@ -16,7 +16,11 @@
 </style>
 </head>
 <body>
-  <div class="video">live video here</div>
+  <div class="video">
+    <!-- Same shape as Whatnot's player footer (see tests/fixtures/player.ts): status line,
+         item title, and the price next to the countdown or "Sold". Driven by window.__player. -->
+    <section data-testid="live-player">live video here<footer id="player-footer"></footer></section>
+  </div>
   <div class="chat-panel">
     <div class="chat-scroll" id="scroll">
       <div class="msg-list" id="list"></div>
@@ -74,6 +78,15 @@
       count() { return n; },
     };
     window.__chat = api;
+
+    const footer = () => document.getElementById('player-footer');
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    const item = (title) => `<section><button type="button"><strong data-testid="show-product-title">${esc(title)}</strong><strong>12 Bids</strong></button>`;
+    window.__player = {
+      idle(title, price = '$1') { footer().innerHTML = item(title) + `<section class="ml-3"><strong>${esc(price)}</strong><strong data-testid="show-timer">00:20</strong></section></section>`; },
+      bidding(name, price, title) { footer().innerHTML = `<div><strong data-testid="show-winning-status">${esc(name)} is <strong>Winning!</strong></strong></div>` + item(title) + `<section class="ml-3"><strong>${esc(price)}</strong><strong data-testid="show-timer">00:03</strong></section></section>`; },
+      won(name, price, title) { footer().innerHTML = `<div><strong data-testid="show-winning-status">${esc(name)} <strong>won!</strong></strong><strong>bid $1.00</strong></div>` + item(title) + `<section class="ml-3"><strong>${esc(price)}</strong><strong>Sold</strong></section></section>`; },
+    };
     api.appendMany(10, 'seed');
   })();
 </script>

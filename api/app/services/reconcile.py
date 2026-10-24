@@ -222,18 +222,53 @@ def _match(show: Show, row: Row, sales: list[Sale], taken: set[int]) -> Sale | N
         for s in candidates:
             if s.external_order_id == row.external_id:
                 return s
-    for s in candidates:  # exact SKU or exact item text
-        if (sku is not None and s.sku_id == sku.id) or (
-            key and catalog.norm_alias(s.item_text) == key
-        ):
-            return s
-    for s in candidates:  # loose: one contains the other
-        a, b = catalog.norm_alias(s.item_text), key
-        if a and b and (a in b or b in a):
-            return s
+        # A sale an earlier file already tied to another order is that order's, not this one's
+        # (a re-export lists the paid lot again next to the refunded one).
+        candidates = [s for s in candidates if not s.external_order_id]
+
+    def priced(found: list[Sale]) -> Sale | None:
+        # One buyer can win several lots of one listing at different prices: the price
+        # tells them apart before falling back to the oldest.
+        if not found:
+            return None
+        paid = row.price_cents
+        # Same price first, then a sale still open over one already closed, then the oldest.
+        return min(
+            found,
+            key=lambda s: (
+                not (paid is not None and s.price_cents == paid),
+                s.status not in pipeline.OPEN,
+                s.id,
+            ),
+        )
+
+    # Exact item text first: it carries the lot number ("Red bundle #752"), the SKU does not.
+    exact = priced([s for s in candidates if key and catalog.norm_alias(s.item_text) == key])
+    if exact is not None:
+        return exact
+    by_sku = priced([s for s in candidates if sku is not None and s.sku_id == sku.id])
+    if by_sku is not None:
+        return by_sku
+    loose = priced(  # one contains the other
+        [
+            s
+            for s in candidates
+            if (a := catalog.norm_alias(s.item_text)) and key and (a in key or key in a)
+        ]
+    )
+    if loose is not None:
+        return loose
     if len(candidates) == 1 and (sku is None or candidates[0].sku_id is None):
         return candidates[0]  # only one open purchase by this buyer; the item wording just differs
     return None
+
+
+def _player_price_differs(sale: Sale, row: Row) -> bool:
+    """The sale's price came from the video player and the payment file disagrees. Chat
+    sales are left alone: their price is often the SKU's list price, not what was paid."""
+    if sale.price_cents is None or row.price_cents is None or sale.price_cents == row.price_cents:
+        return False
+    return sale.event is not None and sale.event.rule == "player_win"
 
 
 def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Plan:
@@ -259,6 +294,17 @@ def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Pl
                 sale.external_order_id = row.external_id
             if sale.price_cents is None and row.price_cents is not None:
                 sale.price_cents = row.price_cents
+            elif _player_price_differs(sale, row):
+                pipeline.open_review(
+                    show.organization_id,
+                    "price_mismatch",
+                    f"{sale.buyer_username}'s {sale.item_text}: the video player read "
+                    f"{pipeline.money(sale.price_cents)}, the payment file says "
+                    f"{pipeline.money(row.price_cents)} — check which one is right",
+                    show_id=show.id,
+                    sale_id=sale.id,
+                    source="reconcile",
+                )
         else:
             pipeline.set_sale_status(
                 sale,

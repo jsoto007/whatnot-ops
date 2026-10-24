@@ -2,7 +2,8 @@
   "version": 1,
   "show": { "id": "2026-10-19T20:00:00.000Z", "startedAt": "2026-10-19T20:00:00.000Z", "url": "/live/abc" },
   "rows": [
-    { "id": "0123456789abcdef", "showId": "2026-10-19T20:00:00.000Z", "username": "lani808", "body": "I will take 2", "rawText": "lani808 I will take 2", "capturedAt": "2026-10-19T20:01:00.000Z", "seq": 1 },
-    { "id": "fedcba9876543210", "showId": "2026-10-19T20:00:00.000Z", "username": "", "body": "Auction ended", "rawText": "Auction ended", "capturedAt": "2026-10-19T20:01:05.000Z", "seq": 2 }
+    {"id": "0123456789abcdef", "showId": "2026-10-19T20:00:00.000Z", "username": "lani808", "body": "I will take 2", "rawText": "lani808 I will take 2", "capturedAt": "2026-10-19T20:01:00.000Z", "seq": 1},
+    {"id": "fedcba9876543210", "showId": "2026-10-19T20:00:00.000Z", "username": "", "body": "Auction ended", "rawText": "Auction ended", "capturedAt": "2026-10-19T20:01:05.000Z", "seq": 2},
+    {"id": "00000000000000a3", "showId": "2026-10-19T20:00:00.000Z", "username": "", "body": "chonwhite828 won the auction for $1 PERFUMES/ COLOGNES/ NICHE WITH SAM #760 for $188.00", "rawText": "chonwhite828 won the auction for $1 PERFUMES/ COLOGNES/ NICHE WITH SAM #760 for $188.00", "capturedAt": "2026-10-19T20:01:09.000Z", "seq": 3, "source": "player"}
   ]
 }
