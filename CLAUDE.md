@@ -1,4 +1,4 @@
-# Whatnot Ops — working rules
+# Sales Ops — working rules
 
 Live-show operations app for a Whatnot seller. `docs/PLAN.md` is the phased
 build plan and the source of truth for scope and order; each phase is a PR

@@ -1,5 +1,5 @@
 [project]
-name = "whatnot-ops-api"
+name = "sales-ops-api"
 version = "0.1.0"
 requires-python = ">=3.13"
 

@@ -12,6 +12,9 @@
 #     for the web build; if not, switch the web service to a Docker runtime.
 
 databases:
+  # Keeps its original name on purpose: production data lives here, and a
+  # renamed database resource would be a NEW, empty one. The name is internal
+  # (never in a URL); only the services were renamed to sales-ops.
   - name: whatnot-ops-db
     plan: basic-256mb
     databaseName: whatnot_ops
@@ -21,8 +24,15 @@ databases:
     ipAllowList: []
 
 services:
+  # Renamed from whatnot-ops (2026-10-24) so the public URL is
+  # sales-ops.onrender.com. Render never changes an existing service's
+  # onrender.com slug, so syncing this creates NEW web + worker services (the
+  # old pair stays until deleted in the dashboard). Dashboard-only env vars
+  # (ADMIN_EMAIL, MAILGUN_*, AI_*) must be entered again on the new services,
+  # SECRET_KEY is regenerated (everyone signs in again) and every laptop must
+  # download the extension again so its baked-in portal address is the new one.
   - type: web
-    name: whatnot-ops
+    name: sales-ops
     runtime: python
     plan: starter
     # The extension is built here too: Settings → Laptops serves it as a zip
@@ -71,7 +81,7 @@ services:
 
   # Background worker: parsing, AI supervision, exports (jobs table, SKIP LOCKED).
   - type: worker
-    name: whatnot-ops-worker
+    name: sales-ops-worker
     runtime: python
     plan: starter
     buildCommand: cd api && pip install -r requirements.txt
@@ -84,7 +94,7 @@ services:
       - key: SECRET_KEY
         fromService:
           type: web
-          name: whatnot-ops
+          name: sales-ops
           envVarKey: SECRET_KEY
       - key: DATABASE_URL
         fromDatabase:

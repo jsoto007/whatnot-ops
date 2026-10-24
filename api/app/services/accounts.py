@@ -318,9 +318,9 @@ def create_invite(inviter: User, email: str, role: Role) -> tuple[Invite, str]:
     mail.send(
         mail.Message(
             to=email,
-            subject=f"{inviter.organization.name} invited you to Whatnot Ops",
+            subject=f"{inviter.organization.name} invited you to Sales Ops",
             text=(
-                f"{inviter.name} invited you to join {inviter.organization.name} on Whatnot Ops as "
+                f"{inviter.name} invited you to join {inviter.organization.name} on Sales Ops as "
                 f"{role.value}.\n\nAccept the invite (valid {INVITE_DAYS} days):\n{url}\n"
             ),
         )
@@ -531,7 +531,7 @@ def request_password_reset(email: str) -> str | None:
     mail.send(
         mail.Message(
             to=email,
-            subject="Reset your Whatnot Ops password",
+            subject="Reset your Sales Ops password",
             text=(
                 f"Reset your password (link valid {RESET_HOURS} hours):\n"
                 f"{app_url('/reset/' + token)}\n\nIf you did not ask for this, ignore this email."

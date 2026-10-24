@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_render_blueprint_shape():
     cfg = yaml.safe_load((ROOT / "render.yaml").read_text())
     services = {s["name"]: s for s in cfg["services"]}
-    web, worker = services["whatnot-ops"], services["whatnot-ops-worker"]
+    web, worker = services["sales-ops"], services["sales-ops-worker"]
     assert web["type"] == "web" and worker["type"] == "worker"
     assert web["healthCheckPath"] == "/api/health"
     assert "db upgrade" in web["startCommand"] and "gunicorn wsgi:app" in web["startCommand"]
@@ -29,5 +29,5 @@ def test_render_blueprint_shape():
 def test_version_pins_agree():
     node = (ROOT / ".node-version").read_text().strip()
     cfg = yaml.safe_load((ROOT / "render.yaml").read_text())
-    web = next(s for s in cfg["services"] if s["name"] == "whatnot-ops")
+    web = next(s for s in cfg["services"] if s["name"] == "sales-ops")
     assert {e["key"]: e["value"] for e in web["envVars"] if "value" in e}["NODE_VERSION"] == node

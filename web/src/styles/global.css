@@ -17,6 +17,8 @@ code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background
   padding: var(--space-3) var(--space-6); display: flex; align-items: center; gap: var(--space-4);
 }
 .app-header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.brand-link { color: inherit; text-decoration: none; display: inline-flex; align-items: center; gap: 10px; }
+.brand-logo { width: 28px; height: 28px; border-radius: 7px; display: block; }
 .app-main { max-width: 1100px; margin: 0 auto; padding: var(--space-6); }
 .auth-card { max-width: 420px; margin: 56px auto; padding: var(--space-8) var(--space-8) var(--space-6); }
 .auth-card h2 { margin-bottom: var(--space-2); }

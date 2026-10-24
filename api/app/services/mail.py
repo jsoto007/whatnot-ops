@@ -34,7 +34,7 @@ def send(msg: Message, *, post=None) -> bool:
         return False
     domain = os.environ["MAILGUN_DOMAIN"]
     base = os.environ.get("MAILGUN_API_BASE", "https://api.mailgun.net/v3")
-    sender = os.environ.get("EMAIL_FROM", f"Whatnot Ops <noreply@{domain}>")
+    sender = os.environ.get("EMAIL_FROM", f"Sales Ops <noreply@{domain}>")
     data = {"from": sender, "to": msg.to, "subject": msg.subject, "text": msg.text}
     if msg.html:
         data["html"] = msg.html

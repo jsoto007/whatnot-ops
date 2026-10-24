@@ -5,7 +5,7 @@ import { Field, Form } from '../components/Form'
 import { api, type Me } from '../lib/api'
 
 export function Login() {
-  const { setMe, signupsOpen } = useAuth()
+  const { setMe } = useAuth()
   const nav = useNavigate()
   const loc = useLocation()
   const [email, setEmail] = useState('')
@@ -29,12 +29,6 @@ export function Login() {
       </Form>
       <p className="muted">
         <Link to="/forgot">Forgot your password?</Link>
-        {signupsOpen && (
-          <>
-            {' · '}
-            <Link to="/signup">Create a shop</Link>
-          </>
-        )}
       </p>
     </section>
   )

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://whatnot-ops/shared/chat-event-batch.schema.json",
+  "$id": "https://sales-ops/shared/chat-event-batch.schema.json",
   "title": "ChatEventBatch",
   "description": "One upload from the Chat Scraper extension to POST /api/ingest. Rows are idempotent by id; re-sending a batch is safe.",
   "type": "object",

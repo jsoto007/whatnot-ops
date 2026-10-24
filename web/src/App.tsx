@@ -23,8 +23,9 @@ function PublicShell({ children }: { children: React.ReactNode }) {
     <>
       <header className="app-header">
         <h1>
-          <Link to="/" style={{ color: 'inherit', textDecoration: 'none' }}>
-            Whatnot Ops
+          <Link to="/" className="brand-link">
+            <img src="/logo.png" alt="" className="brand-logo" />
+            Sales Ops
           </Link>
         </h1>
       </header>

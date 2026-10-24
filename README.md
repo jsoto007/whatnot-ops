@@ -1,4 +1,4 @@
-# Whatnot Ops
+# Sales Ops
 
 Live-show operations for a Whatnot seller: a Chrome extension captures show
 chat, a Flask API turns it into sales, inventory movements and orders, and a
