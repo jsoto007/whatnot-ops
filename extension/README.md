@@ -34,10 +34,39 @@ load it. Never load `dist-test/` for real use.
 - Rows are `{ id, showId, username, body, rawText, capturedAt, seq }`. `id`
   hashes show + username + body + a 2-second bucket, so a retry or a
   re-render sends the same id and the store ignores it.
-- Self-healing: a watchdog re-detects the rows when the container leaves the
-  page or when the chat keeps changing but nothing matches the selector
-  (Whatnot shipped new class names). If nothing row-like is found it says so
-  in the panel instead of silently stopping.
+- Self-healing: a watchdog follows the rows when the container leaves the
+  page (it looks for the same row selector anywhere on the page and watches
+  that box), and re-detects the row shape inside the container when the chat
+  keeps changing but nothing matches (new class names). A quiet chat with
+  other things moving (pinned message, giveaway banner, reactions) is not
+  lost. With no chat on screen it waits and says so, and carries on by itself
+  when the chat is back. It never guesses from the whole page, so it cannot
+  latch onto the product list.
+
+## Recording until Stop
+
+Start → click a message begins a recording that only Stop ends:
+
+- The background keeps the row selectors, the show's page
+  (`showPage()`: `/live/<id>`) and the tab (`src/storage/recording.ts`). A
+  reload, a tab Chrome discarded and brought back, or a laptop waking up
+  carries on without a click. After Stop, a reload asks Resume / Start fresh.
+- While recording, the tab is marked not auto-discardable, so Memory Saver
+  does not unload a muted live tab.
+- Off the show's page (Whatnot changes pages without a reload) capture
+  pauses, so another show's chat never lands in this one; back on the page it
+  carries on.
+- One tab records a show. A page loaded in another tab carries on only if
+  the first tab is closed or no longer recording; otherwise it says so, and
+  Resume there moves the recording (the old tab is told and stops).
+- After an extension update or reload Chrome leaves the old content script
+  cut off. The background injects the new one into open Whatnot tabs
+  (`scripting` + host permission); it retires the old copy (a
+  `chat-scraper:takeover` DOM event) and carries on the recording. A copy left
+  cut off with no replacement says "Refresh this page".
+- If the chat cannot be found (e.g. Whatnot changed its class names between
+  reloads), Start becomes "Pick chat": click a message and the same recording
+  goes on.
 - A full re-render of the list (old rows back as new nodes, in order) is
   recognised by matching the batch against the recorded order, while a new
   message in the same batch is still recorded.

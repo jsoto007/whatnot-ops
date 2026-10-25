@@ -163,6 +163,138 @@ describe('Recorder', () => {
   })
 })
 
+describe('Recorder keeps recording until stopped', () => {
+  it('a quiet chat with other things moving is not lost', async () => {
+    const { box, list } = makeChat()
+    for (let i = 0; i < 3; i++) addRow(list, 'u' + i, 'm' + i)
+    const rec = new Recorder('s', { now: () => now, staleMs: 1000, staleMutations: 3 })
+    const events = collect(rec)
+    rec.start(box, 'div.msg')
+    // Reactions / banners keep getting added, no new message for a while.
+    for (let i = 0; i < 10; i++) {
+      const fx = document.createElement('i')
+      fx.className = 'heart'
+      box.appendChild(fx)
+    }
+    await flush()
+    for (let i = 0; i < 5; i++) {
+      now += 2000
+      rec.check()
+    }
+    expect(events.filter((e) => e.type !== 'row')).toEqual([])
+    addRow(list, 'late', 'still here')
+    await flush()
+    expect(rec.rowCount).toBe(4)
+    rec.stop()
+  })
+
+  it('waits while the chat is gone instead of latching onto another list, then carries on', async () => {
+    const { box, list } = makeChat()
+    for (let i = 0; i < 3; i++) addRow(list, 'u' + i, 'm' + i)
+    // Something else on the page that looks like a list (product cards).
+    const shop = document.createElement('div')
+    for (let i = 0; i < 6; i++) shop.innerHTML += `<div class="card">Item ${i}</div>`
+    document.body.appendChild(shop)
+    const rec = new Recorder('s', { now: () => now })
+    const events = collect(rec)
+    rec.start(list, 'div.msg')
+
+    box.remove() // the chat unmounts (tab switch, reconnect)
+    rec.check()
+    rec.check()
+    expect(events.filter((e) => e.type === 'lost')).toHaveLength(1) // said once, not every tick
+    expect(rec.attached).toBe(false)
+    expect(rec.running).toBe(true)
+    expect(rec.currentSelector).toBe('div.msg')
+
+    // It comes back as a new container: old lines redrawn plus a new one.
+    const back = makeChat()
+    for (let i = 0; i < 3; i++) addRow(back.list, 'u' + i, 'm' + i)
+    addRow(back.list, 'new', 'while it was gone')
+    rec.check()
+    expect(events.at(-1)).toEqual({ type: 'healed', selector: 'div.msg' })
+    expect(rec.attached).toBe(true)
+    expect(rec.rowCount).toBe(4)
+    addRow(back.list, 'next', 'after')
+    await flush()
+    expect(rec.rowCount).toBe(5)
+    rec.stop()
+  })
+
+  it('carries on when rows come back into the same container', async () => {
+    const { box, list } = makeChat()
+    for (let i = 0; i < 3; i++) addRow(list, 'u' + i, 'm' + i)
+    const rec = new Recorder('s', { now: () => now, staleMs: 1000, staleMutations: 1 })
+    const events = collect(rec)
+    rec.start(box, 'div.msg')
+    list.innerHTML = '<p>chat paused</p>'
+    await flush()
+    now += 5000
+    rec.check()
+    expect(events.at(-1)?.type).toBe('lost')
+    list.innerHTML = ''
+    addRow(list, 'z', 'back again')
+    await flush()
+    rec.check()
+    expect(events.at(-1)).toEqual({ type: 'healed', selector: 'div.msg' })
+    expect(rec.rowCount).toBe(4)
+    rec.stop()
+  })
+
+  it('resume() finds the chat without a click and skips what was saved', () => {
+    const { list } = makeChat()
+    addRow(list, 'a', 'saved')
+    addRow(list, 'b', 'not yet')
+    const rec = new Recorder('s', { now: () => now })
+    const events = collect(rec)
+    rec.resume(document, ['div.msg'], 5, ['a saved'])
+    expect(rec.attached).toBe(true)
+    expect(events.filter((e) => e.type === 'row').map((e) => e.type === 'row' && e.row.seq)).toEqual([6])
+    rec.stop()
+  })
+
+  it('resume() waits for a chat that has not rendered yet', async () => {
+    const rec = new Recorder('s', { now: () => now })
+    const events = collect(rec)
+    rec.resume(document, ['div.msg'], 0, [])
+    expect(events).toEqual([{ type: 'lost', reason: expect.any(String) }])
+    const { list } = makeChat()
+    addRow(list, 'a', 'first')
+    rec.check()
+    expect(rec.attached).toBe(true)
+    expect(rec.rowCount).toBe(1)
+    addRow(list, 'b', 'second')
+    await flush()
+    expect(rec.rowCount).toBe(2)
+    rec.stop()
+  })
+
+  it('resume() falls back to a row shape the chat used before', () => {
+    const { list } = makeChat()
+    addRow(list, 'a', 'old classes again')
+    const rec = new Recorder('s', { now: () => now })
+    rec.resume(document, ['div.row-v2', 'div.msg'], 0, [])
+    expect(rec.attached).toBe(true)
+    expect(rec.currentSelector).toBe('div.msg')
+    expect(rec.rowCount).toBe(1)
+    rec.stop()
+  })
+
+  it('stop() ends it: no more checks, no more rows', async () => {
+    const { box, list } = makeChat()
+    const rec = new Recorder('s', { now: () => now })
+    const events = collect(rec)
+    rec.start(box, 'div.msg')
+    rec.stop()
+    box.remove()
+    rec.check()
+    addRow(list, 'a', 'after stop')
+    await flush()
+    expect(events).toEqual([])
+    expect(rec.running).toBe(false)
+  })
+})
+
 describe('Recorder re-render handling', () => {
   it('skips a full re-render of old rows but records the new message in the same batch', async () => {
     const { box, list } = makeChat()
