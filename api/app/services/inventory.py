@@ -70,8 +70,13 @@ def move(
     source_id: str = "",
     reason: str | None = None,
     actor: Actor = SYSTEM,
+    allow_negative: bool = False,
 ) -> InventoryMovement:
-    """Apply one movement inside the caller's transaction (commit is the caller's job)."""
+    """Apply one movement inside the caller's transaction (commit is the caller's job).
+
+    `allow_negative` lets an adjust take the shelf below zero; only the spreadsheet import
+    uses it, to carry the sheet's own oversold count over as `Sku.short`.
+    """
     if kind is MovementKind.adjust:
         if quantity == 0:
             raise InventoryError("adjustment of 0 does nothing", 400)
@@ -94,7 +99,7 @@ def move(
     elif kind is MovementKind.adjust:
         # A count may land below what open sales hold (that SKU is now short), but a
         # shelf never holds fewer than zero. Only paid oversells push on_hand negative.
-        if quantity < 0 and sku.on_hand + quantity < 0:
+        if quantity < 0 and sku.on_hand + quantity < 0 and not allow_negative:
             raise InventoryError(
                 f"cannot count {sku.code} below zero (on hand {sku.on_hand}, change {quantity})"
             )
@@ -185,7 +190,14 @@ def commit(
 
 
 def set_on_hand(
-    sku_id: int, target: int, *, source_type: str, source_id: str, actor: Actor, reason=None
+    sku_id: int,
+    target: int,
+    *,
+    source_type: str,
+    source_id: str,
+    actor: Actor,
+    reason=None,
+    allow_negative: bool = False,
 ):
     """Bring on-hand to `target` with one adjust movement (no-op when already there)."""
     sku = db.session.execute(select(Sku).where(Sku.id == sku_id).with_for_update()).scalar_one()
@@ -200,6 +212,7 @@ def set_on_hand(
         source_id=source_id,
         actor=actor,
         reason=reason,
+        allow_negative=allow_negative,
     )
 
 
