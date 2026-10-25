@@ -42,7 +42,14 @@
       return d;
     }
     const api = {
-      append(user, text) { n++; list().appendChild(make(user, text)); return n; },
+      append(user, text) {
+        n++;
+        const l = list();
+        l.appendChild(make(user, text));
+        // Like a real long chat: only the newest rows stay in the page.
+        if (api.keep) while (l.children.length > api.keep) l.firstElementChild.remove();
+        return n;
+      },
       appendMany(count, prefix = 'user') {
         for (let i = 0; i < count; i++) api.append(prefix + (n + 1), 'message ' + (n + 1));
         return n;
@@ -75,6 +82,27 @@
         fresh.appendChild(newList);
         old.replaceWith(fresh);
       },
+      // The chat unmounts (Whatnot switching panels, a reconnect) and later comes back as new nodes.
+      removeChat() {
+        const old = document.getElementById('scroll');
+        api.saved = [...list().children].map((r) => [r.querySelector('.msg-user').textContent, r.querySelector('.msg-text').textContent]);
+        old.remove();
+      },
+      restoreChat() {
+        const fresh = document.createElement('div'); fresh.className = 'chat-scroll'; fresh.id = 'scroll';
+        const l = document.createElement('div'); l.className = 'msg-list'; l.id = 'list';
+        for (const [u, t] of api.saved ?? []) l.appendChild(make(u, t));
+        fresh.appendChild(l);
+        document.querySelector('.chat-panel').prepend(fresh);
+      },
+      // Another list on the page that looks like rows (product cards): never the chat.
+      addShop(k = 8) {
+        const shop = document.createElement('div'); shop.className = 'shop';
+        for (let i = 0; i < k; i++) { const c = document.createElement('div'); c.className = 'card'; c.textContent = 'Item ' + i; shop.appendChild(c); }
+        document.querySelector('.video').appendChild(shop);
+        return shop;
+      },
+      addCard(text) { const c = document.createElement('div'); c.className = 'card'; c.textContent = text; document.querySelector('.shop').appendChild(c); },
       count() { return n; },
     };
     window.__chat = api;

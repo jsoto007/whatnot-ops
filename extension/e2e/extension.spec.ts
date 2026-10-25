@@ -9,7 +9,13 @@ declare global {
       rerenderAll(): void
       swapClasses(next?: string): void
       replaceContainer(): void
+      removeChat(): void
+      restoreChat(): void
+      addShop(k?: number): void
+      addCard(text: string): void
       count(): number
+      /** keep only this many newest rows on the page, like a long real chat (0 = all) */
+      keep: number
     }
     __player: {
       idle(title: string, price?: string): void
@@ -90,19 +96,17 @@ test('captures a show end to end: pick, 500 rows with re-renders, class swap, co
   await settings.close()
   await search.close()
 
-  // Reload mid-show: the panel offers to resume and does not double count what is on screen.
+  // Reload mid-show: it carries on by itself, without a click, and does not double count what is on screen.
   await page.reload()
-  await expect(page.locator(panel('#st'))).toContainText('Found 521 saved messages')
-  await page.locator(panel('#resume')).click()
-  await page.locator('.msg-row .msg-text').nth(2).click() // the reloaded fixture starts over with the seed rows
-  await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
+  await expect(page.locator(panel('#st'))).toHaveText('Carried on recording (521 saved). Watching chat.')
+  await expect(page.locator(panel('#resumeRow'))).toBeHidden()
   await expect(page.locator(panel('#cnt'))).toHaveText('521')
   await page.evaluate(() => window.__chat.append('resumed1', 'first after resume'))
   await expect(page.locator(panel('#cnt'))).toHaveText('522')
   await expect(page.locator(panel('#sync'))).toContainText('saved 522')
 })
 
-test('Resume / Start fresh only after a reload, and Start fresh keeps the earlier show', async ({ page, context, extensionId }) => {
+test('Resume / Start fresh only after Stop and a reload, and Start fresh keeps the earlier show', async ({ page, context, extensionId }) => {
   const resumeRow = page.locator(panel('#resumeRow'))
   await page.goto('/chat.html')
   await expect(resumeRow).toBeHidden()
@@ -113,6 +117,7 @@ test('Resume / Start fresh only after a reload, and Start fresh keeps the earlie
   await page.evaluate(() => ['a', 'b', 'c'].forEach((u) => window.__chat.append('first_' + u, 'line')))
   await expect(page.locator(panel('#sync'))).toContainText('saved 13')
   await expect(resumeRow).toBeHidden()
+  await page.locator(panel('#stop')).click() // stopped: a reload asks instead of carrying on
 
   await page.reload()
   await expect(page.locator(panel('#st'))).toContainText('Found 13 saved messages')
@@ -174,15 +179,110 @@ test('wins come from the video player: one row each, shown in the panel and in C
   await search.locator('#q').fill('won the auction')
   await expect(search.locator('#summary')).toContainText('2 messages matching')
 
-  // A reload while "won!" is still on screen does not record it again.
+  // A reload while "won!" is still on screen carries on recording and does not record it again.
   await page.reload()
   await page.evaluate(() => window.__player.won('chonwhite828', '$45', 'Lot #753'))
-  await page.locator(panel('#resume')).click()
-  await page.locator('.msg-row .msg-text').nth(2).click()
-  await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
+  await expect(page.locator(panel('#st'))).toContainText('Watching chat.')
   await expect(page.locator(panel('#wins'))).toHaveText('wins 2 · last: chonwhite828 won the auction for Lot #753 for $45.00')
   await page.waitForTimeout(1200)
   await expect(page.locator(panel('#cnt'))).toHaveText('12')
+})
+
+test('keeps recording until Stop: chat gone and back, another page, the script injected again', async ({ page, context }) => {
+  const st = page.locator(panel('#st'))
+  const cnt = page.locator(panel('#cnt'))
+  await page.goto('/chat.html')
+  await page.evaluate(() => window.__chat.addShop())
+  await page.locator(panel('#start')).click()
+  await page.locator('.msg-row .msg-text').nth(2).click()
+  await expect(st).toHaveText('Watching chat.')
+  await expect(cnt).toHaveText('10')
+
+  // The chat unmounts for a while. Recording waits: no "press Start", and it never
+  // starts reading the product cards instead.
+  await page.evaluate(() => window.__chat.removeChat())
+  await expect(st).toContainText("isn't on screen", { timeout: 10_000 })
+  await expect(st).toContainText('Still recording')
+  await expect(page.locator(panel('#stop'))).toBeEnabled()
+  await page.evaluate(() => window.__chat.addCard('Item 99 just listed'))
+  await page.waitForTimeout(3500)
+  await expect(cnt).toHaveText('10')
+  // Back as new nodes: the old lines are not counted again, new ones are.
+  await page.evaluate(() => {
+    window.__chat.restoreChat()
+    window.__chat.append('back1', 'chat is back')
+  })
+  await expect(st).toContainText('found the messages again', { timeout: 10_000 })
+  await expect(cnt).toHaveText('11')
+  await page.evaluate(() => window.__chat.append('back2', 'and live'))
+  await expect(cnt).toHaveText('12')
+
+  // Another page in the same tab (Whatnot changes pages without a reload): capture pauses,
+  // and carries on by itself back on the show's page.
+  await page.evaluate(() => history.pushState({}, '', '/live/someone-elses-show'))
+  await expect(st).toContainText('Paused', { timeout: 5_000 })
+  await page.evaluate(() => window.__chat.append('meanwhile', 'said while the tab was away'))
+  await page.waitForTimeout(1500)
+  await expect(cnt).toHaveText('12') // nothing is read off the show's page
+  await page.evaluate(() => history.pushState({}, '', '/chat.html'))
+  await expect(st).toHaveText('Watching chat.', { timeout: 5_000 })
+  await expect(cnt).toHaveText('13') // the show's line still on screen is picked up on the way back
+  await page.evaluate(() => window.__chat.append('back3', 'on the show again'))
+  await expect(cnt).toHaveText('14')
+  await expect(page.locator(panel('#sync'))).toContainText('saved 14')
+
+  // After an extension update the background injects the content script into open
+  // Whatnot tabs again (background.ts reinject()). Run that same injection: the host
+  // permission and scripting work, and a second copy never adds a panel or double counts.
+  // (Playwright cannot bring back an extension reloaded with chrome.runtime.reload().)
+  const [sw] = context.serviceWorkers()
+  const injected = await sw!.evaluate(async () => {
+    const c = (globalThis as unknown as { chrome: any }).chrome // eslint-disable-line @typescript-eslint/no-explicit-any
+    const cs = c.runtime.getManifest().content_scripts[0]
+    const tabs = await c.tabs.query({ url: cs.matches })
+    for (const t of tabs) await c.scripting.executeScript({ target: { tabId: t.id }, files: cs.js })
+    return tabs.length
+  })
+  expect(injected).toBe(1)
+  await expect(page.locator('#cs-host')).toHaveCount(1)
+  await page.evaluate(() => window.__chat.append('afterInject', 'still recording'))
+  await expect(cnt).toHaveText('15')
+  await expect(page.locator(panel('#sync'))).toContainText('saved 15')
+
+  // Stop is the only thing that ends it: after Stop a reload asks.
+  await page.locator(panel('#stop')).click()
+  await page.reload()
+  await expect(st).toContainText('Found 15 saved messages')
+  await expect(page.locator(panel('#resumeRow'))).toBeVisible()
+})
+
+test('a 20,000-message show: every line saved, the panel keeps up, a reload carries on', async ({ page }) => {
+  const cnt = page.locator(panel('#cnt'))
+  await page.goto('/chat.html')
+  await page.evaluate(() => (window.__chat.keep = 200))
+  await page.locator(panel('#start')).click()
+  await page.locator('.msg-row .msg-text').nth(2).click()
+  await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
+  // Far faster than a live chat: 10 lines every few ms.
+  for (let done = 0; done < 20_000; done += 1000) {
+    await page.evaluate(async (base) => {
+      for (let b = 0; b < 100; b++) {
+        for (let i = 0; i < 10; i++) {
+          const k = base + b * 10 + i
+          window.__chat.append('buyer' + (k % 3000), 'message ' + k + ' I will take ' + (k % 7))
+        }
+        await new Promise((r) => setTimeout(r, 4))
+      }
+    }, done)
+  }
+  await expect(cnt).toHaveText('20010')
+  await expect(page.locator(panel('#sync'))).toContainText('saved 20010', { timeout: 120_000 })
+  await page.locator(panel('#find')).fill('buyer77')
+  await expect(page.locator(panel('#fr .fi')).first()).toBeVisible()
+  await page.reload()
+  await expect(page.locator(panel('#st'))).toHaveText('Carried on recording (20010 saved). Watching chat.')
+  await page.evaluate(() => window.__chat.append('after', 'reload line'))
+  await expect(cnt).toHaveText('20011')
 })
 
 test('says so when the click was not on a list of messages', async ({ page }) => {

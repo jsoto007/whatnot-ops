@@ -30,6 +30,7 @@ const manifest = JSON.parse(readFileSync('manifest.json', 'utf8'))
 if (test) {
   manifest.name += ' (test build)'
   manifest.content_scripts[0].matches.push('http://127.0.0.1/*', 'http://localhost/*')
+  manifest.host_permissions.push('http://127.0.0.1/*', 'http://localhost/*')
 }
 writeFileSync(`${out}/manifest.json`, JSON.stringify(manifest, null, 2))
 for (const f of ['search.html', 'options.html', 'icon16.png', 'icon32.png', 'icon48.png', 'icon128.png']) cpSync(f, `${out}/${f}`)

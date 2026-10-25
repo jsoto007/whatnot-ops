@@ -50,13 +50,11 @@ test('uploads captured rows to the API, recovers from a wrong key, and never dou
   expect(status.ok()).toBe(true)
   expect((await status.json()).messageCount).toBe(40)
 
-  // More rows while connected upload on their own; a reload + resume re-sends nothing.
+  // More rows while connected upload on their own; a reload carries on and re-sends nothing.
   await page.evaluate(() => window.__chat.append('late', 'one more'))
   await expect(page.locator(panel('#sync'))).toHaveText('saved 41 · uploaded', { timeout: 15_000 })
   await page.reload()
-  await page.locator(panel('#resume')).click()
-  await page.locator('.msg-row .msg-text').nth(1).click()
-  await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
+  await expect(page.locator(panel('#st'))).toContainText('Watching chat.')
   await page.evaluate(() => window.__chat.append('after', 'resume'))
   await expect(page.locator(panel('#cnt'))).toHaveText('42')
   await expect(page.locator(panel('#sync'))).toHaveText('saved 42 · uploaded', { timeout: 15_000 })

@@ -21,6 +21,16 @@ export function scrollParent(el: Element | null): Element {
 }
 
 /**
+ * The element to watch for `row`: the chat's scrolling box, or the row's own
+ * list when the chat does not overflow yet (a show that just started). Never
+ * the whole body.
+ */
+export function chatContainer(row: Element): Element {
+  const box = scrollParent(row)
+  return box === row.ownerDocument.body ? (row.parentElement ?? box) : box
+}
+
+/**
  * Walk up from the clicked element to the ancestor with the most siblings of
  * the same signature. That ancestor is the chat row. Needs at least `minCount`
  * look-alike siblings, otherwise the click was not on a list of messages.

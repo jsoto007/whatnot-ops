@@ -1,6 +1,6 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { CapturedRow, ShowMeta } from '../capture/types'
-import type { ShowRef } from '../shared/messages'
+import type { ChatSpot, ShowRef } from '../shared/messages'
 import { showDate } from '../shared/showDate'
 
 export const DB_NAME = 'chat-scraper'
@@ -196,8 +196,16 @@ export async function kvDelete(key: string): Promise<void> {
 }
 
 export const KV_SESSION = 'session'
+export const KV_RECORDING = 'recording'
 export const KV_MIGRATED = 'migrated_v1'
 
 export interface SessionRef {
   showId: string
+}
+
+/** A show that is recording until someone presses Stop, and the tab doing it. */
+export interface RecordingRef {
+  showId: string
+  spot: ChatSpot
+  tabId?: number
 }

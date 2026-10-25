@@ -6,9 +6,24 @@ export interface ShowRef {
   url?: string
 }
 
+/**
+ * Where a recording reads the chat: the row selectors it has used, newest first
+ * (the host's pick, then any it healed to), and the page it was on. Saved while
+ * recording, so a reloaded page carries on without a click; cleared by Stop.
+ */
+export interface ChatSpot {
+  selectors: string[]
+  /** `showPage(location.pathname)` when it started */
+  page: string
+}
+
+export const MAX_SELECTORS = 3
+
 /** content → background */
 export type Request =
   | { cmd: 'rows'; show: ShowRef; rows: CapturedRow[] }
+  /** this tab records `show` from `spot` until Stop (spot null) */
+  | { cmd: 'recording'; show: ShowRef; spot: ChatSpot | null }
   | { cmd: 'getSession' }
   | { cmd: 'clearSession' }
   | { cmd: 'openSearch' }
@@ -25,16 +40,36 @@ export type Request =
 export interface UploadStatus {
   configured: boolean
   pending: number
-  uploaded: number
+  /** Only for the extension's own pages (Settings): counting it walks every stored row. */
+  uploaded?: number
   /** Rows set aside: rejected by the server, or captured for another shop. Never sent. */
   parked: number
   lastError?: string
   lastSentAt?: number
 }
 
-export type SessionReply = { show: ShowMeta; rows: CapturedRow[] } | null
+/**
+ * `recording`: the show was still recording (no Stop) and this tab may carry on.
+ * `elsewhere`: it is still recording in another open tab.
+ */
+export type SessionReply = { show: ShowMeta; rows: CapturedRow[]; recording?: ChatSpot; elsewhere?: boolean } | null
 
 /** background → content (via tabs.sendMessage) and → extension pages */
-export type Broadcast = { cmd: 'toggle' } | { cmd: 'showUpdated'; showId: string }
+export type Broadcast =
+  | { cmd: 'toggle' }
+  | { cmd: 'showUpdated'; showId: string }
+  /** is this tab recording right now? → PingReply */
+  | { cmd: 'ping' }
+  /** another tab took over recording this show */
+  | { cmd: 'released'; showId: string }
+
+export interface PingReply {
+  recording: boolean
+}
+
+/** The part of a Whatnot path that names the show: `/live/<id>` of `/live/<id>/…`. */
+export function showPage(pathname: string): string {
+  return '/' + pathname.split('/').filter(Boolean).slice(0, 2).join('/')
+}
 
 export const RESUME_HOURS = 12
