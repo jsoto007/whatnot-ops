@@ -15,21 +15,25 @@ async function signup(page: Page) {
   await expect(page).toHaveURL(/\/app$/)
 }
 
-test('desktop: the sidebar collapses to icons and stays collapsed after a reload', async ({ page }) => {
+test('desktop: the sidebar starts as icons, opens, and remembers the choice after a reload', async ({ page }) => {
   await signup(page)
   const orders = page.getByRole('link', { name: 'Orders' })
-  await expect(orders).toBeVisible()
-  await expect(orders).toHaveText('Orders')
-  await page.getByTestId('collapse-sidebar').click()
   await expect(page.locator('.app')).toHaveClass(/collapsed/)
+  await expect(orders).toBeVisible()
   await expect(orders.locator('.label')).toBeHidden()
   await expect(orders).toHaveAttribute('title', 'Orders')
-  // the grid track animates for 160 ms
+  // the grid track animates for 380 ms
   await expect.poll(() => page.locator('.sidebar').evaluate((el) => el.getBoundingClientRect().width)).toBeLessThan(80)
-  await page.reload()
-  await expect(page.locator('.app')).toHaveClass(/collapsed/)
   await page.getByTestId('collapse-sidebar').click()
   await expect(page.locator('.app')).not.toHaveClass(/collapsed/)
+  await expect(orders.locator('.label')).toBeVisible()
+  await expect.poll(() => page.locator('.sidebar').evaluate((el) => el.getBoundingClientRect().width)).toBeGreaterThan(200)
+  await page.reload()
+  await expect(page.locator('.app')).not.toHaveClass(/collapsed/)
+  await page.getByTestId('collapse-sidebar').click()
+  await expect(page.locator('.app')).toHaveClass(/collapsed/)
+  await page.reload()
+  await expect(page.locator('.app')).toHaveClass(/collapsed/)
 })
 
 test('phone: top bar, drawer navigation, and no page wider than the screen', async ({ page }) => {

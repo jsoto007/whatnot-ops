@@ -1,15 +1,14 @@
 import { expect, type Page } from '@playwright/test'
 
-/** Receive `qty` of an existing SKU through the Inventory page's "Receive stock" form. */
+export const cell = (page: Page, code: string, col: 'on-hand' | 'held' | 'available') => page.getByTestId(`level-${code}`).getByTestId(col)
+
+/** Put `qty` more of an existing SKU on the shelf with the Inventory row's − [n] + ✓ stepper. */
 export async function receive(page: Page, code: string, qty: number) {
   await page.getByRole('link', { name: 'Inventory' }).click()
-  await page.getByRole('button', { name: 'Receive stock', exact: true }).first().click()
-  const item = page.getByLabel('Item, line 1')
-  const value = await item.locator('option', { hasText: `· ${code} (` }).getAttribute('value')
-  await item.selectOption(value!)
-  await page.getByLabel('Quantity, line 1').fill(String(qty))
-  await page.getByTestId('receive-submit').click()
-  await expect(page.getByRole('dialog')).toHaveCount(0)
+  const row = page.getByTestId(`level-${code}`)
+  await expect(row).toBeVisible()
+  const before = Number(await cell(page, code, 'on-hand').innerText())
+  await row.getByRole('spinbutton').fill(String(before + qty))
+  await row.getByRole('button', { name: /^Save / }).click()
+  await expect(cell(page, code, 'on-hand')).toHaveText(String(before + qty))
 }
-
-export const cell = (page: Page, code: string, col: 'on-hand' | 'held' | 'available') => page.getByTestId(`level-${code}`).getByTestId(col)

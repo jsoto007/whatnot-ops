@@ -6,48 +6,69 @@ const HTML = `
     :host { all: initial; }
     /* .row and friends set display, which would otherwise beat the hidden attribute. */
     [hidden] { display: none !important; }
-    .p { width: 290px; font: 13px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; color: #fff;
-         background: #002244; border: 2px solid #69BE28; border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.4); overflow: hidden; }
-    .hd { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #001833; cursor: default; }
-    .dot { width: 10px; height: 10px; border-radius: 50%; background: #A5ACAF; flex: none; }
-    .dot.on { background: #69BE28; animation: pulse 1.4s infinite; }
-    .dot.pick { background: #4FC3F7; }
-    .dot.warn { background: #FF8A80; }
+    /* Liquid Glass, dark tint: white text stays readable over any stream behind it. */
+    .p { width: 336px; box-sizing: border-box; padding: 12px; display: grid; gap: 10px;
+         font: 14px/1.4 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif; letter-spacing: -0.005em; color: #fff;
+         background: rgba(30, 26, 52, 0.62); -webkit-backdrop-filter: blur(36px) saturate(200%); backdrop-filter: blur(36px) saturate(200%);
+         border: 1px solid rgba(255, 255, 255, 0.28); border-radius: 32px;
+         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 24px 70px rgba(10, 0, 40, 0.45); }
+    .hd { display: flex; align-items: center; gap: 10px; padding: 4px 4px 0 8px; cursor: default; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: rgba(255, 255, 255, 0.55); flex: none; transition: background 200ms ease; }
+    .dot.on { background: #ff453a; box-shadow: 0 0 0 5px rgba(255, 69, 58, 0.3); animation: pulse 1.4s infinite; }
+    .dot.pick { background: #64d2ff; box-shadow: 0 0 0 5px rgba(100, 210, 255, 0.25); }
+    .dot.warn { background: #ff9f0a; box-shadow: 0 0 0 5px rgba(255, 159, 10, 0.3); }
     @keyframes pulse { 50% { opacity: .35; } }
-    .ttl { font-weight: 700; flex: 1; }
-    .cnt { font-variant-numeric: tabular-nums; color: #69BE28; font-weight: 700; }
-    .x { background: none; border: 0; color: #A5ACAF; font-size: 16px; cursor: pointer; padding: 0 2px; }
-    .bd { padding: 10px; display: grid; gap: 8px; }
+    @media (prefers-reduced-motion: reduce) { .dot.on { animation: none; } }
+    .ttl { font-weight: 700; font-size: 17px; letter-spacing: -0.01em; flex: 1; }
+    .cnt { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 13px; padding: 4px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.16); }
+    .x { width: 36px; height: 36px; flex: none; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.35); background: rgba(255, 255, 255, 0.14);
+         color: #fff; font: 600 18px/1 system-ui, sans-serif; cursor: pointer; display: grid; place-items: center; padding: 0; }
+    .x:hover { background: rgba(255, 255, 255, 0.24); }
+    .bd { display: grid; gap: 10px; }
     .bd.min { display: none; }
-    .st { font-size: 12px; color: #A5ACAF; min-height: 16px; }
-    .st.good { color: #69BE28; } .st.bad { color: #FF8A80; } .st.info { color: #4FC3F7; }
-    .sync { font-size: 11px; color: #A5ACAF; }
-    .row { display: flex; gap: 6px; flex-wrap: wrap; }
-    button.b { flex: 1; border: 0; border-radius: 8px; padding: 7px 8px; font: 600 12px system-ui, sans-serif; cursor: pointer;
-               background: #69BE28; color: #002244; }
-    button.b.sec { background: #0B3A66; color: #fff; }
-    button.b:disabled { opacity: .4; cursor: default; }
-    label { font-size: 11px; color: #A5ACAF; display: block; margin-bottom: 3px; }
-    input { width: 100%; box-sizing: border-box; border: 1px solid #0B3A66; background: #001833; color: #fff;
-            border-radius: 6px; padding: 6px; font: 12px system-ui, sans-serif; }
-    .fl { max-height: 150px; overflow-y: auto; display: grid; gap: 4px; }
-    .fi { background: #0B3A66; border-left: 3px solid #69BE28; border-radius: 4px; padding: 4px 6px; font-size: 12px; word-break: break-word; }
-    .fi b { color: #69BE28; font-weight: 600; margin-right: 4px; }
-    #fr .fi { border-left-color: #4FC3F7; cursor: pointer; }
-    #fr .fi:hover { background: #124a80; }
-    #fr { margin-top: 6px; }
-    .empty { font-size: 11px; color: #A5ACAF; }
+    .card { display: grid; gap: 4px; padding: 14px 16px; border-radius: 22px; background: rgba(10, 6, 30, 0.38); border: 1px solid rgba(255, 255, 255, 0.16); }
+    .st { font-size: 15px; font-weight: 600; min-height: 20px; color: #fff; }
+    .st.good { color: #7cf29a; } .st.bad { color: #ff8a80; } .st.info { color: #8fdcff; }
+    .sync { font-size: 13px; color: rgba(255, 255, 255, 0.82); }
+    .sync:empty { display: none; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    button.b { flex: 1; min-height: 44px; border-radius: 999px; padding: 0 10px; white-space: nowrap; font: 600 14px -apple-system, BlinkMacSystemFont, system-ui, sans-serif; cursor: pointer;
+               border: 1px solid #fff; background: #fff; color: #1a1033; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22); transition: filter 160ms ease, transform 160ms ease; }
+    button.b:hover { filter: brightness(0.95); }
+    button.b:active { transform: scale(0.98); }
+    button.b.sec { background: rgba(255, 255, 255, 0.16); color: #fff; border-color: rgba(255, 255, 255, 0.32); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3); }
+    button.b.sec:hover { background: rgba(255, 255, 255, 0.24); filter: none; }
+    button.b:disabled { opacity: .4; cursor: default; transform: none; }
+    button:focus-visible, input:focus-visible { outline: 2px solid #8fdcff; outline-offset: 2px; }
+    .tools { gap: 4px; padding: 4px; border-radius: 999px; background: rgba(10, 6, 30, 0.3); border: 1px solid rgba(255, 255, 255, 0.16); }
+    .tools button.b { min-height: 38px; font-size: 13px; padding: 0 8px; background: transparent; border-color: transparent; color: #fff; box-shadow: none; }
+    .tools button.b:hover { background: rgba(255, 255, 255, 0.16); filter: none; }
+    label { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: rgba(255, 255, 255, 0.82); display: block; margin: 0 0 6px 12px; }
+    input { width: 100%; box-sizing: border-box; min-height: 42px; border: 1px solid rgba(255, 255, 255, 0.22); background: rgba(0, 0, 0, 0.24); color: #fff;
+            border-radius: 999px; padding: 0 16px; font: 14px -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+    input::placeholder { color: rgba(255, 255, 255, 0.6); }
+    .fl { max-height: 150px; overflow-y: auto; display: grid; border-radius: 18px; background: rgba(10, 6, 30, 0.34); border: 1px solid rgba(255, 255, 255, 0.16); }
+    .fi { padding: 9px 14px; font-size: 13px; word-break: break-word; border-top: 1px solid rgba(255, 255, 255, 0.1); }
+    .fi:first-child { border-top: 0; }
+    .fi b { color: rgba(255, 255, 255, 0.7); font-weight: 600; margin-right: 6px; font-variant-numeric: tabular-nums; }
+    #fl { background: rgba(255, 159, 10, 0.22); border-color: rgba(255, 214, 140, 0.38); }
+    #fr .fi { cursor: pointer; }
+    #fr .fi:hover { background: rgba(255, 255, 255, 0.1); }
+    #fr { margin-top: 8px; }
+    .empty { font-size: 13px; color: rgba(255, 255, 255, 0.78); padding: 10px 14px; }
   </style>
   <div class="p">
     <div class="hd">
       <span class="dot" id="dot"></span><span class="ttl">Chat Scraper</span>
-      <span class="cnt" id="cnt">0</span>
-      <button class="x" id="min" title="Minimise">–</button>
+      <span class="cnt" id="cnt" title="Messages captured">0</span>
+      <button class="x" id="min" title="Minimise" aria-label="Minimise">–</button>
     </div>
     <div class="bd" id="bd">
-      <div class="st" id="st">Ready. Open the show, then press Start.</div>
-      <div class="sync" id="sync"></div>
-      <div class="sync" id="wins" hidden></div>
+      <div class="card">
+        <div class="st" id="st">Ready. Open the show, then press Start.</div>
+        <div class="sync" id="sync"></div>
+        <div class="sync" id="wins" hidden></div>
+      </div>
       <div class="row" id="resumeRow" hidden>
         <button class="b" id="resume">Resume last show</button>
         <button class="b sec" id="fresh">Start fresh</button>
@@ -57,10 +78,10 @@ const HTML = `
         <button class="b" id="stop">Stop &amp; Save</button>
       </div>
       <div class="row">
-        <button class="b" id="search">Open Chat Search</button>
+        <button class="b sec" id="search">Open Chat Search</button>
         <button class="b sec" id="settings" title="Connect this laptop to your shop">Settings</button>
       </div>
-      <div class="row">
+      <div class="row tools">
         <button class="b sec" id="backup">Save backup copy</button>
         <button class="b sec" id="clear">Clear</button>
       </div>
