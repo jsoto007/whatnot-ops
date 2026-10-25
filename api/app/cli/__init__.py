@@ -144,6 +144,20 @@ def register_cli(app: Flask) -> None:
         if device_for_key(key) is None:
             create_device(_org("E2E Shop"), "e2e device", key=key)
             db.session.commit()
+        # E2E Mug starts every run with 4 available, so the scraper's 3/2/1/sold-out
+        # alerts can be counted down. Topped up through the ledger, like a delivery.
+        from ..models import MovementKind, Sku
+        from ..services import catalog, inventory
+
+        org = _org("E2E Shop")
+        mug = db.session.scalar(
+            select(Sku).where(Sku.organization_id == org.id, Sku.code == "E2E-MUG")
+        )
+        if mug is None:
+            mug = catalog.create_product(org.id, "E2E Mug", skus=[{"code": "E2E-MUG"}]).skus[0]
+        if mug.available < 4:
+            inventory.move(mug.id, MovementKind.restock, 4 - mug.available, source_type="e2e")
+        db.session.commit()
         code = os.environ.get("E2E_PAIRING_CODE")
         if code:
             # A fresh, unused pairing code with a known value, re-created on every run.

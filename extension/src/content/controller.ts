@@ -4,12 +4,16 @@ import { findRow, buildSelector, scrollParent } from '../capture/row'
 import type { CapturedRow } from '../capture/types'
 import type { Request, SessionReply, ShowRef, UploadStatus } from '../shared/messages'
 import { showDate } from '../shared/showDate'
+import { type StockSeen, stockAlerts } from '../stock/alerts'
+import type { StockReply } from '../stock/fetch'
 import { Panel } from './panel'
 
 const WORDS_KEY = 'cs_watchwords'
 const FLUSH_MS = 1500
 const FLUSH_AT = 50
 const WIN_POLL_MS = 500
+/** Stock moves once an upload is parsed (a few seconds), so a slower poll is enough. */
+const STOCK_POLL_MS = 8000
 
 type State = 'idle' | 'picking' | 'recording' | 'stopped'
 
@@ -28,6 +32,9 @@ export class Controller {
   private recorder: Recorder | null = null
   private wins: WinWatcher | null = null
   private winTimer: ReturnType<typeof setInterval> | null = null
+  private stockTimer: ReturnType<typeof setInterval> | null = null
+  /** Last stock poll of this recording; null until the first one (the baseline). */
+  private stockSeen: StockSeen | null = null
   private playerObserver: MutationObserver | null = null
   private observedPlayer: Element | null = null
   private pending: CapturedRow[] = []
@@ -177,6 +184,9 @@ export class Controller {
     this.wins.remember(this.log)
     this.winTimer = setInterval(() => this.checkPlayer(), WIN_POLL_MS)
     this.checkPlayer()
+    if (this.stockTimer) clearInterval(this.stockTimer)
+    this.stockTimer = setInterval(() => void this.checkStock(), STOCK_POLL_MS)
+    void this.checkStock()
     this.state = 'recording'
     this.panel.setStatus('Watching chat.', 'good')
     this.render()
@@ -199,6 +209,29 @@ export class Controller {
     this.observedPlayer = player
     this.playerObserver = player ? new MutationObserver(() => this.checkPlayer()) : null
     this.playerObserver?.observe(player!, { childList: true, subtree: true, characterData: true })
+  }
+
+  /** Warn when an item reaches 3, 2 or 1 left, or sells out (see stock/alerts.ts). */
+  private async checkStock(): Promise<void> {
+    let reply: StockReply | null
+    try {
+      reply = await send<StockReply | null>({ cmd: 'getStock' })
+    } catch {
+      return // background asleep or reloaded; the next poll tries again
+    }
+    if (!reply || !this.stockTimer) return // not connected, offline, or stopped meanwhile
+    const { alerts, seen } = stockAlerts(this.stockSeen, reply.items, reply.alertAt)
+    this.stockSeen = seen
+    this.panel.setLowStock(reply.items)
+    this.panel.showStockAlerts(alerts)
+  }
+
+  private stopStock(): void {
+    if (this.stockTimer) clearInterval(this.stockTimer)
+    this.stockTimer = null
+    this.stockSeen = null
+    this.panel.setLowStock([])
+    this.panel.clearStockAlert()
   }
 
   private renderWins(): void {
@@ -225,6 +258,7 @@ export class Controller {
     if (this.winTimer) clearInterval(this.winTimer)
     this.winTimer = null
     this.wins = null
+    this.stopStock()
     this.playerObserver?.disconnect()
     this.playerObserver = null
     this.observedPlayer = null

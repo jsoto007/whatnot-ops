@@ -18,6 +18,7 @@ import {
   putRows,
   uploadedCount,
 } from './storage/db'
+import { fetchStock } from './stock/fetch'
 import { migrateLegacyStorage } from './storage/migrate'
 import { clampRow, clampUrl } from './upload/limits'
 import { configured, loadSettings } from './upload/settings'
@@ -118,7 +119,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 /** Commands only the extension's own pages (Settings, Chat Search) may send; content scripts may not. */
 const PAGE_ONLY = new Set<Request['cmd']>(['settingsChanged', 'parkPending'])
-const CMDS = new Set<Request['cmd']>(['rows', 'getSession', 'clearSession', 'openSearch', 'openOptions', 'getUploadStatus', 'flushUploads', 'settingsChanged', 'parkPending'])
+const CMDS = new Set<Request['cmd']>(['rows', 'getSession', 'clearSession', 'openSearch', 'openOptions', 'getUploadStatus', 'flushUploads', 'getStock', 'settingsChanged', 'parkPending'])
 
 /** A content-script batch, cut to the server's limits so one bad line cannot stall uploads. */
 function cleanRows(msg: Extract<Request, { cmd: 'rows' }>): Extract<Request, { cmd: 'rows' }> | null {
@@ -149,6 +150,9 @@ async function handle(msg: Request): Promise<unknown> {
       return uploadStatus()
     case 'flushUploads':
       return flush()
+    case 'getStock':
+      // The key never reaches the content script; it only gets the stock rows.
+      return fetchStock(await loadSettings())
     case 'openOptions':
       await chrome.runtime.openOptionsPage()
       return { ok: true }

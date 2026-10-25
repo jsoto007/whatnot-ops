@@ -2,6 +2,7 @@ from flask import Blueprint, g, jsonify, request
 
 from ..db import db
 from ..models import Show
+from ..services import stock
 from ..services.devices import device_for_key, touch
 from ..services.ingest import BatchInvalid, ingest, message_count
 from ..services.pipeline import schedule_parse
@@ -84,6 +85,19 @@ def post_batch():
                 "key": result.show.show_key,
                 "messageCount": result.message_count,
             },
+        }
+    )
+
+
+@bp.get("/ingest/stock")
+def running_low():
+    """What is down to 3 or fewer, so the scraper panel can warn the host mid-show.
+    Read-only: stock moves only through the pipeline after a batch is parsed."""
+    db.session.commit()  # persists last_seen_at
+    return jsonify(
+        {
+            "alertAt": stock.RUNNING_LOW,
+            "items": stock.running_low(g.device.organization_id),
         }
     )
 
