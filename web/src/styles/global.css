@@ -356,7 +356,7 @@ tr.short td { background: rgba(255, 59, 48, 0.06); }
 .sales-by-buyer tr.group-start td { border-top: 2px solid var(--border-strong); }
 .sales-by-buyer tbody tr:first-child td { border-top: 0; }
 code.sku { margin-left: 8px; }
-.avail { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+.avail { display: flex; align-items: center; gap: 8px; min-width: 100px; }
 .avail-track { flex: 1; height: 8px; background: var(--fill); border-radius: var(--pill); overflow: hidden; }
 .avail-fill { height: 100%; background: var(--green); border-radius: var(--pill); transition: width 300ms ease; }
 .avail-fill.low { background: var(--orange); }
@@ -552,9 +552,18 @@ code.sku { margin-left: 8px; }
 .sort select { min-height: 40px; border: 1px solid rgba(255, 255, 255, 0.9); border-radius: var(--pill); padding: 0 34px 0 14px; font: 600 14px var(--font-family); color: var(--text); background: rgba(255, 255, 255, 0.7); cursor: pointer; }
 .sort-dir { min-height: 40px; padding: 0 14px; font-size: 14px; }
 .inv-scroll { max-height: min(640px, 70vh); overflow: auto; overscroll-behavior: contain; }
-.inv-table { border: 0; border-radius: 0; box-shadow: none; background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; overflow: visible; min-width: 940px; }
+.inv-table { border: 0; border-radius: 0; box-shadow: none; background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; overflow: visible; min-width: 760px; }
+.inv-table th, .inv-table td { padding: 10px 12px; }
 .inv-table th:first-child, .inv-table td:first-child { padding-left: 20px; }
-.inv-table td { padding-top: 10px; padding-bottom: 10px; }
+.inv-table th:last-child, .inv-table td:last-child { padding-right: 20px; }
+.inv-table th, .inv-table td.num, .inv-table .badge { white-space: nowrap; }
+.inv-table td:first-child { min-width: 180px; }
+.inv-table td:first-child .small { white-space: nowrap; }
+.inv-table td.num { font-size: 14.5px; }
+.inv-table td.num.neg { color: var(--tint-red-ink); font-weight: 600; }
+.inv-table .badge { margin-left: 8px; vertical-align: 1px; }
+.inv-table .col-adjust { width: 1%; white-space: nowrap; text-align: center; }
+.inv-table th.col-adjust { padding-right: 86px; } /* centred over − [n] +, not the room kept for ✓ × */
 .th-sort { border: 0; background: transparent; padding: 0; font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; min-height: 24px; }
 .th-sort:hover { color: var(--text); }
 th[aria-sort] .th-sort { color: var(--accent); }
@@ -564,23 +573,24 @@ th[aria-sort] .th-sort { color: var(--accent); }
 .inv-none { padding: var(--space-6); margin: 0; text-align: center; }
 
 /* − [n] + ✓ : set the shelf in place */
-.qty-step { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; justify-content: center; }
-.qty-error { flex: 1 1 100%; text-align: center; font-size: 12px; font-weight: 600; color: var(--red-ink); }
+.qty-step { position: relative; display: inline-flex; align-items: center; gap: 6px; justify-content: center; vertical-align: middle; }
+.qty-error { position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px; text-align: center; font-size: 12px; font-weight: 600; line-height: 1; color: var(--red-ink); white-space: nowrap; }
 .qty-step .step { width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--fill); color: var(--text); cursor: pointer; display: inline-grid; place-items: center; flex: none; transition: background var(--motion); }
 .qty-step .step:hover:not(:disabled) { background: var(--fill-strong); }
 .qty-step .step:disabled { opacity: 0.35; cursor: default; }
 .qty-step input {
-  width: 64px; height: 34px; text-align: center; border-radius: 10px; border: 1px solid var(--border-strong); background: rgba(255, 255, 255, 0.8);
+  width: 56px; height: 34px; text-align: center; border-radius: 10px; border: 1px solid var(--border-strong); background: rgba(255, 255, 255, 0.8);
   font: 600 15px var(--font-family); color: var(--text); outline: none; font-variant-numeric: tabular-nums; -moz-appearance: textfield; appearance: textfield;
 }
 .qty-step input::-webkit-outer-spin-button, .qty-step input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .qty-step input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
 .qty-step .save, .qty-step .discard { width: 34px; height: 34px; border-radius: 50%; border: 0; cursor: pointer; display: inline-grid; place-items: center; flex: none; }
+.qty-step .discard { width: 28px; height: 28px; }
 .qty-step .save { background: var(--green); color: #fff; box-shadow: 0 4px 12px rgba(52, 199, 89, 0.35); }
 .qty-step .save:disabled { opacity: 0.5; cursor: default; }
 .qty-step .discard { background: transparent; color: var(--text-muted); font-size: 18px; }
 .qty-step .discard:hover { background: var(--fill); }
-.qty-step .spacer { width: 74px; flex: none; }
+.qty-step .spacer { width: 68px; flex: none; }
 
 .inv-activity { padding: 0; overflow: hidden; }
 .collapse-head { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; padding: 0 20px; border: 0; background: transparent; font: inherit; color: var(--text); cursor: pointer; text-align: left; }
@@ -739,10 +749,13 @@ body.sheet-open, body.modal-open { overflow: hidden; }
   .inv-table { min-width: 0; }
   .inv-table th, .inv-table td { padding-left: 8px; padding-right: 8px; }
   .inv-table th:first-child, .inv-table td:first-child { padding-left: 12px; }
+  .inv-table th:last-child, .inv-table td:last-child { padding-right: 12px; }
+  .inv-table th.col-adjust { padding-right: 12px; }
+  .inv-table td:first-child { min-width: 0; }
   .show-sm { display: block; }
   .inv-table .badge { display: block; width: fit-content; margin: 2px 0 0 auto; }
   .qty-step .spacer { display: none; }
-  .qty-step { flex-wrap: nowrap; gap: 4px; }
+  .qty-step { gap: 4px; }
   .qty-step input { width: 46px; }
   .qty-step .step, .qty-step .save, .qty-step .discard { width: 32px; height: 32px; }
   .inv-table.editable .col-shelf { display: none; }

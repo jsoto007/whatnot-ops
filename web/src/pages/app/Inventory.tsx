@@ -25,7 +25,7 @@ type Panel = { kind: 'receive'; preset?: { skuId: number; qty: number }[] } | { 
 const rank = (s: StockLevel) => (s.short > 0 ? 0 : s.available <= 0 ? 1 : s.low ? 2 : 3)
 const byName = (a: StockLevel, b: StockLevel) => a.productName.localeCompare(b.productName) || a.code.localeCompare(b.code)
 
-type SortKey = 'attention' | 'name' | 'onHand' | 'reserved' | 'available' | 'sold' | 'received'
+type SortKey = 'attention' | 'name' | 'onHand' | 'reserved' | 'available' | 'sold'
 const SORTS: { key: SortKey; label: string; desc: boolean; value: (s: StockLevel) => number | string }[] = [
   { key: 'attention', label: 'Needs attention', desc: false, value: rank },
   { key: 'name', label: 'Name', desc: false, value: (s) => `${s.productName} ${s.code}`.toLowerCase() },
@@ -33,7 +33,6 @@ const SORTS: { key: SortKey; label: string; desc: boolean; value: (s: StockLevel
   { key: 'reserved', label: 'Held', desc: true, value: (s) => s.reserved },
   { key: 'available', label: 'Available', desc: true, value: (s) => s.available },
   { key: 'sold', label: 'Sold', desc: true, value: (s) => s.sold },
-  { key: 'received', label: 'Last received', desc: true, value: (s) => s.lastReceivedAt ?? '' },
 ]
 
 export function Inventory() {
@@ -262,8 +261,7 @@ export function Inventory() {
                   {th('available', 'Available', 'num')}
                   <th className="hide-sm">Stock</th>
                   {th('sold', 'Sold', 'num hide-sm')}
-                  {th('received', 'Last received', 'hide-sm')}
-                  {write && <th style={{ textAlign: 'center' }}>Adjust shelf</th>}
+                  {write && <th className="col-adjust">Adjust shelf</th>}
                 </tr>
               </thead>
               <tbody>
@@ -353,7 +351,7 @@ function Row({ sku, write, onOpen, onSaved }: { sku: StockLevel; write: boolean;
           {sku.priceCents != null && <> · {money(sku.priceCents)}</>}
         </div>
       </td>
-      <td className="num col-shelf" data-testid="on-hand">
+      <td className={'num col-shelf' + (sku.onHand < 0 ? ' neg' : '')} data-testid="on-hand">
         {sku.onHand}
       </td>
       <td className="num hide-sm" data-testid="held">
@@ -371,9 +369,8 @@ function Row({ sku, write, onOpen, onSaved }: { sku: StockLevel; write: boolean;
         </div>
       </td>
       <td className="num hide-sm">{sku.sold}</td>
-      <td className="hide-sm muted small">{sku.lastReceivedAt ? fmtWhen(sku.lastReceivedAt) : sku.lastCountedAt ? `counted ${fmtWhen(sku.lastCountedAt)}` : '—'}</td>
       {write && (
-        <td>
+        <td className="col-adjust">
           <ShelfStepper sku={sku} label={label} onSaved={onSaved} />
         </td>
       )}
@@ -386,13 +383,15 @@ function Row({ sku, write, onOpen, onSaved }: { sku: StockLevel; write: boolean;
  * so it is audited, shows in the ledger, and a retried click moves nothing twice.
  */
 function ShelfStepper({ sku, label, onSaved }: { sku: StockLevel; label: string; onSaved: (msg: string) => void }) {
-  const [draft, setDraft] = useState(String(sku.onHand))
+  // A shelf below zero (paid oversells) stays in the On shelf column; the stepper rests at 0 until edited.
+  const shelf = Math.max(0, sku.onHand)
+  const [draft, setDraft] = useState(String(shelf))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const ids = useRef<{ value: string; id: string } | null>(null)
   const n = /^\d+$/.test(draft.trim()) ? parseInt(draft.trim(), 10) : NaN
-  const base = Number.isNaN(n) ? sku.onHand : n
-  const dirty = draft.trim() !== '' && n !== sku.onHand
+  const base = Number.isNaN(n) ? shelf : n
+  const dirty = draft.trim() !== '' && n !== shelf
   const valid = !Number.isNaN(n)
 
   const save = async () => {
@@ -425,7 +424,7 @@ function ShelfStepper({ sku, label, onSaved }: { sku: StockLevel; label: string;
         onChange={(e) => (setDraft(e.target.value), setError(null))}
         onKeyDown={(e) => {
           if (e.key === 'Enter') void save()
-          if (e.key === 'Escape') setDraft(String(sku.onHand))
+          if (e.key === 'Escape') setDraft(String(shelf))
         }}
         aria-label={`${label} on shelf`}
         aria-invalid={dirty && !valid}
@@ -439,7 +438,7 @@ function ShelfStepper({ sku, label, onSaved }: { sku: StockLevel; label: string;
           <button type="button" className="save" onClick={save} disabled={busy || !valid} aria-label={`Save ${label} at ${draft}`} title="Save">
             {busy ? <span className="spinner" aria-hidden /> : <Icon name="check" size={16} strokeWidth={2.6} />}
           </button>
-          <button type="button" className="discard" onClick={() => (setDraft(String(sku.onHand)), setError(null))} disabled={busy} aria-label={`Discard change to ${label}`} title="Discard">
+          <button type="button" className="discard" onClick={() => (setDraft(String(shelf)), setError(null))} disabled={busy} aria-label={`Discard change to ${label}`} title="Discard">
             ×
           </button>
         </>
