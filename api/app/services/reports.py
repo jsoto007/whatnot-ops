@@ -10,8 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from ..db import db
-from ..models import InventoryMovement, Order, Organization, Product, Sale, Show, Sku
-from . import dashboard
+from ..models import InventoryMovement, Order, Organization, ParsedEvent, Product, Sale, Show, Sku
+from . import dashboard, sale_chat
+from .showdate import SHOP_TZ
 
 HEAD = Font(bold=True, color="FFFFFF")
 FILL = PatternFill("solid", fgColor="002244")
@@ -62,7 +63,16 @@ def _sheet(
     return ws
 
 
+CHAT_CHARS = 2000  # per cell; the full chat is on the show's page
+
+
+def _chat_cell(lines: list[dict]) -> str:
+    text = "\n".join(f"#{c['seq']} {c['username'] or 'platform'}: {c['body']}" for c in lines)
+    return text if len(text) <= CHAT_CHARS else text[: CHAT_CHARS - 1] + "…"
+
+
 def _sale_rows(sales: list[Sale]) -> list[list]:
+    chat = sale_chat.around(sales)
     return [
         [
             s.show.show_date.isoformat(),
@@ -77,6 +87,8 @@ def _sale_rows(sales: list[Sale]) -> list[list]:
             s.external_order_id or "",
             s.paid_at.isoformat() if s.paid_at else "",
             s.status_reason or "",
+            f"{w.astimezone(SHOP_TZ):%Y-%m-%d %H:%M:%S}" if (w := sale_chat.won_at(s)) else "",
+            _chat_cell(chat[s.id]),
         ]
         for s in sales
     ]
@@ -95,6 +107,8 @@ SALE_HEADER = [
     "Whatnot order",
     "Paid at",
     "Note",
+    "Won at (Central)",
+    "Buyer chat",
 ]
 
 
@@ -105,7 +119,11 @@ def _sales(
         select(Sale)
         .join(Show, Show.id == Sale.show_id)
         .where(Sale.organization_id == org_id)
-        .options(selectinload(Sale.sku).selectinload(Sku.product), selectinload(Sale.show))
+        .options(
+            selectinload(Sale.sku).selectinload(Sku.product),
+            selectinload(Sale.show),
+            selectinload(Sale.event).selectinload(ParsedEvent.message),
+        )
         .order_by(Show.started_at, Sale.id)
     )
     if show_id:

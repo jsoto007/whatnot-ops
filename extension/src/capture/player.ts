@@ -111,7 +111,7 @@ export class WinWatcher {
     let row: CapturedRow | null = null
     if (this.shown && body !== this.shown.body) {
       // The reading changed: it held from `since` until now.
-      if (now - this.shown.since >= HOLD_MS) row = this.record(this.shown.body, now)
+      if (now - this.shown.since >= HOLD_MS) row = this.record(this.shown.body, this.shown.since)
       this.shown = null
     }
     if (body === null) {
@@ -120,11 +120,12 @@ export class WinWatcher {
       return row
     }
     if (!this.shown) this.shown = { body, since: now }
-    else if (!row && now - this.shown.since >= HOLD_MS) row = this.record(body, now)
+    else if (!row && now - this.shown.since >= HOLD_MS) row = this.record(body, this.shown.since)
     return row
   }
 
-  private record(body: string, now: number): CapturedRow | null {
+  /** `wonAt` is when "won!" first showed, not when the hold check passed: it is the sale's time. */
+  private record(body: string, wonAt: number): CapturedRow | null {
     if (this.recordedThisDisplay || !this.armed) return null
     this.recordedThisDisplay = true
     this.armed = false
@@ -136,7 +137,7 @@ export class WinWatcher {
       username: '',
       body,
       rawText: body,
-      capturedAt: new Date(now).toISOString(),
+      capturedAt: new Date(wonAt).toISOString(),
       seq: 0,
       source: 'player',
     }

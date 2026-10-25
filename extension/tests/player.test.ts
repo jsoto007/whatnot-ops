@@ -79,6 +79,23 @@ describe('WinWatcher', () => {
   const watcher = () => new WinWatcher(SHOW, clock)
   beforeEach(() => at(Date.parse('2026-10-24T22:00:00.000Z')))
 
+  it('stamps a win with the moment "won!" appeared, however late the check runs', () => {
+    const shownAt = new Date(t).toISOString()
+    let w = watcher()
+    w.check(show(bidding('ladyyy03', '$190')))
+    w.check(show(won('chonwhite828', '$195')))
+    at(t + HOLD_MS + 700) // a throttled tab checks late
+    expect(w.check(show(won('chonwhite828', '$195')))?.capturedAt).toBe(shownAt)
+
+    // Gone by the next check, but it had held: still the moment it appeared.
+    at(Date.parse(shownAt))
+    w = watcher()
+    w.check(show(bidding('ladyyy03', '$190')))
+    w.check(show(won('chonwhite828', '$195')))
+    at(t + HOLD_MS + 700)
+    expect(w.check(show(bidding('next', '$1')))?.capturedAt).toBe(shownAt)
+  })
+
   it('records one row for a win that held, however long it stays up', () => {
     const w = watcher()
     expect(w.check(show(bidding('ladyyy03', '$190')))).toBeNull()
@@ -91,7 +108,7 @@ describe('WinWatcher', () => {
       username: '',
       body: body('chonwhite828', T760, '195.00'),
       rawText: body('chonwhite828', T760, '195.00'),
-      capturedAt: new Date(t).toISOString(),
+      capturedAt: new Date(t - HOLD_MS).toISOString(), // when "won!" appeared, not when it had held
       seq: 0,
       source: 'player',
     })

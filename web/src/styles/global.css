@@ -14,6 +14,7 @@ h3 { font-size: 16px; font-weight: 600; margin: var(--space-6) 0 var(--space-3);
 code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--fill); padding: 1px 6px; border-radius: 6px; }
 .muted { color: var(--text-muted); }
 .small { font-size: 13px; }
+.nowrap { white-space: nowrap; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* One recipe for every frosted surface. */
@@ -282,7 +283,11 @@ tr.short td { background: rgba(255, 59, 48, 0.06); }
 .tabs button { border: 0; background: none; min-height: 38px; padding: 0 16px; font: 500 14px var(--font-family); color: var(--text); cursor: pointer; border-radius: var(--pill); white-space: nowrap; transition: background var(--motion), box-shadow var(--motion); }
 .tabs button.active { background: #fff; font-weight: 600; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
 .review { margin-bottom: var(--space-3); border-radius: var(--radius-xl); padding: 22px 24px; }
-.review .chat.small { background: var(--glass-inset); box-shadow: none; }
+.review .chat.small, .sale-chat .chat.small { background: var(--glass-inset); box-shadow: none; }
+.sale-chat .chat.small .chat-line { grid-template-columns: 90px 190px 1fr; font-size: 14px; }
+.sale-chat p { margin: 0 0 var(--space-2); }
+.sale-chat-row > td { padding-top: 0; }
+@media (max-width: 900px) { .sale-chat .chat.small .chat-line { grid-template-columns: 56px minmax(0, 1fr); } }
 .review .chat.small .chat-line { grid-template-columns: 50px 120px 1fr; font-size: 14px; }
 .field.check { display: flex; flex-direction: row; align-items: center; gap: 8px; }
 .proposal { background: var(--tint-blue); padding: 10px 14px; border-radius: var(--radius-m); }

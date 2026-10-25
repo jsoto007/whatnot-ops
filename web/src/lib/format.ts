@@ -1,5 +1,8 @@
 export const fmtDate = (iso: string) => new Date(iso + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 export const fmtLongDate = (iso: string) => new Date(iso + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
+/** The shop's zone (America/Chicago): show times read the same on every laptop. */
+export const SHOP_TZ = 'America/Chicago'
+export const fmtShopTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit', timeZone: SHOP_TZ })
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 /** "just now", "12 min ago", "3 h ago", then a date and time. */
 export function fmtWhen(iso: string, now = Date.now()) {
