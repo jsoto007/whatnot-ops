@@ -14,6 +14,8 @@ declare global {
       addShop(k?: number): void
       addCard(text: string): void
       count(): number
+      /** keep only this many newest rows on the page, like a long real chat (0 = all) */
+      keep: number
     }
     __player: {
       idle(title: string, price?: string): void
@@ -252,6 +254,35 @@ test('keeps recording until Stop: chat gone and back, another page, the script i
   await page.reload()
   await expect(st).toContainText('Found 15 saved messages')
   await expect(page.locator(panel('#resumeRow'))).toBeVisible()
+})
+
+test('a 20,000-message show: every line saved, the panel keeps up, a reload carries on', async ({ page }) => {
+  const cnt = page.locator(panel('#cnt'))
+  await page.goto('/chat.html')
+  await page.evaluate(() => (window.__chat.keep = 200))
+  await page.locator(panel('#start')).click()
+  await page.locator('.msg-row .msg-text').nth(2).click()
+  await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
+  // Far faster than a live chat: 10 lines every few ms.
+  for (let done = 0; done < 20_000; done += 1000) {
+    await page.evaluate(async (base) => {
+      for (let b = 0; b < 100; b++) {
+        for (let i = 0; i < 10; i++) {
+          const k = base + b * 10 + i
+          window.__chat.append('buyer' + (k % 3000), 'message ' + k + ' I will take ' + (k % 7))
+        }
+        await new Promise((r) => setTimeout(r, 4))
+      }
+    }, done)
+  }
+  await expect(cnt).toHaveText('20010')
+  await expect(page.locator(panel('#sync'))).toContainText('saved 20010', { timeout: 120_000 })
+  await page.locator(panel('#find')).fill('buyer77')
+  await expect(page.locator(panel('#fr .fi')).first()).toBeVisible()
+  await page.reload()
+  await expect(page.locator(panel('#st'))).toHaveText('Carried on recording (20010 saved). Watching chat.')
+  await page.evaluate(() => window.__chat.append('after', 'reload line'))
+  await expect(cnt).toHaveText('20011')
 })
 
 test('says so when the click was not on a list of messages', async ({ page }) => {

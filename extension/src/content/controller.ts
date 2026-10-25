@@ -21,6 +21,9 @@ const WORDS_KEY = 'cs_watchwords'
 const LAYOUT_KEY = 'cs_panel_layout'
 const FLUSH_MS = 1500
 const FLUSH_AT = 50
+/** Most rows in one message; the background refuses more than 1000. */
+const FLUSH_MAX = 500
+const RETRY_MS = 3000
 const WIN_POLL_MS = 500
 /** Stock moves once an upload is parsed (a few seconds), so a slower poll is enough. */
 const STOCK_POLL_MS = 8000
@@ -66,6 +69,8 @@ export class Controller {
   private observedPlayer: Element | null = null
   private pending: CapturedRow[] = []
   private flushTimer: ReturnType<typeof setTimeout> | null = null
+  /** The save in flight. One at a time: rows that arrive meanwhile go in the next one. */
+  private saving: Promise<void> | null = null
   private synced = 0
   private watchWords: string[] = []
   private findTerm = ''
@@ -421,13 +426,28 @@ export class Controller {
     return this.startedAt ? { id: this.startedAt, startedAt: this.startedAt, url: location.pathname } : null
   }
 
-  async flush(): Promise<void> {
+  /**
+   * Hand pending rows to the background, at most FLUSH_MAX per message and one
+   * message at a time, until none are left. A backlog (the background was busy or
+   * restarting) drains in chunks instead of growing into a batch it would refuse.
+   */
+  flush(): Promise<void> {
     if (this.flushTimer) clearTimeout(this.flushTimer)
     this.flushTimer = null
-    const show = this.showRef()
-    if (!show || !this.pending.length) return
-    const batch = this.pending
-    this.pending = []
+    this.saving ??= this.drain().finally(() => (this.saving = null))
+    return this.saving
+  }
+
+  private async drain(): Promise<void> {
+    while (this.pending.length && this.showRef()) {
+      if (!(await this.saveBatch())) return // failed: kept, retried on the next row, flush or timer
+    }
+  }
+
+  private async saveBatch(): Promise<boolean> {
+    const show = this.showRef()!
+    const batch = this.pending.slice(0, FLUSH_MAX)
+    this.pending = this.pending.slice(batch.length)
     try {
       const reply = await send<{ ok?: boolean; count?: number; upload?: UploadStatus; error?: string }>({
         cmd: 'rows',
@@ -437,10 +457,15 @@ export class Controller {
       if (reply?.ok) {
         this.synced = reply.count ?? this.synced + batch.length
         this.panel.setSync(`saved ${this.synced}` + this.uploadNote(reply.upload))
-      } else throw new Error(reply?.error ?? 'save failed')
+        return true
+      }
+      throw new Error(reply?.error ?? 'save failed')
     } catch (err) {
       this.pending = batch.concat(this.pending)
       this.panel.setSync(`${this.pending.length} not saved yet — ${String((err as Error).message ?? err)}`)
+      // A quiet chat brings no next row to retry with.
+      if (!this.flushTimer && !cutOff()) this.flushTimer = setTimeout(() => void this.flush(), RETRY_MS)
+      return false
     }
   }
 

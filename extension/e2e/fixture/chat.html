@@ -42,7 +42,14 @@
       return d;
     }
     const api = {
-      append(user, text) { n++; list().appendChild(make(user, text)); return n; },
+      append(user, text) {
+        n++;
+        const l = list();
+        l.appendChild(make(user, text));
+        // Like a real long chat: only the newest rows stay in the page.
+        if (api.keep) while (l.children.length > api.keep) l.firstElementChild.remove();
+        return n;
+      },
       appendMany(count, prefix = 'user') {
         for (let i = 0; i < count; i++) api.append(prefix + (n + 1), 'message ' + (n + 1));
         return n;

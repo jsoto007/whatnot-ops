@@ -137,17 +137,33 @@ async function flush(): Promise<UploadOutcome> {
       return e.kind === 'auth' ? { status: 'auth' } : { status: 'rejected', detail: e.message }
     } finally {
       flushing = null
+      counts = null // what is pending changed
     }
   })()
   return flushing
 }
 
-async function uploadStatus(): Promise<UploadStatus> {
+/**
+ * Counting walks the index: with 30 kept shows of 20k lines (600k rows) one count
+ * takes about 2 s (measured in Chromium). Only Settings gets the total uploaded; the
+ * panel's 5-second poll (every Whatnot tab) reuses counts up to STATUS_MS old, and a
+ * panel that is not connected gets none (it does not show them). Otherwise a long
+ * show's saves queue up behind the counting.
+ */
+const STATUS_MS = 3000
+let counts: { at: number; value: Promise<{ pending: number; parked: number }> } | null = null
+
+async function uploadStatus(full = false): Promise<UploadStatus> {
+  const isConfigured = configured(await loadSettings())
+  if (!full && !isConfigured) return { configured: false, pending: 0, parked: 0, lastError, lastSentAt }
+  if (full || !counts || Date.now() - counts.at > STATUS_MS) {
+    counts = { at: Date.now(), value: Promise.all([pendingCount(), parkedCount()]).then(([pending, parked]) => ({ pending, parked })) }
+    counts.value.catch(() => (counts = null))
+  }
   return {
-    configured: configured(await loadSettings()),
-    pending: await pendingCount(),
-    uploaded: await uploadedCount(),
-    parked: await parkedCount(),
+    configured: isConfigured,
+    ...(await counts.value),
+    ...(full ? { uploaded: await uploadedCount() } : {}),
     lastError,
     lastSentAt,
   }
@@ -204,6 +220,7 @@ async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promi
       await pruneShows()
       notifyPages(meta.id)
       scheduleFlush()
+      counts = null // the panel's "uploaded" must count the rows just stored
       return { ok: true, count: meta.count, upload: await uploadStatus() }
     }
     case 'recording': {
@@ -219,7 +236,7 @@ async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promi
       return { ok: true }
     }
     case 'getUploadStatus':
-      return uploadStatus()
+      return uploadStatus(fromExtensionPage(sender))
     case 'flushUploads':
       return flush()
     case 'getStock':
@@ -247,13 +264,15 @@ async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promi
   }
 }
 
+// Extension pages (Settings opens in a tab) have this extension's origin; a content
+// script's sender.url is the whatnot.com page it runs in.
+const fromExtensionPage = (sender: chrome.runtime.MessageSender): boolean =>
+  !!sender.url && sender.url.startsWith(chrome.runtime.getURL(''))
+
 chrome.runtime.onMessage.addListener((raw: Request, sender, sendResponse) => {
   // Only this extension's own content scripts and pages; never another extension.
   if (sender.id !== chrome.runtime.id || !raw || !CMDS.has(raw.cmd)) return false
-  // Extension pages (Settings opens in a tab) have this extension's origin; a content
-  // script's sender.url is the whatnot.com page it runs in.
-  const fromPage = !!sender.url && sender.url.startsWith(chrome.runtime.getURL(''))
-  if (PAGE_ONLY.has(raw.cmd) && !fromPage) return false
+  if (PAGE_ONLY.has(raw.cmd) && !fromExtensionPage(sender)) return false
   const msg = raw.cmd === 'rows' ? cleanRows(raw) : raw.cmd === 'recording' ? cleanRecording(raw) : raw
   if (!msg) {
     sendResponse({ error: 'bad ' + raw.cmd + ' message' })

@@ -40,7 +40,8 @@ export type Request =
 export interface UploadStatus {
   configured: boolean
   pending: number
-  uploaded: number
+  /** Only for the extension's own pages (Settings): counting it walks every stored row. */
+  uploaded?: number
   /** Rows set aside: rejected by the server, or captured for another shop. Never sent. */
   parked: number
   lastError?: string

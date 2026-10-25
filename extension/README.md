@@ -101,6 +101,13 @@ Settings shows how many lines were set aside and why.
   (`sender.id`), page-only commands are refused from content scripts, and the
   panel ignores synthetic (`!isTrusted`) clicks and inputs from page scripts.
 
+Long shows: the panel saves at most 500 lines per message, one message at a
+time, and retries on its own, so a backlog drains instead of growing into a
+batch the background refuses. Row counts walk the index (about 2 s for 600k
+rows, i.e. 30 kept shows of 20k lines), so the panel's status reuses counts for
+3 s and only Settings counts every uploaded row. `e2e/extension.spec.ts` records
+a 20,000-line show.
+
 The panel's second line shows
 `saved N · uploaded` / `N to upload — <reason>`.
 
