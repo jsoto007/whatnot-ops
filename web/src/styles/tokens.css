@@ -1,56 +1,75 @@
 /* The only place colours, radii, spacing, type and motion values live. */
 :root {
-  /* brand */
-  --navy: #0b1f3a;
-  --navy-2: #071428;
-  --navy-3: #16365f;
-  --navy-soft: #1f3f6d;
-  --green: #69be28;
-  --green-dark: #4f9a18;
-  --blue: #2f80ed;
-  --amber: #d97706;
-  --red: #dc2626;
-  --paid: #3f8f17;
-  --awaiting: #f2b33d;
+  /* accent + status (Liquid Glass) */
+  --accent: #0060df;
+  --accent-hover: #004bb0;
+  --accent-soft: rgba(0, 96, 223, 0.14);
+  --accent-ring: rgba(0, 96, 223, 0.18);
+  --green: #34c759;
+  --green-ink: #1e6b30;
+  --orange: #ff9f0a;
+  --red: #ff3b30;
+  --red-ink: #b3261e;
+  --purple: #af52de;
+  --paid: #34c759;
+  --awaiting: #ff9f0a;
 
-  /* surfaces + ink */
-  --bg: #f4f6fa;
+  /* page, glass and ink */
+  --bg: #edf0f7;
+  --bg-wash:
+    radial-gradient(55% 45% at 8% 0%, rgba(156, 200, 255, 0.2) 0%, rgba(156, 200, 255, 0) 70%),
+    radial-gradient(45% 45% at 95% 5%, rgba(255, 194, 223, 0.2) 0%, rgba(255, 194, 223, 0) 70%),
+    radial-gradient(55% 55% at 75% 95%, rgba(185, 240, 224, 0.2) 0%, rgba(185, 240, 224, 0) 70%),
+    radial-gradient(45% 40% at 15% 85%, rgba(220, 203, 255, 0.2) 0%, rgba(220, 203, 255, 0) 70%);
+  --glass: rgba(255, 255, 255, 0.45);
+  --glass-strong: rgba(255, 255, 255, 0.78);
+  --glass-inset: rgba(255, 255, 255, 0.6);
+  --glass-edge: rgba(255, 255, 255, 0.75);
+  --glass-blur: blur(30px) saturate(180%);
+  --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 14px 40px rgba(40, 50, 90, 0.1);
+  --glass-shadow-lift: inset 0 1px 0 #ffffff, 0 30px 80px rgba(20, 22, 40, 0.3);
+  --fill: rgba(118, 118, 128, 0.14);
+  --fill-strong: rgba(118, 118, 128, 0.24);
   --surface: #ffffff;
-  --surface-2: #f8fafc;
-  --text: #0f172a;
-  --text-muted: #5b6b82;
-  --text-faint: #8a97aa;
-  --border: #e3e8ef;
-  --border-strong: #c9d2de;
-  --shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --text: #0b0b12;
+  --text-muted: #3c3f55;
+  --text-faint: #5f6278;
+  --border: rgba(60, 60, 67, 0.12);
+  --border-strong: rgba(60, 60, 67, 0.22);
+  --scrim: rgba(20, 22, 40, 0.35);
 
   /* status tints */
-  --tint-green: #e8f6dc;
-  --tint-green-ink: #2f6a0c;
-  --tint-blue: #e3eefc;
-  --tint-blue-ink: #1b4f9c;
-  --tint-amber: #fdf1d6;
-  --tint-amber-ink: #8a4b06;
-  --tint-red: #fde4e4;
-  --tint-red-ink: #9b1c1c;
-  --tint-violet: #ece8fb;
-  --tint-violet-ink: #4c2ea0;
-  --tint-grey: #eceff4;
-  --tint-grey-ink: #475569;
+  --tint-green: rgba(52, 199, 89, 0.16);
+  --tint-green-ink: #1e6b30;
+  --tint-blue: rgba(0, 122, 255, 0.14);
+  --tint-blue-ink: #0050b3;
+  --tint-amber: rgba(255, 149, 0, 0.16);
+  --tint-amber-ink: #8a4b00;
+  --tint-red: rgba(255, 59, 48, 0.14);
+  --tint-red-ink: #b3261e;
+  --tint-violet: rgba(94, 92, 230, 0.16);
+  --tint-violet-ink: #3a38a8;
+  --tint-grey: rgba(118, 118, 128, 0.14);
+  --tint-grey-ink: #3c3f55;
 
-  --radius-s: 6px;
-  --radius-m: 10px;
-  --radius-l: 14px;
+  --radius-s: 10px;
+  --radius-m: 16px;
+  --radius-l: 26px;
+  --radius-xl: 34px;
+  --pill: 999px;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-6: 24px;
   --space-8: 32px;
-  --font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font: 14px/1.5 var(--font-family);
+  --font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, 'Segoe UI', sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter Tight', 'Inter', system-ui, sans-serif;
+  --font: 15px/1.5 var(--font-family);
   --motion: 160ms ease;
+  --ease-glass: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-slide: 380ms var(--ease-glass);
   --sidebar-w: 248px;
-  --sidebar-w-compact: 64px;
+  --sidebar-w-compact: 76px;
   --content-max: 1440px;
 }

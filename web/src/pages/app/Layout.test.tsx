@@ -50,20 +50,24 @@ test('shows every section the user may see, grouped, with icons', () => {
   expect(nav.querySelectorAll('svg').length).toBe(9)
 })
 
-test('collapse toggle compacts the sidebar and is remembered', () => {
+test('starts compact, with tooltips, and the toggle opens it and is remembered', () => {
   const { container } = mount()
+  expect(container.querySelector('.app')).toHaveClass('collapsed')
+  expect(screen.getByRole('link', { name: 'Orders' })).toHaveAttribute('title', 'Orders')
+  expect(screen.getByTestId('collapse-sidebar')).toHaveAttribute('aria-expanded', 'false')
+  fireEvent.click(screen.getByTestId('collapse-sidebar'))
+  expect(container.querySelector('.app')).not.toHaveClass('collapsed')
+  expect(localStorage.getItem('wn.sidebar')).toBe('expanded')
+  expect(screen.getByRole('link', { name: 'Orders' })).not.toHaveAttribute('title')
   fireEvent.click(screen.getByTestId('collapse-sidebar'))
   expect(container.querySelector('.app')).toHaveClass('collapsed')
   expect(localStorage.getItem('wn.sidebar')).toBe('collapsed')
-  expect(screen.getByRole('link', { name: 'Orders' })).toHaveAttribute('title', 'Orders')
-  fireEvent.click(screen.getByTestId('collapse-sidebar'))
-  expect(container.querySelector('.app')).not.toHaveClass('collapsed')
 })
 
-test('starts compact when that was saved', () => {
-  localStorage.setItem('wn.sidebar', 'collapsed')
+test('starts open when that was saved', () => {
+  localStorage.setItem('wn.sidebar', 'expanded')
   const { container } = mount()
-  expect(container.querySelector('.app')).toHaveClass('collapsed')
+  expect(container.querySelector('.app')).not.toHaveClass('collapsed')
 })
 
 test('mobile drawer opens from the top bar and closes after navigating or on Escape', () => {

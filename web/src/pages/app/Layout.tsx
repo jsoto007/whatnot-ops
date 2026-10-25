@@ -34,11 +34,12 @@ const GROUPS: { title: string; items: { to: string; label: string; permission: s
 
 const STORAGE_KEY = 'wn.sidebar'
 
+/** Icons only until someone opens it; their choice is remembered. */
 function readCollapsed(): boolean {
   try {
-    return localStorage.getItem(STORAGE_KEY) === 'collapsed'
+    return localStorage.getItem(STORAGE_KEY) !== 'expanded'
   } catch {
-    return false
+    return true
   }
 }
 
@@ -90,12 +91,6 @@ export function AppLayout() {
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
 
-  const initials = (me?.organization.name ?? 'W')
-    .split(/\s+/)
-    .map((w) => w[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase()
   const userInitials = (me?.user.name ?? '?')
     .split(/\s+/)
     .map((w) => w[0])
@@ -110,7 +105,7 @@ export function AppLayout() {
           <Icon name="menu" size={22} />
         </button>
         <span className="mark" aria-hidden>
-          {initials}
+          <img src="/logo.png" alt="" />
         </span>
         <span className="topbar-title">{me?.organization.name}</span>
         <span className="avatar small" title={me?.user.name}>
@@ -121,9 +116,12 @@ export function AppLayout() {
       <aside className={'sidebar' + (open ? ' open' : '')} aria-label="Sidebar">
         <div className="brand">
           <span className="mark" aria-hidden>
-            {initials}
+            <img src="/logo.png" alt="" />
           </span>
-          <span className="label">{me?.organization.name}</span>
+          <span className="label brand-name">
+            <b>{me?.organization.name}</b>
+            <span>Sales Ops</span>
+          </span>
           <button className="icon-btn drawer-close" aria-label="Close menu" onClick={() => setOpen(false)}>
             <Icon name="close" size={20} />
           </button>
@@ -172,8 +170,8 @@ export function AppLayout() {
             <Icon name="logout" />
           </button>
         </div>
-        <button className="collapse-btn" onClick={toggleCollapsed} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} data-testid="collapse-sidebar">
-          <Icon name={collapsed ? 'expand' : 'collapse'} />
+        <button className="collapse-btn" onClick={toggleCollapsed} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!collapsed} data-testid="collapse-sidebar">
+          <Icon name="chevron" size={16} />
           <span className="label">Collapse</span>
         </button>
       </aside>
