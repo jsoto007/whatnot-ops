@@ -6,9 +6,11 @@ import type { Request, SessionReply, ShowRef, UploadStatus } from '../shared/mes
 import { showDate } from '../shared/showDate'
 import { type StockSeen, stockAlerts } from '../stock/alerts'
 import type { StockReply } from '../stock/fetch'
-import { Panel } from './panel'
+import { Panel, readLayout } from './panel'
 
 const WORDS_KEY = 'cs_watchwords'
+/** Where the host dragged the panel and how big they made it; every Whatnot tab shares it. */
+const LAYOUT_KEY = 'cs_panel_layout'
 const FLUSH_MS = 1500
 const FLUSH_AT = 50
 const WIN_POLL_MS = 500
@@ -103,6 +105,15 @@ export class Controller {
 
   async init(): Promise<void> {
     this.panel.mount()
+    this.panel.onLayout = (l) => {
+      ;(l ? chrome.storage.local.set({ [LAYOUT_KEY]: l }) : chrome.storage.local.remove(LAYOUT_KEY)).catch(() => {})
+    }
+    try {
+      const saved = await chrome.storage.local.get(LAYOUT_KEY)
+      this.panel.setLayout(readLayout(saved[LAYOUT_KEY]))
+    } catch {
+      /* extension reloaded: the panel stays in the corner */
+    }
     try {
       const words = await chrome.storage.local.get(WORDS_KEY)
       if (Array.isArray(words[WORDS_KEY])) {
@@ -215,7 +226,7 @@ export class Controller {
   private async checkStock(): Promise<void> {
     let reply: StockReply | null
     try {
-      reply = await send<StockReply | null>({ cmd: 'getStock' })
+      reply = await send<StockReply | null>({ cmd: 'getStock', showId: this.startedAt ?? undefined })
     } catch {
       return // background asleep or reloaded; the next poll tries again
     }

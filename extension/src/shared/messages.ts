@@ -15,8 +15,8 @@ export type Request =
   | { cmd: 'openOptions' }
   | { cmd: 'getUploadStatus' }
   | { cmd: 'flushUploads' }
-  /** what the shop has 3 or fewer of (StockReply | null) */
-  | { cmd: 'getStock' }
+  /** what this show has sold that is down to 3 or fewer (StockReply | null) */
+  | { cmd: 'getStock'; showId?: string }
   /** extension pages only: the connection changed (paired, key saved, disconnected) */
   | { cmd: 'settingsChanged' }
   /** extension pages only: a different shop was connected; set unsent rows aside */

@@ -26,7 +26,8 @@ test('player wins count E2E Mug down and the panel calls out 3, 2, 1 left and so
   await page.locator(panel('#start')).click()
   await page.locator('.msg-row .msg-text').nth(1).click()
   await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
-  // The seed leaves 4: not low yet, so neither the list nor an alert shows.
+  // The seed leaves 4: not low yet, so neither the list nor an alert shows. E2E Spare is
+  // down to 1, but this show has not sold it, so the panel does not mention it either.
   await page.waitForTimeout(1500)
   await expect(page.locator(panel('#low'))).toBeHidden()
   await expect(page.locator(panel('#alert'))).toBeHidden()
@@ -47,7 +48,9 @@ test('player wins count E2E Mug down and the panel calls out 3, 2, 1 left and so
       setTimeout(() => window.__player.won(b, '$10', 'E2E Mug'), 700)
     }, buyer)
     await expect(page.locator(panel('#alert'))).toHaveText(alert, STEP)
-    await expect(page.locator(panel('#low'))).toContainText('E2E Mug (E2E-MUG)')
+    await expect(page.locator(panel('#low'))).toContainText('E2E Mug')
+    await expect(page.locator(panel('#low'))).toContainText('E2E-MUG')
+    await expect(page.locator(panel('#low'))).not.toContainText('E2E Spare')
     if (i === 2) await expect(page.locator(panel('#alert'))).toHaveClass(/urgent/)
     await page.locator(panel('#alert')).click() // dismissed; the list stays
     await expect(page.locator(panel('#alert'))).toBeHidden()

@@ -157,6 +157,16 @@ def register_cli(app: Flask) -> None:
             mug = catalog.create_product(org.id, "E2E Mug", skus=[{"code": "E2E-MUG"}]).skus[0]
         if mug.available < 4:
             inventory.move(mug.id, MovementKind.restock, 4 - mug.available, source_type="e2e")
+        # Also low, but never sold in a show: the panel must not list it (it only hears
+        # about what the show it is recording has sold).
+        spare = db.session.scalar(
+            select(Sku).where(Sku.organization_id == org.id, Sku.code == "E2E-SPARE")
+        )
+        if spare is None:
+            spare = catalog.create_product(org.id, "E2E Spare", skus=[{"code": "E2E-SPARE"}])
+            spare = spare.skus[0]
+        if spare.available < 1:
+            inventory.move(spare.id, MovementKind.restock, 1 - spare.available, source_type="e2e")
         db.session.commit()
         code = os.environ.get("E2E_PAIRING_CODE")
         if code:

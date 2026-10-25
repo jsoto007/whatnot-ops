@@ -241,12 +241,18 @@ def levels(org_id: int) -> list[dict]:
 RUNNING_LOW = 3  # the scraper panel calls out 3, 2 and 1 left, then sold out
 
 
-def running_low(org_id: int, *, at: int = RUNNING_LOW, limit: int = 100) -> list[dict]:
+def running_low(
+    org_id: int, *, at: int = RUNNING_LOW, limit: int = 100, show_key: str | None = None
+) -> list[dict]:
     """Active SKUs with `at` or fewer available, for the scraper's live alerts.
+
+    With `show_key`, only the SKUs that show has sold (any sale status): the host
+    is warned about what is on the block tonight, not the whole catalog. A show
+    the server has not seen yet has sold nothing.
 
     Most-left first, so a pile of long-oversold SKUs cannot push the ones that
     just reached 3, 2 or 1 off the end of the list."""
-    rows = db.session.execute(
+    q = (
         select(Sku, Product.name)
         .join(Product, Product.id == Sku.product_id)
         .where(
@@ -254,8 +260,19 @@ def running_low(org_id: int, *, at: int = RUNNING_LOW, limit: int = 100) -> list
             Sku.active.is_(True),
             Sku.on_hand - Sku.reserved <= at,
         )
-        .order_by((Sku.on_hand - Sku.reserved).desc(), Sku.code)
-        .limit(limit)
+    )
+    if show_key is not None:
+        show_id = db.session.scalar(
+            select(Show.id).where(Show.organization_id == org_id, Show.show_key == show_key)
+        )
+        if show_id is None:
+            return []
+        sold_here = select(Sale.sku_id).where(
+            Sale.organization_id == org_id, Sale.show_id == show_id, Sale.sku_id.is_not(None)
+        )
+        q = q.where(Sku.id.in_(sold_here))
+    rows = db.session.execute(
+        q.order_by((Sku.on_hand - Sku.reserved).desc(), Sku.code).limit(limit)
     ).all()
     return [
         {

@@ -70,25 +70,35 @@ describe('fetchStock', () => {
       calls.push([url, init])
       return new Response(JSON.stringify({ alertAt: 3, items: [item(2)] }), { status: 200 })
     }) as typeof fetch
-    expect(await fetchStock(settings, fetchFn)).toEqual({ alertAt: 3, items: [item(2)] })
+    expect(await fetchStock(settings, undefined, fetchFn)).toEqual({ alertAt: 3, items: [item(2)] })
     const [url, init] = calls[0]!
     expect(url).toBe('https://shop.example/api/ingest/stock')
     expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer k')
   })
 
+  it('asks only about this show when it has one', async () => {
+    const urls: string[] = []
+    const fetchFn = (async (url: string) => {
+      urls.push(url)
+      return new Response(JSON.stringify({ alertAt: 3, items: [] }), { status: 200 })
+    }) as typeof fetch
+    await fetchStock(settings, '2026-10-24T23:00:00.000Z', fetchFn)
+    expect(urls).toEqual(['https://shop.example/api/ingest/stock?show=2026-10-24T23%3A00%3A00.000Z'])
+  })
+
   it('is null when not connected or the server says no', async () => {
     const no = (async () => new Response('', { status: 401 })) as typeof fetch
-    expect(await fetchStock({ ...settings, apiKey: '' }, no)).toBeNull()
-    expect(await fetchStock(settings, no)).toBeNull()
+    expect(await fetchStock({ ...settings, apiKey: '' }, undefined, no)).toBeNull()
+    expect(await fetchStock(settings, undefined, no)).toBeNull()
     const offline = (async () => {
       throw new TypeError('Failed to fetch')
     }) as typeof fetch
-    expect(await fetchStock(settings, offline)).toBeNull()
+    expect(await fetchStock(settings, undefined, offline)).toBeNull()
   })
 
   it('drops anything that is not a stock row', async () => {
     const odd = (async () =>
       new Response(JSON.stringify({ alertAt: 3, items: [item(1), { skuId: 'x' }, null] }), { status: 200 })) as typeof fetch
-    expect(await fetchStock(settings, odd)).toEqual({ alertAt: 3, items: [item(1)] })
+    expect(await fetchStock(settings, undefined, odd)).toEqual({ alertAt: 3, items: [item(1)] })
   })
 })

@@ -152,7 +152,7 @@ async function handle(msg: Request): Promise<unknown> {
       return flush()
     case 'getStock':
       // The key never reaches the content script; it only gets the stock rows.
-      return fetchStock(await loadSettings())
+      return fetchStock(await loadSettings(), typeof msg.showId === 'string' && msg.showId.length <= 64 ? msg.showId : undefined)
     case 'openOptions':
       await chrome.runtime.openOptionsPage()
       return { ok: true }
