@@ -83,7 +83,9 @@ commands.
 - **Overselling is allowed** (Javier's call, 2026-10-20): a reserve never
   fails for lack of stock. `available` goes negative and `Sku.short` is how
   many to buy; Inventory, the dashboard and the Excel sheet show it. Counts
-  (adjust / import) may land below what is held, but never below zero.
+  (adjust) may land below what is held, but never below zero. Only the
+  spreadsheet import may carry the sheet's own negative count
+  (`allow_negative`, Javier's call 2026-10-24); it shows as `short`.
 - **Receiving and counts** live in `services/stock.py` (`receive()`,
   `count()`, `levels()`, `activity()`); both take a client request id so a
   retried form moves nothing twice. Keep the Inventory page's numbers there.

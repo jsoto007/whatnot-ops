@@ -31,7 +31,8 @@ export function Import({ onDone }: { onDone: () => Promise<unknown> }) {
       <h3>Import the inventory sheet</h3>
       <p className="muted small">
         CSV with an <b>Item</b> column and a <b>Current Stock</b> (or Start of Show Inventory) column. Existing items are set to the
-        sheet's count; new items are created. Nothing changes until you apply.
+        sheet's count (a negative count is kept and shows as short); new items are created. Nothing changes until you
+        apply.
       </p>
       <div className="inline-form">
         <label className="btn">

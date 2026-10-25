@@ -204,6 +204,27 @@ def test_import_plan_and_apply_are_idempotent(app, org, sku):
         assert [r.action for r in plan2.rows][:2] == ["unchanged", "unchanged"]
 
 
+def test_import_carries_the_sheets_negative_count_as_short(app, org, sku):
+    sheet = "Item,Current Stock\nRed bundle,-2\nCloud Lights,-21\n"
+    with app.app_context():
+        rows = catalog.parse_csv(sheet)
+        assert [(r.quantity, r.action) for r in rows] == [(-2, ""), (-21, "")]
+        plan = catalog.plan_import(org, rows)
+        assert [r.action for r in plan.rows] == ["set", "create"]
+        catalog.apply_import(org, plan, actor=Actor(), import_id="neg1")
+        db.session.commit()
+        for name, owed in (("red bundle", 2), ("cloud lights", 21)):
+            s = catalog.resolve_alias(org, name)
+            assert (s.on_hand, s.short) == (-owed, owed)
+            assert inventory.recompute(s) == (s.on_hand, s.reserved)
+        # replaying the same sheet moves nothing
+        again = catalog.plan_import(org, catalog.parse_csv(sheet))
+        assert [r.action for r in again.rows] == ["unchanged", "unchanged"]
+        # a hand count still may not go below zero
+        with pytest.raises(InventoryError, match="below zero"):
+            inventory.set_on_hand(sku, -5, source_type="count", source_id="c1", actor=Actor())
+
+
 # ---------- routes ----------
 
 

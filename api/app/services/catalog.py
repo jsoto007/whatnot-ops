@@ -228,7 +228,8 @@ def parse_csv(text: str) -> list[ImportRow]:
         else:
             try:
                 row.quantity = int(float(qty_s.replace(",", ""))) if qty_s else 0
-                if not 0 <= row.quantity <= 1_000_000:
+                # negative = the sheet's oversold count; it lands as Sku.short
+                if not -1_000_000 <= row.quantity <= 1_000_000:
                     raise ValueError
             except (ValueError, OverflowError):
                 row.action, row.error = "skip", f"bad quantity {qty_s!r}"
@@ -267,7 +268,7 @@ def apply_import(org_id: int, plan: ImportPlan, *, actor: Actor, import_id: str)
             )
             sku = product.skus[0]
             row.sku_id, row.before = sku.id, 0
-            if row.quantity:
+            if row.quantity > 0:
                 inventory.move(
                     sku.id,
                     inventory.MovementKind.restock,
@@ -277,7 +278,7 @@ def apply_import(org_id: int, plan: ImportPlan, *, actor: Actor, import_id: str)
                     reason="spreadsheet import",
                     actor=actor,
                 )
-        elif row.action == "set":
+        if row.action == "set" or (row.action == "create" and row.quantity < 0):
             inventory.set_on_hand(
                 row.sku_id,
                 row.quantity,
@@ -285,5 +286,6 @@ def apply_import(org_id: int, plan: ImportPlan, *, actor: Actor, import_id: str)
                 source_id=f"{import_id}:{i}",
                 actor=actor,
                 reason="spreadsheet import",
+                allow_negative=True,
             )
     return plan
