@@ -92,12 +92,17 @@ def post_batch():
 @bp.get("/ingest/stock")
 def running_low():
     """What is down to 3 or fewer, so the scraper panel can warn the host mid-show.
-    Read-only: stock moves only through the pipeline after a batch is parsed."""
+    `?show=<key>` narrows it to what that show has sold; without it (older extension
+    builds) it is the whole shop. Read-only: stock moves only through the pipeline
+    after a batch is parsed."""
     db.session.commit()  # persists last_seen_at
+    show_key = request.args.get("show")
+    if show_key is not None and not 0 < len(show_key) <= 64:
+        return jsonify({"error": "bad show key"}), 400
     return jsonify(
         {
             "alertAt": stock.RUNNING_LOW,
-            "items": stock.running_low(g.device.organization_id),
+            "items": stock.running_low(g.device.organization_id, show_key=show_key),
         }
     )
 

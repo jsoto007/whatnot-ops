@@ -192,3 +192,64 @@ test('says so when the click was not on a list of messages', async ({ page }) =>
   await expect(page.locator(panel('#st'))).toContainText("Couldn't recognise that as a chat message")
   await expect(page.locator(panel('#start'))).toBeEnabled()
 })
+
+test('the panel moves by its header, resizes from its corner, stays on screen and remembers', async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 800 })
+  await page.goto('/chat.html')
+  const host = page.locator('#cs-host')
+  const box = page.locator(panel('#p'))
+  const hd = page.locator(panel('#hd'))
+  await expect(page.locator(panel('#st'))).toHaveText('Ready. Open the show, then press Start.')
+  const start = (await box.boundingBox())!
+  expect(start.x + start.width).toBeCloseTo(1200 - 16, 0) // bottom-right corner by default
+  expect(start.y + start.height).toBeCloseTo(800 - 16, 0)
+  expect(start.height).toBeLessThanOrEqual(800 - 32) // never taller than the window
+
+  // Drag by the title to the top-left.
+  const h = (await hd.boundingBox())!
+  await page.mouse.move(h.x + 60, h.y + h.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(200, 120, { steps: 8 })
+  await page.mouse.up()
+  const moved = (await box.boundingBox())!
+  expect(moved.x).toBeLessThan(200)
+  expect(moved.y).toBeLessThan(120)
+
+  // Resize from the bottom-right grip.
+  const g = (await page.locator(panel('#grip')).boundingBox())!
+  await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(g.x + 140, g.y - 120, { steps: 8 })
+  await page.mouse.up()
+  const sized = (await box.boundingBox())!
+  expect(sized.width).toBeGreaterThan(moved.width + 100)
+  expect(sized.height).toBeLessThan(moved.height - 80)
+  // The body scrolls inside the smaller panel; the controls are still there.
+  await page.locator(panel('#find')).scrollIntoViewIfNeeded()
+  await expect(page.locator(panel('#find'))).toBeVisible()
+
+  // Dragged far off screen, it stays inside the window.
+  const h2 = (await hd.boundingBox())!
+  await page.mouse.move(h2.x + 60, h2.y + h2.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(-400, -300, { steps: 6 })
+  await page.mouse.up()
+  const clamped = (await box.boundingBox())!
+  expect(clamped.x).toBeGreaterThanOrEqual(8)
+  expect(clamped.y).toBeGreaterThanOrEqual(8)
+
+  // A reload puts it back where it was, at the same size.
+  await page.reload()
+  await expect(page.locator(panel('#st'))).toBeVisible()
+  await expect.poll(async () => (await box.boundingBox())!.x).toBeCloseTo(clamped.x, 0)
+  expect((await box.boundingBox())!.width).toBeCloseTo(sized.width, 0)
+
+  // Double-clicking the title sends it back to the corner at its normal size, for good.
+  await page.locator(panel('.ttl')).dblclick()
+  await expect.poll(async () => host.evaluate((el) => (el as HTMLElement).style.right)).toBe('16px')
+  await page.reload()
+  await expect(page.locator(panel('#st'))).toBeVisible()
+  const back = (await box.boundingBox())!
+  expect(back.x + back.width).toBeCloseTo(1200 - 16, 0)
+  expect(back.width).toBeCloseTo(start.width, 0)
+})

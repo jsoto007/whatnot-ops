@@ -86,3 +86,25 @@ def test_stock_needs_a_device_key(client):
     assert client.get("/api/ingest/stock").status_code == 401
     bad = {"Authorization": "Bearer nope"}
     assert client.get("/api/ingest/stock", headers=bad).status_code == 401
+
+
+def test_a_show_only_hears_about_what_it_has_sold(client, app, monkeypatch, world):
+    monkeypatch.setenv("JOBS_INLINE", "1")
+    auth = key_for(app, world["org"])
+    with app.app_context():
+        s = catalog.create_product(world["org"], "Spare mug", skus=[{"code": "MUG"}]).skus[0]
+        inventory.move(s.id, MovementKind.restock, 2, source_type="test", source_id="mug")
+        db.session.commit()
+
+    def in_show(key):
+        r = client.get("/api/ingest/stock", query_string={"show": key}, headers=auth)
+        assert r.status_code == 200
+        return {i["code"]: i["available"] for i in r.get_json()["items"]}
+
+    assert in_show(SHOW) == {}  # the server has not seen this show yet
+    wins(client, auth, ["lani808 won Red bundle"])
+    assert in_show(SHOW) == {"RED": 2}  # MUG is low too, but this show has not sold it
+    assert in_show("2026-01-01T00:00:00.000Z") == {}  # another show sold nothing
+    assert left(client, auth) == {"RED": 2, "MUG": 2}  # no show: the whole shop, as before
+    too_long = client.get("/api/ingest/stock", query_string={"show": "x" * 65}, headers=auth)
+    assert too_long.status_code == 400

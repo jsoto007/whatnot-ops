@@ -11,11 +11,16 @@ const isItem = (i: unknown): i is StockItem => {
   return !!o && typeof o.skuId === 'number' && typeof o.code === 'string' && typeof o.name === 'string' && typeof o.available === 'number'
 }
 
-/** What the shop has 3 or fewer of. Null when not connected, offline or refused: the panel just shows nothing. */
-export async function fetchStock(settings: Settings, fetchFn: typeof fetch = fetch): Promise<StockReply | null> {
+/**
+ * What is down to 3 or fewer. With `showId` (the recording's key) only what that show has
+ * sold, so the host hears about tonight's items, not the whole catalog. Null when not
+ * connected, offline or refused: the panel just shows nothing.
+ */
+export async function fetchStock(settings: Settings, showId?: string, fetchFn: typeof fetch = fetch): Promise<StockReply | null> {
   if (!settings.serverUrl || !settings.apiKey) return null
+  const query = showId ? '?show=' + encodeURIComponent(showId) : ''
   try {
-    const res = await fetchFn(settings.serverUrl + '/api/ingest/stock', {
+    const res = await fetchFn(settings.serverUrl + '/api/ingest/stock' + query, {
       redirect: 'error',
       headers: { Authorization: 'Bearer ' + settings.apiKey },
     })

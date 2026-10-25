@@ -4,20 +4,62 @@ import { leftText, type StockAlert, type StockItem } from '../stock/alerts'
 export const HOST_ID = 'cs-host'
 /** How long a low-stock alert stays up unless clicked away. */
 const ALERT_MS = 20_000
-const LOW_ROWS = 5
+/** Width when the host never resized it, and the limits a resize stays inside. */
+const WIDTH = 336
+const MIN_W = 280
+const MIN_H = 140
+/** Room kept between the panel and the window edge. */
+const EDGE = 8
+
+/** Where the host put the panel: top-left corner, and its size once resized. Null = bottom-right, default size. */
+export interface PanelLayout {
+  x: number
+  y: number
+  w?: number
+  h?: number
+}
+
+const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+/** A layout read back from storage, or null when it is missing or not one. */
+export function readLayout(v: unknown): PanelLayout | null {
+  const o = v as Partial<PanelLayout> | null
+  if (!o || !num(o.x) || !num(o.y)) return null
+  return { x: o.x, y: o.y, ...(num(o.w) ? { w: o.w } : {}), ...(num(o.h) ? { h: o.h } : {}) }
+}
+
+/** Keep the panel inside a `vw` × `vh` window: the whole width, and at least the header. Pure, for Vitest. */
+export function clampLayout(l: PanelLayout, vw: number, vh: number): PanelLayout {
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, Math.max(lo, hi)))
+  const w = clamp(l.w ?? WIDTH, MIN_W, vw - 2 * EDGE)
+  const x = clamp(l.x, EDGE, vw - w - EDGE)
+  const y = clamp(l.y, EDGE, vh - MIN_H / 2 - EDGE)
+  const out: PanelLayout = { x, y }
+  if (l.w !== undefined) out.w = w
+  if (l.h !== undefined) out.h = clamp(l.h, MIN_H, vh - y - EDGE)
+  return out
+}
 
 const HTML = `
   <style>
     :host { all: initial; }
     /* .row and friends set display, which would otherwise beat the hidden attribute. */
     [hidden] { display: none !important; }
-    /* Liquid Glass, dark tint: white text stays readable over any stream behind it. */
-    .p { width: 336px; box-sizing: border-box; padding: 12px; display: grid; gap: 10px;
+    /* Liquid Glass, dark tint: white text stays readable over any stream behind it.
+       Never taller than the window: the header stays put and the rest scrolls (.sc). */
+    .p { position: relative; width: 336px; max-width: calc(100vw - 16px); max-height: calc(100vh - 32px); box-sizing: border-box; padding: 12px;
+         display: flex; flex-direction: column; gap: 10px;
          font: 14px/1.4 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif; letter-spacing: -0.005em; color: #fff;
          background: rgba(30, 26, 52, 0.62); -webkit-backdrop-filter: blur(36px) saturate(200%); backdrop-filter: blur(36px) saturate(200%);
          border: 1px solid rgba(255, 255, 255, 0.28); border-radius: 32px;
          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 24px 70px rgba(10, 0, 40, 0.45); }
-    .hd { display: flex; align-items: center; gap: 10px; padding: 4px 4px 0 8px; cursor: default; }
+    .hd { display: flex; align-items: center; gap: 10px; padding: 4px 4px 0 8px; cursor: grab; flex: none; user-select: none; -webkit-user-select: none; touch-action: none; }
+    .hd.dragging { cursor: grabbing; }
+    .sc { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 10px; align-content: start;
+          margin: 0 -6px; padding: 0 6px 6px; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.35) transparent; }
+    .grip { position: absolute; right: 6px; bottom: 6px; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none; border-radius: 0 0 14px 0; opacity: .7;
+            background: linear-gradient(135deg, transparent 0 55%, rgba(255, 255, 255, 0.75) 55% 62%, transparent 62% 74%, rgba(255, 255, 255, 0.75) 74% 81%, transparent 81%); }
+    .grip:hover { opacity: 1; }
     .dot { width: 10px; height: 10px; border-radius: 50%; background: rgba(255, 255, 255, 0.55); flex: none; transition: background 200ms ease; }
     .dot.on { background: #ff453a; box-shadow: 0 0 0 5px rgba(255, 69, 58, 0.3); animation: pulse 1.4s infinite; }
     .dot.pick { background: #64d2ff; box-shadow: 0 0 0 5px rgba(100, 210, 255, 0.25); }
@@ -70,17 +112,21 @@ const HTML = `
     @media (prefers-reduced-motion: reduce) { .al { animation: none; } }
     .lw { display: grid; gap: 4px; padding: 12px 16px; border-radius: 22px; background: rgba(10, 6, 30, 0.38); border: 1px solid rgba(255, 159, 10, 0.45); }
     .lw .lt { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: rgba(255, 255, 255, 0.82); }
-    .lw .li { display: flex; gap: 8px; font-size: 13px; }
-    .lw .li span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .lw .n { font-weight: 700; color: #ffb340; font-variant-numeric: tabular-nums; }
+    .lw .ls { display: grid; max-height: min(264px, 40vh); overflow-y: auto; margin: 0 -6px; padding: 0 6px; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.35) transparent; }
+    .lw .li { display: flex; align-items: baseline; gap: 10px; font-size: 13px; padding: 6px 0; border-top: 1px solid rgba(255, 255, 255, 0.1); }
+    .lw .li:first-child { border-top: 0; }
+    .lw .nm { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.3; }
+    .lw .cd { display: block; font-size: 11.5px; color: rgba(255, 255, 255, 0.66); letter-spacing: 0.02em; }
+    .lw .n { flex: none; font-weight: 700; color: #ffb340; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .lw .n.urgent { color: #ff8a80; }
   </style>
-  <div class="p">
-    <div class="hd">
+  <div class="p" id="p">
+    <div class="hd" id="hd" title="Drag to move · double-click to put it back in the corner">
       <span class="dot" id="dot"></span><span class="ttl">Chat Scraper</span>
       <span class="cnt" id="cnt" title="Messages captured">0</span>
       <button class="x" id="min" title="Minimise" aria-label="Minimise">–</button>
     </div>
+    <div class="sc">
     <div class="al" id="alert" role="alert" title="Click to dismiss" hidden></div>
     <div class="lw" id="low" hidden></div>
     <div class="bd" id="bd">
@@ -119,6 +165,8 @@ const HTML = `
         <div class="fl" id="fl"><div class="empty">Nothing flagged yet.</div></div>
       </div>
     </div>
+    </div>
+    <div class="grip" id="grip" title="Drag to resize" aria-hidden="true"></div>
   </div>`
 
 export type StatusKind = 'good' | 'bad' | 'info' | ''
@@ -127,23 +175,119 @@ export class Panel {
   readonly host: HTMLDivElement
   private readonly root: ShadowRoot
   private alertTimer: ReturnType<typeof setTimeout> | null = null
+  private layout: PanelLayout | null = null
+  /** Told when the host finishes a move or resize (null after a reset), so it can be remembered. */
+  onLayout: ((l: PanelLayout | null) => void) | null = null
 
   constructor(doc: Document = document) {
     this.host = doc.createElement('div')
     this.host.id = HOST_ID
-    this.host.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;'
     this.root = this.host.attachShadow({ mode: 'open' })
     this.root.innerHTML = HTML
     this.el('min').onclick = () => {
       const bd = this.el('bd')
       bd.classList.toggle('min')
       this.el('min').textContent = bd.classList.contains('min') ? '+' : '–'
+      this.apply()
     }
     this.el('alert').onclick = () => this.clearStockAlert()
+    this.wireMove()
+    this.wireResize()
+    this.apply()
   }
 
   mount(doc: Document = document): void {
     doc.documentElement.appendChild(this.host)
+    doc.defaultView?.addEventListener('resize', () => this.apply())
+  }
+
+  getLayout(): PanelLayout | null {
+    return this.layout
+  }
+
+  /** Put the panel where the host left it (null = bottom-right corner, default size). */
+  setLayout(l: PanelLayout | null): void {
+    this.layout = l
+    this.apply()
+  }
+
+  private get win(): Window | null {
+    return this.host.ownerDocument.defaultView
+  }
+
+  /** Place the host and size the panel from `layout`, kept inside the window. */
+  private apply(): void {
+    const p = this.el('p')
+    const w = this.win
+    const minimised = this.el('bd').classList.contains('min')
+    const l = this.layout && w ? clampLayout(this.layout, w.innerWidth, w.innerHeight) : null
+    this.host.style.cssText = l
+      ? `position:fixed;left:${l.x}px;top:${l.y}px;z-index:2147483647;`
+      : 'position:fixed;right:16px;bottom:16px;z-index:2147483647;'
+    p.style.width = l?.w ? `${l.w}px` : ''
+    p.style.height = l?.h && !minimised ? `${l.h}px` : ''
+    p.style.maxHeight = l && w ? `${w.innerHeight - l.y - EDGE}px` : ''
+  }
+
+  /** The current box, as a layout anchored at its top-left corner. */
+  private here(): PanelLayout {
+    const r = this.el('p').getBoundingClientRect()
+    return { ...this.layout, x: r.left, y: r.top }
+  }
+
+  /** Drag the header to move; double-click it to send the panel back to the corner. */
+  private wireMove(): void {
+    const hd = this.el('hd')
+    hd.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || (e.target as Element).closest('button')) return
+      e.preventDefault()
+      const start = this.here()
+      const [sx, sy] = [e.clientX, e.clientY]
+      hd.setPointerCapture?.(e.pointerId)
+      hd.classList.add('dragging')
+      const move = (m: PointerEvent) => this.setLayout({ ...start, x: start.x + m.clientX - sx, y: start.y + m.clientY - sy })
+      const up = () => {
+        hd.removeEventListener('pointermove', move)
+        hd.classList.remove('dragging')
+        this.settle()
+      }
+      hd.addEventListener('pointermove', move)
+      hd.addEventListener('pointerup', up, { once: true })
+      hd.addEventListener('pointercancel', up, { once: true })
+    })
+    hd.addEventListener('dblclick', (e) => {
+      if ((e.target as Element).closest('button')) return
+      this.setLayout(null)
+      this.onLayout?.(null)
+    })
+  }
+
+  /** Drag the bottom-right grip to resize. */
+  private wireResize(): void {
+    const grip = this.el('grip')
+    grip.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      const r = this.el('p').getBoundingClientRect()
+      const start: PanelLayout = { x: r.left, y: r.top, w: r.width, h: r.height }
+      const [sx, sy] = [e.clientX, e.clientY]
+      grip.setPointerCapture?.(e.pointerId)
+      const move = (m: PointerEvent) => this.setLayout({ ...start, w: start.w! + m.clientX - sx, h: start.h! + m.clientY - sy })
+      const up = () => {
+        grip.removeEventListener('pointermove', move)
+        this.settle()
+      }
+      grip.addEventListener('pointermove', move)
+      grip.addEventListener('pointerup', up, { once: true })
+      grip.addEventListener('pointercancel', up, { once: true })
+    })
+  }
+
+  /** After a move or resize: store the clamped layout, the one actually on screen. */
+  private settle(): void {
+    const w = this.win
+    if (this.layout && w) this.layout = clampLayout(this.layout, w.innerWidth, w.innerHeight)
+    this.onLayout?.(this.layout)
   }
 
   contains(node: Node): boolean {
@@ -193,33 +337,38 @@ export class Panel {
     this.alertTimer = null
   }
 
-  /** Everything with 3 or fewer left, fewest first; hidden when nothing is low. */
+  /**
+   * What this show has sold that is down to 3 or fewer, fewest first; hidden when none.
+   * Every row shows in full (names wrap); a long list scrolls inside its box.
+   */
   setLowStock(items: StockItem[]): void {
     const box = this.el('low')
     const doc = box.ownerDocument
-    const shown = [...items].sort((a, b) => a.available - b.available).slice(0, LOW_ROWS)
+    const shown = [...items].sort((a, b) => a.available - b.available)
     const title = doc.createElement('div')
     title.className = 'lt'
-    title.textContent = 'Running low'
-    const rows = shown.map((i) => {
-      const r = doc.createElement('div')
-      r.className = 'li'
-      const name = doc.createElement('span')
-      name.textContent = `${i.name} (${i.code})`
-      name.title = name.textContent
-      const n = doc.createElement('span')
-      n.className = 'n' + (i.available <= 1 ? ' urgent' : '')
-      n.textContent = leftText(i.available)
-      r.append(name, n)
-      return r
-    })
-    if (items.length > shown.length) {
-      const more = doc.createElement('div')
-      more.className = 'lt'
-      more.textContent = `+${items.length - shown.length} more on the Inventory page`
-      rows.push(more)
-    }
-    box.replaceChildren(title, ...rows)
+    title.textContent = 'Running low in this show'
+    const list = doc.createElement('div')
+    list.className = 'ls'
+    list.append(
+      ...shown.map((i) => {
+        const r = doc.createElement('div')
+        r.className = 'li'
+        const name = doc.createElement('span')
+        name.className = 'nm'
+        name.textContent = i.name
+        const code = doc.createElement('span')
+        code.className = 'cd'
+        code.textContent = i.code
+        name.append(code)
+        const n = doc.createElement('span')
+        n.className = 'n' + (i.available <= 1 ? ' urgent' : '')
+        n.textContent = leftText(i.available)
+        r.append(name, n)
+        return r
+      }),
+    )
+    box.replaceChildren(title, list)
     box.hidden = !items.length
   }
 
