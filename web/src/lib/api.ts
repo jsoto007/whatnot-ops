@@ -238,7 +238,20 @@ export interface Sale {
   paidAt: string | null
   seq: number | null
   rawText: string | null
+  /** "player" when the win was read from Whatnot's video player, "chat" for a chat line. */
+  source: 'chat' | 'player' | null
+  /** When the win happened (the winning line's capture time). */
+  wonAt: string | null
+  /** What the winner said around the win; only on a show's sales list. */
+  chat?: SaleChatLine[]
   createdAt: string
+}
+export interface SaleChatLine {
+  seq: number
+  username: string
+  body: string
+  capturedAt: string
+  role: 'buyer' | 'host' | 'platform' | 'other'
 }
 export interface ReviewItem {
   id: number

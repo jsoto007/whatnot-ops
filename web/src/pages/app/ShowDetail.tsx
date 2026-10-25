@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
-import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleStatus, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway } from '../../lib/api'
-import { fmtLongDate } from '../../lib/format'
+import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleStatus, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway } from '../../lib/api'
+import { fmtLongDate, fmtShopTime } from '../../lib/format'
 import { Kpis, Tally, TopLists } from './Dashboard'
 import { Reconcile } from './Reconcile'
 
@@ -163,10 +163,21 @@ const FILTERS: { key: string; label: string; match: (s: Sale) => boolean }[] = [
   { key: 'lost', label: 'Cancelled / failed', match: (s) => s.status === 'cancelled' || s.status === 'payment_failed' },
 ]
 
-/** Sales grouped by buyer, the way the team's sheet reads, with the line number so a row can be found in chat. */
+/**
+ * Sales grouped by buyer, the way the team's sheet reads, with the line number so a row can
+ * be found in chat. Each sale can open what its winner said around the win, to hold a
+ * "can I get the blue one instead" against the item and price recorded.
+ */
 function SalesTab({ sales, loading }: { sales: Sale[]; loading: boolean }) {
   const [filter, setFilter] = useState('all')
   const [q, setQ] = useState('')
+  const [open, setOpen] = useState<Set<number>>(() => new Set())
+  const toggle = (id: number) =>
+    setOpen((cur) => {
+      const next = new Set(cur)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
   const f = FILTERS.find((x) => x.key === filter)!
   const visible = sales.filter((s) => f.match(s) && (!q || s.buyer.toLowerCase().includes(q.toLowerCase()) || s.item.toLowerCase().includes(q.toLowerCase())))
   const groups = useMemo(() => {
@@ -202,19 +213,23 @@ function SalesTab({ sales, loading }: { sales: Sale[]; loading: boolean }) {
           <tr>
             <th>Buyer</th>
             <th>#</th>
+            <th title="Central time">Won</th>
             <th>Item</th>
             <th className="num">Qty</th>
             <th className="num">Total</th>
             <th>Type</th>
             <th>Status</th>
+            <th>Chat</th>
           </tr>
         </thead>
         <tbody>
           {groups.map(([buyer, rows]) =>
             rows.map((s, i) => (
-              <tr key={s.id} className={(s.flagged ? 'low ' : '') + (i === 0 ? 'group-start' : '')} data-testid={`sale-${s.id}`}>
+              <Fragment key={s.id}>
+              <tr className={(s.flagged ? 'low ' : '') + (i === 0 ? 'group-start' : '')} data-testid={`sale-${s.id}`}>
                 <td>{i === 0 ? <b>{buyer}</b> : <span className="muted small">↳</span>}</td>
                 <td className="num muted">{s.seq ?? ''}</td>
+                <td className="muted small nowrap" data-testid={`won-at-${s.id}`}>{s.wonAt ? fmtShopTime(s.wonAt) : '—'}</td>
                 <td title={s.rawText ?? ''}>
                   {s.sku ? `${s.sku.productName} ${s.sku.name}`.trim() : s.item}
                   {s.sku ? <code className="sku">{s.sku.code}</code> : <span className="badge warn">unmatched</span>}
@@ -226,12 +241,54 @@ function SalesTab({ sales, loading }: { sales: Sale[]; loading: boolean }) {
                   <span className={`status ${s.status}`}>{s.status.replace('_', ' ')}</span>
                   {s.statusReason && <div className="muted small">{s.statusReason}</div>}
                 </td>
+                <td>
+                  {s.chat?.length ? (
+                    <button className="btn ghost small" aria-expanded={open.has(s.id)} onClick={() => toggle(s.id)} data-testid={`chat-toggle-${s.id}`} title="What the winner said around this win">
+                      {s.chat.length} line{s.chat.length === 1 ? '' : 's'}
+                    </button>
+                  ) : (
+                    <span className="muted small">—</span>
+                  )}
+                </td>
               </tr>
+              {open.has(s.id) && s.chat && (
+                <tr className="sale-chat-row">
+                  <td colSpan={10}>
+                    <SaleChat sale={s} lines={s.chat} />
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             )),
           )}
         </tbody>
       </table>
     </>
+  )
+}
+
+const ROLE_LABEL: Record<SaleChatLine['role'], string> = { buyer: 'winner', host: 'host', platform: 'platform', other: 'mentions' }
+
+/** The winner's lines next to what was recorded: the person decides if the item or price should change. */
+function SaleChat({ sale, lines }: { sale: Sale; lines: SaleChatLine[] }) {
+  return (
+    <div className="sale-chat" data-testid={`sale-chat-${sale.id}`}>
+      <p className="muted small">
+        Recorded: <b>{sale.sku ? `${sale.sku.productName} ${sale.sku.name}`.trim() : sale.item || 'no item named'}</b> at <b>{money(sale.priceCents)}</b>
+        {sale.wonAt ? ` · won ${fmtShopTime(sale.wonAt)}` : ''}. Chat is shown as typed; nothing here changes the sale.
+      </p>
+      <div className="chat small">
+        {lines.map((c) => (
+          <div className={'chat-line' + (c.role === 'buyer' ? ' hit' : '')} key={c.seq}>
+            <span className="t">{fmtShopTime(c.capturedAt)}</span>
+            <span className="u">
+              {c.username || 'platform'} <span className="muted small">· {ROLE_LABEL[c.role]}</span>
+            </span>
+            <span>{c.body}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 

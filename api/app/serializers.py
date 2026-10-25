@@ -151,8 +151,9 @@ def event(e) -> dict:
     }
 
 
-def sale(s) -> dict:
-    return {
+def sale(s, chat: list[dict] | None = None) -> dict:
+    won = s.event.message.captured_at if s.event else None
+    out = {
         "id": s.id,
         "showId": s.show_id,
         "showDate": s.show.show_date.isoformat(),
@@ -177,8 +178,13 @@ def sale(s) -> dict:
         "paidAt": s.paid_at.isoformat() if s.paid_at else None,
         "seq": s.event.message.seq if s.event else None,
         "rawText": s.event.message.raw_text if s.event else None,
+        "source": s.event.message.source if s.event else None,
+        "wonAt": won.isoformat() if won else None,
         "createdAt": s.created_at.isoformat(),
     }
+    if chat is not None:
+        out["chat"] = chat
+    return out
 
 
 def chat_message(m) -> dict:

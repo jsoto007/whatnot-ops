@@ -6,7 +6,7 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import ChatMessage, EventKind, Job, ParsedEvent, ReviewItem, ReviewStatus, Sale, Show
-from ..services import audit, pipeline
+from ..services import audit, pipeline, sale_chat
 
 bp = Blueprint("shows", __name__)
 
@@ -170,7 +170,8 @@ def sales(show_id: int):
         )
         .order_by(Sale.id)
     ).all()
-    return jsonify({"sales": [serializers.sale(s) for s in rows]})
+    chat = sale_chat.around(rows)
+    return jsonify({"sales": [serializers.sale(s, chat[s.id]) for s in rows]})
 
 
 @bp.get("/<int:show_id>/messages")
