@@ -25,7 +25,8 @@ export default defineConfig({
       // The real API on the TEST database (APP_ENV=test), with a known device key.
       command: `cd ../../api && ${FLASK} --app wsgi.py db upgrade && ${FLASK} --app wsgi.py e2e-seed && ${FLASK} --app wsgi.py run --port ${API_PORT}`,
       url: `http://127.0.0.1:${API_PORT}/api/health`,
-      env: { APP_ENV: 'test', E2E_DEVICE_KEY, E2E_PAIRING_CODE, FLASK_RUN_HOST: '127.0.0.1' },
+      // JOBS_INLINE: uploads are parsed during the request, so sales move stock (stock.spec.ts).
+      env: { APP_ENV: 'test', E2E_DEVICE_KEY, E2E_PAIRING_CODE, FLASK_RUN_HOST: '127.0.0.1', JOBS_INLINE: '1' },
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
     },

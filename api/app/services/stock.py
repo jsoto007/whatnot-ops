@@ -238,6 +238,36 @@ def levels(org_id: int) -> list[dict]:
     ]
 
 
+RUNNING_LOW = 3  # the scraper panel calls out 3, 2 and 1 left, then sold out
+
+
+def running_low(org_id: int, *, at: int = RUNNING_LOW, limit: int = 100) -> list[dict]:
+    """Active SKUs with `at` or fewer available, for the scraper's live alerts.
+
+    Most-left first, so a pile of long-oversold SKUs cannot push the ones that
+    just reached 3, 2 or 1 off the end of the list."""
+    rows = db.session.execute(
+        select(Sku, Product.name)
+        .join(Product, Product.id == Sku.product_id)
+        .where(
+            Sku.organization_id == org_id,
+            Sku.active.is_(True),
+            Sku.on_hand - Sku.reserved <= at,
+        )
+        .order_by((Sku.on_hand - Sku.reserved).desc(), Sku.code)
+        .limit(limit)
+    ).all()
+    return [
+        {
+            "skuId": s.id,
+            "code": s.code,
+            "name": f"{pname} · {s.name}" if s.name and s.name != pname else pname,
+            "available": s.available,
+        }
+        for s, pname in rows
+    ]
+
+
 def activity(org_id: int, *, sku_id: int | None = None, limit: int = 50) -> list[dict]:
     """Ledger rows, newest first, with what a person needs to read them: which item,
     and for sale movements which buyer in which show."""

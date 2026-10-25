@@ -1,5 +1,10 @@
+import { leftText, type StockAlert, type StockItem } from '../stock/alerts'
+
 /** The floating panel, in a shadow root so Whatnot's CSS cannot touch it. */
 export const HOST_ID = 'cs-host'
+/** How long a low-stock alert stays up unless clicked away. */
+const ALERT_MS = 20_000
+const LOW_ROWS = 5
 
 const HTML = `
   <style>
@@ -56,6 +61,19 @@ const HTML = `
     #fr .fi:hover { background: rgba(255, 255, 255, 0.1); }
     #fr { margin-top: 8px; }
     .empty { font-size: 13px; color: rgba(255, 255, 255, 0.78); padding: 10px 14px; }
+    /* Low stock sits outside .bd so it still shows when the panel is minimised. */
+    .al { padding: 12px 16px; border-radius: 22px; background: rgba(255, 159, 10, 0.92); color: #1a1033; border: 1px solid rgba(255, 214, 140, 0.6);
+          font-weight: 700; font-size: 15px; cursor: pointer; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); animation: flash .5s 4 alternate; }
+    .al.urgent { background: #ff453a; color: #fff; border-color: rgba(255, 160, 150, 0.7); }
+    .al div + div { margin-top: 2px; }
+    @keyframes flash { to { opacity: .45; } }
+    @media (prefers-reduced-motion: reduce) { .al { animation: none; } }
+    .lw { display: grid; gap: 4px; padding: 12px 16px; border-radius: 22px; background: rgba(10, 6, 30, 0.38); border: 1px solid rgba(255, 159, 10, 0.45); }
+    .lw .lt { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: rgba(255, 255, 255, 0.82); }
+    .lw .li { display: flex; gap: 8px; font-size: 13px; }
+    .lw .li span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lw .n { font-weight: 700; color: #ffb340; font-variant-numeric: tabular-nums; }
+    .lw .n.urgent { color: #ff8a80; }
   </style>
   <div class="p">
     <div class="hd">
@@ -63,6 +81,8 @@ const HTML = `
       <span class="cnt" id="cnt" title="Messages captured">0</span>
       <button class="x" id="min" title="Minimise" aria-label="Minimise">–</button>
     </div>
+    <div class="al" id="alert" role="alert" title="Click to dismiss" hidden></div>
+    <div class="lw" id="low" hidden></div>
     <div class="bd" id="bd">
       <div class="card">
         <div class="st" id="st">Ready. Open the show, then press Start.</div>
@@ -106,6 +126,7 @@ export type StatusKind = 'good' | 'bad' | 'info' | ''
 export class Panel {
   readonly host: HTMLDivElement
   private readonly root: ShadowRoot
+  private alertTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(doc: Document = document) {
     this.host = doc.createElement('div')
@@ -118,6 +139,7 @@ export class Panel {
       bd.classList.toggle('min')
       this.el('min').textContent = bd.classList.contains('min') ? '+' : '–'
     }
+    this.el('alert').onclick = () => this.clearStockAlert()
   }
 
   mount(doc: Document = document): void {
@@ -146,6 +168,59 @@ export class Panel {
   setWins(msg: string): void {
     this.el('wins').textContent = msg
     this.el('wins').hidden = !msg
+  }
+
+  /** Flash the newest low-stock alerts until clicked or `ALERT_MS` passes. Text only: names come from the catalog. */
+  showStockAlerts(alerts: StockAlert[]): void {
+    const box = this.el('alert')
+    if (!alerts.length) return
+    box.replaceChildren(
+      ...alerts.slice(0, 3).map((a) => {
+        const d = box.ownerDocument.createElement('div')
+        d.textContent = a.text
+        return d
+      }),
+    )
+    box.className = 'al' + (alerts.some((a) => a.urgent) ? ' urgent' : '')
+    box.hidden = false
+    if (this.alertTimer) clearTimeout(this.alertTimer)
+    this.alertTimer = setTimeout(() => this.clearStockAlert(), ALERT_MS)
+  }
+
+  clearStockAlert(): void {
+    this.el('alert').hidden = true
+    if (this.alertTimer) clearTimeout(this.alertTimer)
+    this.alertTimer = null
+  }
+
+  /** Everything with 3 or fewer left, fewest first; hidden when nothing is low. */
+  setLowStock(items: StockItem[]): void {
+    const box = this.el('low')
+    const doc = box.ownerDocument
+    const shown = [...items].sort((a, b) => a.available - b.available).slice(0, LOW_ROWS)
+    const title = doc.createElement('div')
+    title.className = 'lt'
+    title.textContent = 'Running low'
+    const rows = shown.map((i) => {
+      const r = doc.createElement('div')
+      r.className = 'li'
+      const name = doc.createElement('span')
+      name.textContent = `${i.name} (${i.code})`
+      name.title = name.textContent
+      const n = doc.createElement('span')
+      n.className = 'n' + (i.available <= 1 ? ' urgent' : '')
+      n.textContent = leftText(i.available)
+      r.append(name, n)
+      return r
+    })
+    if (items.length > shown.length) {
+      const more = doc.createElement('div')
+      more.className = 'lt'
+      more.textContent = `+${items.length - shown.length} more on the Inventory page`
+      rows.push(more)
+    }
+    box.replaceChildren(title, ...rows)
+    box.hidden = !items.length
   }
 
   setCount(n: number): void {
