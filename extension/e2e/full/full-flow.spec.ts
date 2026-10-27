@@ -128,11 +128,12 @@ test('download → pair → record a show → parsed sales in the portal', async
   await page.getByRole('link', { name: /show|\d{4}/ }).first().click()
   await expect(page.getByTestId('tile-items')).toContainText('3')
   const sales = page.getByTestId('sales')
-  // The player win: buyer, item without the lot number, the price paid, stock held.
+  // The player win: buyer, item without the lot number, the price paid, paid at the win
+  // (Whatnot charges the winner when the auction ends).
   const win = sales.locator('tr', { hasText: 'chonwhite828' })
   await expect(win).toContainText('Red bundle')
   await expect(win).toContainText('$195.00')
-  await expect(win).toContainText('reserved')
+  await expect(win).toContainText('paid at the win')
   await expect(sales.locator('tr', { hasText: 'lani808' })).toContainText('Red bundle')
   await expect(sales.locator('tr', { hasText: 'lani808' })).toContainText('$25.00')
   await expect(sales.locator('tr', { hasText: 'cardguy' })).toContainText('$10.00')

@@ -486,7 +486,8 @@ def test_an_untied_sold_tab_decline_offers_the_named_buyers_sale_first(app, worl
             ("", WIN, "player"),
             (
                 "",
-                "payment declined (not tied to a win): @chonwhite828 Red bundle #760 $25 Payment failed",
+                "payment declined (not tied to a win): "
+                "@chonwhite828 Red bundle #760 $25 Payment failed",
                 "player",
             ),
         ],
