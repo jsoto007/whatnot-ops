@@ -11,7 +11,8 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, timedelta
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.orm import aliased
 
 from ..db import db
 from ..models import (
@@ -38,6 +39,12 @@ DEAD_END = (EventKind.chatter, EventKind.claim, EventKind.listing)
 PLAYER_DUPLICATE_WINDOW = timedelta(minutes=10)
 # A chat line about a win this long before the player recorded it is probably the same win.
 CHAT_DUPLICATE_WINDOW = timedelta(minutes=3)
+# Two laptops can read one win's title differently (the next lot's title is already up on
+# one of them): the same buyer at the same price this close in another show is that win.
+PLAYER_NEAR_WINDOW = timedelta(minutes=2)
+# The extension records a chat row again when Whatnot re-renders it (a new DOM node, a new
+# id): the identical sale line this close is that copy, not a second sale.
+CHAT_LINE_DUPLICATE_WINDOW = timedelta(minutes=10)
 
 
 def money(cents: int | None) -> str:
@@ -388,6 +395,12 @@ def process_show(show_id: int, *, reparse: bool = False, host: str | None = None
                 stats.reviews += 1
                 continue
             if c.confidence < 0.8:
+                # A copy of a line a person already recorded must say so, or confirming
+                # this "Not sure" item would sell the same win twice.
+                if not from_player and (copy := _same_chat_line_near(show, m, ev)) is not None:
+                    _review_chat_copy(show, m, ev, *copy)
+                    stats.reviews += 1
+                    continue
                 if c.rule == "player_win_price_check":
                     summary = (
                         f"The video player says {c.buyer} won {ev.item_text} for "
@@ -430,13 +443,23 @@ def process_show(show_id: int, *, reparse: bool = False, host: str | None = None
                 )
                 stats.reviews += 1
                 continue
+            if not from_player and (copy := _same_chat_line_near(show, m, ev)) is not None:
+                _review_chat_copy(show, m, ev, *copy)
+                stats.reviews += 1
+                continue
             if from_player and (other := _same_win_elsewhere(show, ev, m)) is not None:
+                read_as = (
+                    ""
+                    if (other.item_text or "").lower() == (ev.item_text or "").lower()
+                    else f' (read there as "{other.item_text}")'
+                )
                 open_review(
                     show.organization_id,
                     "possible_duplicate",
                     f"{c.buyer} won {ev.item_text} for {money(c.price_cents)} — the same win "
-                    f"is already sale #{other.id} in another recording of this show (a second "
-                    "laptop, or recording restarted); record it only if it is a separate sale",
+                    f"is already sale #{other.id}{read_as} in another recording of this show "
+                    "(a second laptop, or recording restarted); record it only if it is a "
+                    "separate sale",
                     show_id=show.id,
                     message_id=m.id,
                     event_id=ev.id,
@@ -507,26 +530,119 @@ def _player_win_near(show: Show, buyer: str, m: ChatMessage) -> Sale | None:
 
 
 def _same_win_elsewhere(show: Show, ev: ParsedEvent, m: ChatMessage) -> Sale | None:
-    """A player-win sale in another show of the shop with the same buyer, item and price,
-    captured within PLAYER_DUPLICATE_WINDOW: two laptops (each laptop's show key is its own
-    start time) or a restarted recording saw one auction."""
-    return db.session.scalar(
-        select(Sale)
+    """A player-win sale in another show of the shop that is this win: two laptops (each
+    laptop's show key is its own start time) or a restarted recording saw one auction.
+
+    Same buyer, item and price within PLAYER_DUPLICATE_WINDOW; failing that, same buyer and
+    price within PLAYER_NEAR_WINDOW whatever the item, because each laptop takes the title
+    from its own first "won!" frame and one may already show the next lot's. The near match
+    skips a sale this show already has its exact twin of (the other laptop missed a lot,
+    and this is that second lot), and the same laptop's earlier recording (one laptop reads
+    one display the same way; a restart never re-records the win on screen)."""
+    twin = aliased(ParsedEvent)
+    twin_line = aliased(ChatMessage)
+    claimed = (
+        select(twin.id)
+        .join(twin_line, twin.message_id == twin_line.id)
+        .where(
+            twin.show_id == show.id,
+            # Only a twin of that same auction: titles without a lot number repeat all show.
+            twin_line.captured_at.between(
+                ChatMessage.captured_at - PLAYER_DUPLICATE_WINDOW,
+                ChatMessage.captured_at + PLAYER_DUPLICATE_WINDOW,
+            ),
+            twin.id != ev.id,
+            twin.rule == "player_win",
+            func.lower(twin.buyer_username) == func.lower(Sale.buyer_username),
+            func.lower(twin.item_text) == func.lower(Sale.item_text),
+            twin.price_cents == Sale.price_cents,
+        )
+        .exists()
+    )
+    near = [~claimed]
+    if m.device_id is not None:
+        near.append(or_(ChatMessage.device_id.is_(None), ChatMessage.device_id != m.device_id))
+
+    def find(window, *same):
+        return db.session.scalar(
+            select(Sale)
+            .join(ParsedEvent, Sale.event_id == ParsedEvent.id)
+            .join(ChatMessage, ParsedEvent.message_id == ChatMessage.id)
+            .where(
+                Sale.organization_id == show.organization_id,
+                Sale.show_id != show.id,
+                ParsedEvent.rule == "player_win",
+                func.lower(Sale.buyer_username) == ev.buyer_username.lower(),
+                Sale.price_cents == ev.price_cents,
+                ChatMessage.captured_at.between(m.captured_at - window, m.captured_at + window),
+                *same,
+            )
+            .order_by(
+                func.abs(func.extract("epoch", ChatMessage.captured_at - m.captured_at)), Sale.id
+            )
+            .limit(1)
+        )
+
+    exact = find(
+        PLAYER_DUPLICATE_WINDOW, func.lower(Sale.item_text) == (ev.item_text or "").lower()
+    )
+    return exact if exact is not None else find(PLAYER_NEAR_WINDOW, *near)
+
+
+def _same_chat_line_near(show: Show, m: ChatMessage, ev: ParsedEvent):
+    """(sale, its line's captured_at) for a sale made from the same chat line (sender and
+    text, ignoring case) within CHAT_LINE_DUPLICATE_WINDOW, in this show or another
+    laptop's: the extension recorded the line again (a re-render gives the row a new id).
+    Any status counts, or a re-rendered sale line would bring a cancelled sale back.
+
+    The same text names the same item and price. A line that names no item takes it from
+    the listing on screen, which does not tell a copy from a second win: a re-rendered row
+    comes back after newer rows, under the next listing. So a copy under another listing
+    is still asked about, and the summary shows both items."""
+    conds = [
+        Sale.organization_id == show.organization_id,
+        ChatMessage.id != m.id,
+        ChatMessage.source == "chat",
+        ChatMessage.username == m.username,
+        func.lower(ChatMessage.raw_text) == (m.raw_text or "").lower(),
+        ChatMessage.captured_at.between(
+            m.captured_at - CHAT_LINE_DUPLICATE_WINDOW,
+            m.captured_at + CHAT_LINE_DUPLICATE_WINDOW,
+        ),
+    ]
+    row = db.session.execute(
+        select(Sale, ChatMessage.captured_at)
         .join(ParsedEvent, Sale.event_id == ParsedEvent.id)
         .join(ChatMessage, ParsedEvent.message_id == ChatMessage.id)
-        .where(
-            Sale.organization_id == show.organization_id,
-            Sale.show_id != show.id,
-            ParsedEvent.rule == "player_win",
-            func.lower(Sale.buyer_username) == ev.buyer_username.lower(),
-            func.lower(Sale.item_text) == (ev.item_text or "").lower(),
-            Sale.price_cents == ev.price_cents,
-            ChatMessage.captured_at.between(
-                m.captured_at - PLAYER_DUPLICATE_WINDOW, m.captured_at + PLAYER_DUPLICATE_WINDOW
-            ),
-        )
+        .where(*conds)
         .order_by(Sale.id)
         .limit(1)
+    ).first()
+    return tuple(row) if row else None
+
+
+def _review_chat_copy(show: Show, m: ChatMessage, ev: ParsedEvent, prev: Sale, prev_at) -> None:
+    """Ask about a chat line that reads like an earlier sale's line, showing both, so a
+    person can tell a re-captured line from a second win by the same buyer."""
+    secs = int(abs((m.captured_at - prev_at).total_seconds()))
+    when = "earlier" if prev_at <= m.captured_at else "later"
+    this = f"{ev.item_text or 'no item named'}, {money(ev.price_cents)}"
+    that = f"{prev.item_text or 'no item named'}, {money(prev.price_cents)}"
+    other_listing = (
+        " It came under another listing."
+        if ev.item_text and prev.item_text and ev.item_text.lower() != prev.item_text.lower()
+        else ""
+    )
+    open_review(
+        show.organization_id,
+        "possible_duplicate",
+        f'"{m.raw_text}" ({this}) reads the same as the line that made sale #{prev.id} '
+        f"({that}, {prev.status.value}) {secs} s {when}: either a copy (the chat re-rendered, "
+        f"or a second laptop) or a second win by the same buyer.{other_listing} Record it "
+        "if it is a separate sale",
+        show_id=show.id,
+        message_id=m.id,
+        event_id=ev.id,
     )
 
 

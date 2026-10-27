@@ -175,11 +175,25 @@ export async function deleteShow(showId: string): Promise<void> {
   await tx.done
 }
 
-/** Drop the oldest shows beyond MAX_SHOWS. Returns the ids removed. */
+/** True when some of the show's rows have not reached the server yet. */
+async function hasPending(showId: string): Promise<boolean> {
+  const range = IDBKeyRange.bound([0, showId, 0], [0, showId, Number.MAX_SAFE_INTEGER])
+  return (await (await getDb()).countFromIndex('rows', 'by-uploaded', range)) > 0
+}
+
+/**
+ * Drop the oldest shows beyond MAX_SHOWS. Returns the ids removed. A show with rows
+ * still waiting to upload is kept however old it is (a laptop that was offline or
+ * unpaired for a while must not lose them); it goes once they are sent or set aside.
+ */
 export async function pruneShows(max = MAX_SHOWS): Promise<string[]> {
   const shows = await listShows()
-  const drop = shows.slice(max).map((s) => s.id)
-  for (const id of drop) await deleteShow(id)
+  const drop: string[] = []
+  for (const s of shows.slice(max)) {
+    if (await hasPending(s.id)) continue
+    await deleteShow(s.id)
+    drop.push(s.id)
+  }
   return drop
 }
 

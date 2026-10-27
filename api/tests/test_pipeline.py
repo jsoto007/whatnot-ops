@@ -129,7 +129,9 @@ def test_ambiguous_cancellation_asks_which_sale(app, world):
         app,
         [
             ("", "lani808 won Red bundle"),
-            ("", "lani808 won Red bundle"),
+            # Two separate wins: the identical line twice would be one line captured twice
+            # (tests/test_duplicate_sales.py).
+            ("", "lani808 won Red bundle for $25"),
             ("host_shop", "cancelled for lani808"),
         ],
     )
