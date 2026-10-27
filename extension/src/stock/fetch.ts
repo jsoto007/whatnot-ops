@@ -1,4 +1,5 @@
 import type { Settings } from '../upload/settings'
+import { deviceHeaders } from '../upload/version'
 import type { StockItem } from './alerts'
 
 export interface StockReply {
@@ -22,7 +23,7 @@ export async function fetchStock(settings: Settings, showId?: string, fetchFn: t
   try {
     const res = await fetchFn(settings.serverUrl + '/api/ingest/stock' + query, {
       redirect: 'error',
-      headers: { Authorization: 'Bearer ' + settings.apiKey },
+      headers: deviceHeaders(settings.apiKey),
     })
     if (!res.ok) return null
     const j = (await res.json()) as { alertAt?: unknown; items?: unknown }

@@ -1,6 +1,7 @@
-import type { Broadcast, ChatSpot, PingReply, Request, SessionReply, UploadStatus } from './shared/messages'
+import type { Broadcast, ChatSpot, PingReply, PortalHello, PortalRequest, Request, SessionReply, UploadStatus } from './shared/messages'
 import { MAX_SELECTORS, RESUME_HOURS } from './shared/messages'
 import {
+  KV_RECORDING,
   KV_SESSION,
   type SessionRef,
   getRows,
@@ -279,5 +280,42 @@ chrome.runtime.onMessage.addListener((raw: Request, sender, sendResponse) => {
     return false
   }
   handle(msg, sender).then(sendResponse, () => sendResponse({ error: 'request failed' }))
+  return true // async response
+})
+
+// ---------- the shop's web app ----------
+// Settings → Laptops asks which version runs here and, once the files in this
+// folder were replaced with a new download, tells Chrome to load them. Chrome
+// only lets the portal's origin call (externally_connectable, written by its
+// download); this also checks it is the shop this laptop uploads to.
+
+/** The version of the manifest in the folder now: Chrome reads an unpacked extension's files from disk. */
+async function filesVersion(): Promise<string | null> {
+  try {
+    const res = await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' })
+    const v = ((await res.json()) as { version?: unknown }).version
+    return typeof v === 'string' ? v : null
+  } catch {
+    return null
+  }
+}
+
+chrome.runtime.onMessageExternal.addListener((raw: PortalRequest, sender, sendResponse) => {
+  if (!raw || (raw.cmd !== 'hello' && raw.cmd !== 'reload')) return false
+  void (async () => {
+    const { serverUrl } = await loadSettings()
+    if (!serverUrl || sender.origin !== serverUrl) return sendResponse({ error: 'not the web app this laptop uploads to' })
+    if (raw.cmd === 'reload') {
+      sendResponse({ ok: true })
+      // Rows are already in IndexedDB; a recording carries on after the reload (onInstalled → reinject).
+      setTimeout(() => chrome.runtime.reload(), 250)
+      return
+    }
+    sendResponse({
+      version: chrome.runtime.getManifest().version,
+      filesVersion: await filesVersion(),
+      recording: !!(await kvGet(KV_RECORDING)),
+    } satisfies PortalHello)
+  })().catch(() => sendResponse({ error: 'request failed' }))
   return true // async response
 })

@@ -211,3 +211,20 @@ Advanced: **Create a device key instead** (or
 Every captured line is saved on the laptop first and uploaded in batches to
 `POST /api/ingest`; uploads retry with backoff when the server is unreachable
 and resume when the key is fixed.
+
+### Update a laptop
+
+Never remove the extension to update it: that drops its pairing and any lines
+it has not uploaded. Update in place instead. Every device call sends
+`X-Extension-Version`, so **Settings → Laptops** shows each laptop's version
+with an **Update** badge when it is behind the build this portal serves. On a
+laptop running 1.5.0 or later, the web app also shows a banner. Its **Update**
+sheet walks through: download, copy the files over the folder Chrome loads the
+extension from, then **Reload Chat Scraper**. The download's manifest names
+this portal: `portal.js` tells the page the extension's id and version, and
+`externally_connectable` lets the page ask the background for `hello` (running
+version, version of the files on disk, recording?) and `reload`. The sheet
+enables Reload once the new files are on disk and confirms the new version
+came back. Developer mode must stay on, because Chrome disables a reloaded
+unpacked extension without it. Laptops on 1.4.x and older need one manual
+update (↻ in `chrome://extensions`) before the button works.

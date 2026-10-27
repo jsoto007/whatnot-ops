@@ -94,6 +94,8 @@ export interface Device {
   createdAt: string
   lastSeenAt: string | null
   revoked: boolean
+  /** Chat Scraper version it last called in with; null before 1.5.0 or before its first call */
+  extensionVersion: string | null
 }
 export interface AuditEntry {
   id: number

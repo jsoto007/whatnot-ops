@@ -6,6 +6,7 @@ from ..services import stock
 from ..services.devices import device_for_key, touch
 from ..services.ingest import BatchInvalid, ingest, message_count
 from ..services.pipeline import schedule_parse
+from .extension import latest_version as extension_version
 
 bp = Blueprint("ingest", __name__)
 
@@ -17,7 +18,9 @@ def cors(resp):
     if origin.startswith("chrome-extension://"):
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+        resp.headers["Access-Control-Allow-Headers"] = (
+            "Authorization, Content-Type, X-Extension-Version"
+        )
         resp.headers["Access-Control-Max-Age"] = "600"
         resp.headers["Vary"] = "Origin"
     return resp
@@ -32,7 +35,7 @@ def auth():
     device = device_for_key(key)
     if device is None:
         return jsonify({"error": "invalid or revoked device key"}), 401
-    touch(device)
+    touch(device, request.headers.get("X-Extension-Version"))
     g.device = device
     return None
 
@@ -41,7 +44,15 @@ def auth():
 def ping():
     db.session.commit()  # persists last_seen_at
     d = g.device
-    return jsonify({"ok": True, "device": d.name, "organization": d.organization.name})
+    return jsonify(
+        {
+            "ok": True,
+            "device": d.name,
+            "organization": d.organization.name,
+            # The version this portal serves, so the extension's Settings can say it is behind.
+            "latestExtension": extension_version(),
+        }
+    )
 
 
 @bp.post("/ingest/disconnect")

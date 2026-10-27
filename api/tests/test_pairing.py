@@ -139,7 +139,10 @@ def test_download_bakes_this_portal_into_the_extension(client, tmp_path, monkeyp
 
     dist = tmp_path / "dist"
     dist.mkdir()
-    (dist / "manifest.json").write_text(json.dumps({"version": "9.9.9"}))
+    whatnot = {"matches": ["https://www.whatnot.com/*"], "js": ["content.js"]}
+    (dist / "manifest.json").write_text(
+        json.dumps({"version": "9.9.9", "content_scripts": [whatnot]})
+    )
     (dist / "background.js").write_text("// worker")
     (dist / "defaults.json").write_text(json.dumps({"serverUrl": ""}))
     (dist / "old.zip").write_text("stale")
@@ -157,7 +160,37 @@ def test_download_bakes_this_portal_into_the_extension(client, tmp_path, monkeyp
     monkeypatch.setenv("APP_URL", "https://ops.example.com/")
     z = zipfile.ZipFile(io.BytesIO(client.get("/api/extension/download").data))
     assert json.loads(z.read("defaults.json")) == {"serverUrl": "https://ops.example.com"}
+    # Only this portal may talk to the extension (version check, reload after an update).
+    manifest = json.loads(z.read("manifest.json"))
+    assert manifest["version"] == "9.9.9"
+    assert manifest["externally_connectable"] == {"matches": ["https://ops.example.com/*"]}
+    assert manifest["content_scripts"] == [
+        whatnot,
+        {"matches": ["https://ops.example.com/*"], "js": ["portal.js"], "run_at": "document_start"},
+    ]
+    # The built files on the server are never changed.
+    assert "externally_connectable" not in json.loads((dist / "manifest.json").read_text())
+
+
+def test_portal_pattern_drops_the_port():
+    from app.routes.extension import portal_pattern
+
+    assert portal_pattern("http://127.0.0.1:5055") == "http://127.0.0.1/*"
+    assert portal_pattern("https://sales-ops.example.com") == "https://sales-ops.example.com/*"
+    assert portal_pattern("http://[::1]:5050") == "http://[::1]/*"
 
 
 def test_download_needs_a_session(app):
     assert app.test_client().get("/api/extension/download").status_code == 401
+
+
+def test_laptops_list_shows_each_extension_version(client):
+    h = owner(client)
+    code = new_code(client, h)["code"]
+    key = client.post("/api/pair", json={"code": code}, headers=EXT).get_json()["key"]
+    bearer = {**EXT, "Authorization": f"Bearer {key}"}
+    [d] = client.get("/api/devices").get_json()["devices"]
+    assert d["extensionVersion"] is None
+    client.get("/api/ingest/ping", headers={**bearer, "X-Extension-Version": "1.5.0"})
+    [d] = client.get("/api/devices").get_json()["devices"]
+    assert d["extensionVersion"] == "1.5.0"

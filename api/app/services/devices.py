@@ -1,4 +1,5 @@
 import hashlib
+import re
 import secrets
 from datetime import UTC, datetime, timedelta
 
@@ -36,8 +37,17 @@ def device_for_key(key: str | None) -> Device | None:
     return device
 
 
-def touch(device: Device) -> None:
+# Chrome's own version format: one to four dot-separated integers.
+VERSION_RE = re.compile(r"\d{1,5}(\.\d{1,5}){0,3}")
+
+
+def touch(device: Device, extension_version: str | None = None) -> None:
+    """Seen just now. Keeps the extension version it reported, when it is a real version;
+    builds before 1.5.0 send none and leave it as it was."""
     device.last_seen_at = datetime.now(UTC)
+    v = (extension_version or "").strip()
+    if len(v) <= 16 and VERSION_RE.fullmatch(v) and device.extension_version != v:
+        device.extension_version = v
 
 
 # ---------- pairing codes ----------

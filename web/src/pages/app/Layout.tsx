@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { Icon, type IconName } from '../../components/Icon'
 import { apiGet, type NavCounts } from '../../lib/api'
+import { UpdateBanner } from './settings/UpdateExtension'
 
 const GROUPS: { title: string; items: { to: string; label: string; permission: string; icon: IconName; end?: boolean }[] }[] = [
   {
@@ -176,6 +177,7 @@ export function AppLayout() {
         </button>
       </aside>
       <main className="content">
+        <UpdateBanner enabled={can('shows.view')} />
         <Outlet />
       </main>
     </div>
