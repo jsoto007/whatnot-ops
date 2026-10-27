@@ -47,6 +47,7 @@ def device(d: Device) -> dict:
         "createdAt": d.created_at.isoformat(),
         "lastSeenAt": d.last_seen_at.isoformat() if d.last_seen_at else None,
         "revoked": d.revoked_at is not None,
+        "extensionVersion": d.extension_version,
     }
 
 

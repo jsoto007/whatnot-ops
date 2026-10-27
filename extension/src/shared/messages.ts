@@ -37,6 +37,31 @@ export type Request =
   /** extension pages only: a different shop was connected; set unsent rows aside */
   | { cmd: 'parkPending' }
 
+/**
+ * The shop's web app → background (chrome.runtime.sendMessage(id, …) via
+ * externally_connectable; only the portal's origin, which its download writes
+ * into the manifest). `reload` makes Chrome load this folder's files again,
+ * after they were replaced with a new download.
+ */
+export type PortalRequest = { cmd: 'hello' } | { cmd: 'reload' }
+
+export interface PortalHello {
+  /** the version running now */
+  version: string
+  /** the version of the files in the folder: ahead of `version` once a new download was copied in */
+  filesVersion: string | null
+  /** a show is recording (it carries on by itself after a reload) */
+  recording: boolean
+}
+
+/** portal.js → the web app page (window.postMessage): Chat Scraper runs on this laptop. */
+export interface PortalHere {
+  source: 'chat-scraper'
+  type: 'here'
+  id: string
+  version: string
+}
+
 export interface UploadStatus {
   configured: boolean
   pending: number

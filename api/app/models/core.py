@@ -54,6 +54,8 @@ class Device(db.Model):
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The Chat Scraper version it last called in with (X-Extension-Version); None before 1.5.0.
+    extension_version: Mapped[str | None] = mapped_column(String(16))
 
     organization: Mapped[Organization] = relationship(back_populates="devices")
 

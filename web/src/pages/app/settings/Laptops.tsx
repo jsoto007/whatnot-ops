@@ -3,13 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Icon } from '../../../components/Icon'
 import { Sheet } from '../../../components/Sheet'
 import { ApiError, api, apiGet, type Device } from '../../../lib/api'
+import { isNewer, useExtensionInfo, useThisLaptop } from '../../../lib/extension'
 import { fmtWhen } from '../../../lib/format'
+import { UpdateExtension } from './UpdateExtension'
 
-interface ExtensionInfo {
-  available: boolean
-  version: string | null
-  serverUrl: string
-}
 interface Pairing {
   pairingId: number
   name: string
@@ -27,7 +24,10 @@ const ONLINE_MS = 3 * 60_000
 /** Settings → Laptops: install the extension, connect each laptop with a code, see who is uploading. */
 export function Laptops({ manage }: { manage: boolean }) {
   const qc = useQueryClient()
-  const ext = useQuery({ queryKey: ['extension'], queryFn: () => apiGet<ExtensionInfo>('/api/extension') })
+  const ext = useExtensionInfo()
+  const latest = ext.data?.available ? ext.data.version : null
+  const laptop = useThisLaptop()
+  const [updating, setUpdating] = useState<{ forName?: string } | null>(null)
   const devices = useQuery({ queryKey: ['devices'], queryFn: () => apiGet<{ devices: Device[] }>('/api/devices'), enabled: manage })
   const [connecting, setConnecting] = useState(false)
   const revoke = useMutation({
@@ -52,11 +52,22 @@ export function Laptops({ manage }: { manage: boolean }) {
             <b>Install the extension in Chrome</b>
             <p className="muted small">
               Download and unzip it. Open <code>chrome://extensions</code>, turn on <b>Developer mode</b>, click <b>Load unpacked</b> and pick the unzipped folder. It is already set to this web app.
+              Keep that folder: updates go into it, so the laptop stays connected.
             </p>
+            {laptop && (
+              <p className="small" data-testid="this-laptop">
+                This laptop has Chat Scraper <b>{laptop.version}</b>
+                {latest && !isNewer(latest, laptop.version) ? ', the latest.' : '.'}
+              </p>
+            )}
           </div>
-          {ext.data?.available ? (
+          {latest && laptop && isNewer(latest, laptop.version) ? (
+            <button type="button" className="btn primary" onClick={() => setUpdating({})} data-testid="update-this-laptop">
+              <Icon name="download" size={16} /> Update this laptop to v{latest}
+            </button>
+          ) : latest ? (
             <a className="btn" href="/api/extension/download" download data-testid="download-extension">
-              <Icon name="download" size={16} /> Download v{ext.data.version}
+              <Icon name="download" size={16} /> Download v{latest}
             </a>
           ) : (
             <span className="muted small" data-testid="extension-missing">
@@ -89,6 +100,7 @@ export function Laptops({ manage }: { manage: boolean }) {
               <tr>
                 <th>Laptop</th>
                 <th>Status</th>
+                <th>Version</th>
                 <th className="hide-sm">Key</th>
                 <th aria-label="Actions" />
               </tr>
@@ -108,6 +120,9 @@ export function Laptops({ manage }: { manage: boolean }) {
                       ) : (
                         <span className={'presence' + (online ? ' on' : '')}>{online ? 'Uploading now' : d.lastSeenAt ? `Seen ${fmtWhen(d.lastSeenAt)}` : 'Waiting for its first upload'}</span>
                       )}
+                    </td>
+                    <td data-testid="device-version">
+                      <DeviceVersion d={d} latest={latest} onUpdate={() => setUpdating({ forName: d.name })} />
                     </td>
                     <td className="hide-sm">
                       <code>{d.keyPrefix}…</code>
@@ -134,8 +149,26 @@ export function Laptops({ manage }: { manage: boolean }) {
       )}
 
       {manage && <ManualKey />}
+      {updating && latest && <UpdateExtension latest={latest} forName={updating.forName} onClose={() => (setUpdating(null), void qc.invalidateQueries({ queryKey: ['devices'] }))} />}
       {connecting && <ConnectLaptop onClose={() => (setConnecting(false), void qc.invalidateQueries({ queryKey: ['devices'] }))} />}
     </section>
+  )
+}
+
+/** Which Chat Scraper a laptop last called in with, and a way to update it when it is behind. */
+function DeviceVersion({ d, latest, onUpdate }: { d: Device; latest: string | null; onUpdate: () => void }) {
+  if (!d.extensionVersion && !d.lastSeenAt) return <span className="muted">—</span>
+  // A laptop that called in without a version runs a build from before 1.5.0.
+  const behind = !d.revoked && !!latest && (d.extensionVersion ? isNewer(latest, d.extensionVersion) : true)
+  return (
+    <span className="device-version">
+      <span className={d.extensionVersion ? '' : 'muted'}>{d.extensionVersion ?? 'older'}</span>
+      {behind && (
+        <button type="button" className="badge warn badge-btn" onClick={onUpdate} title={`Update to ${latest}`}>
+          Update
+        </button>
+      )}
+    </span>
   )
 }
 

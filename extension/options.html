@@ -34,14 +34,23 @@
   details summary { cursor: pointer; }
   details[open] summary { margin-bottom: 10px; }
   details .inner { display: grid; gap: 10px; }
+  .update { border-color: var(--green); }
+  .update p { margin: 0; color: var(--grey); font-size: 13px; }
+  .update b { color: #fff; }
+  .version { margin-left: auto; color: var(--grey); font-size: 13px; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
-<header><img src="icon48.png" alt=""><h1>Chat Scraper — Settings</h1></header>
+<header><img src="icon48.png" alt=""><h1>Chat Scraper — Settings</h1><span class="version" id="version"></span></header>
 <main>
   <p style="margin:0;color:var(--grey);font-size:14px">Every captured line is saved on this laptop and uploaded to your shop's web app.</p>
   <label>Web app address <input id="url" type="url" placeholder="https://ops.example.com" autocomplete="off"></label>
+
+  <section class="card update" id="update-card" role="status" hidden>
+    <h2>Version <span id="latest"></span> is ready</h2>
+    <p>Open the web app on this laptop and click <b>Update</b> in the banner at the top (or <b>Settings → Laptops</b>). Updating keeps this laptop connected and keeps everything saved here. Don't remove the extension to update it.</p>
+  </section>
 
   <section class="card" id="pair-card">
     <h2 id="pair-title">Connect this laptop</h2>

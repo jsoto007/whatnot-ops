@@ -1,6 +1,7 @@
 import { isExtensionPage, showOpenedAsFile } from '../shared/openedAsFile'
 import { forgetConnection, loadSettings, saveConnection, saveServerUrl, serverOrigin } from '../upload/settings'
-import { UploadError, pairDevice, ping, revokeDevice } from '../upload/uploader'
+import { UploadError, type PingReply, pairDevice, ping, revokeDevice } from '../upload/uploader'
+import { extensionVersion, isNewer } from '../upload/version'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 const url = $<HTMLInputElement>('url')
@@ -48,6 +49,13 @@ async function refreshStats(): Promise<void> {
   }
 }
 
+/** The web app serves a newer build than this one: say where to update it. */
+function showUpdate(r: Pick<PingReply, 'latestExtension'>): void {
+  const behind = isNewer(r.latestExtension, extensionVersion())
+  $('update-card').hidden = !behind
+  if (behind) $('latest').textContent = r.latestExtension!
+}
+
 const changed = () => chrome.runtime.sendMessage({ cmd: 'settingsChanged' }).catch(() => {})
 
 /** Validate and save the address field; says why when it is not acceptable. */
@@ -87,6 +95,7 @@ async function init(): Promise<void> {
     try {
       const r = await ping(s)
       showConnected(true, `Connected as "${r.device}" (${r.organization})`)
+      showUpdate(r)
     } catch (err) {
       showConnected(true, 'Key saved, but not connected')
       say(explain(err, 'key'), 'bad')
@@ -123,6 +132,7 @@ $('test').onclick = async () => {
   try {
     const r = await ping(await loadSettings())
     say(`Connected as "${r.device}" (${r.organization}).`, 'good')
+    showUpdate(r)
   } catch (err) {
     say(explain(err, 'key'), 'bad')
   }
@@ -182,6 +192,7 @@ $('flush').onclick = async () => {
 }
 
 if (isExtensionPage()) {
+  $('version').textContent = 'v' + extensionVersion()
   setInterval(refreshStats, 5000)
   void init()
 } else {

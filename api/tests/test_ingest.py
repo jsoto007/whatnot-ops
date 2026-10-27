@@ -85,12 +85,41 @@ def test_revoked_device_is_401(client, app, device, auth):
     assert client.post("/api/ingest", json=batch([row(1)]), headers=auth).status_code == 401
 
 
-def test_ping_reports_device_and_touches_last_seen(client, app, device, auth):
+def test_ping_reports_device_and_touches_last_seen(
+    client, app, device, auth, tmp_path, monkeypatch
+):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "manifest.json").write_text(json.dumps({"version": "1.5.0"}))
+    monkeypatch.setenv("EXTENSION_DIST", str(dist))
     r = client.get("/api/ingest/ping", headers=auth)
     assert r.status_code == 200
-    assert r.get_json() == {"ok": True, "device": "laptop", "organization": "Test Shop"}
+    assert r.get_json() == {
+        "ok": True,
+        "device": "laptop",
+        "organization": "Test Shop",
+        "latestExtension": "1.5.0",
+    }
     with app.app_context():
-        assert db.session.get(Device, device[0]).last_seen_at is not None
+        d = db.session.get(Device, device[0])
+        assert d.last_seen_at is not None
+        assert d.extension_version is None  # an older build sends no version
+
+
+def test_the_laptop_reports_its_extension_version(client, app, device, auth):
+    v = {**auth, "X-Extension-Version": "1.5.0"}
+    assert client.post("/api/ingest", json=batch([row(1)]), headers=v).status_code == 200
+    with app.app_context():
+        assert db.session.get(Device, device[0]).extension_version == "1.5.0"
+    # A later call without the header (or with junk in it) keeps what it knew.
+    client.get("/api/ingest/ping", headers=auth)
+    for junk in ["1.6.0<script>", "x", "1.2.3.4.5", "1" * 20]:
+        client.get("/api/ingest/ping", headers={**auth, "X-Extension-Version": junk})
+    with app.app_context():
+        assert db.session.get(Device, device[0]).extension_version == "1.5.0"
+    client.get("/api/ingest/ping", headers={**auth, "X-Extension-Version": "1.6.0"})
+    with app.app_context():
+        assert db.session.get(Device, device[0]).extension_version == "1.6.0"
 
 
 # ---------- storing ----------
@@ -186,6 +215,7 @@ def test_preflight_from_extension_origin_is_allowed(client):
     assert r.status_code == 204
     assert r.headers["Access-Control-Allow-Origin"] == "chrome-extension://abc"
     assert "Authorization" in r.headers["Access-Control-Allow-Headers"]
+    assert "X-Extension-Version" in r.headers["Access-Control-Allow-Headers"]
 
 
 def test_other_origins_get_no_cors_headers(client, auth):

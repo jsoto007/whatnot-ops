@@ -1,6 +1,7 @@
 import type { CapturedRow } from '../capture/types'
 import { clampRow, clampUrl } from './limits'
 import type { Settings } from './settings'
+import { deviceHeaders } from './version'
 
 export const BATCH_MAX = 200
 
@@ -86,7 +87,7 @@ export async function postBatch(settings: Settings, batch: ChatEventBatch, fetch
     res = await fetchFn(settings.serverUrl + '/api/ingest', {
       method: 'POST',
       redirect: 'error',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + settings.apiKey },
+      headers: { 'Content-Type': 'application/json', ...deviceHeaders(settings.apiKey) },
       body: JSON.stringify(batch),
     })
   } catch (err) {
@@ -107,16 +108,24 @@ export async function postBatch(settings: Settings, batch: ChatEventBatch, fetch
   throw new UploadError('offline', `server returned ${res.status}`)
 }
 
-export async function ping(settings: Settings, fetchFn: typeof fetch = fetch): Promise<{ ok: true; device: string; organization: string }> {
+export interface PingReply {
+  ok: true
+  device: string
+  organization: string
+  /** The Chat Scraper version the web app serves (null when it has none built). */
+  latestExtension?: string | null
+}
+
+export async function ping(settings: Settings, fetchFn: typeof fetch = fetch): Promise<PingReply> {
   let res: Response
   try {
-    res = await fetchFn(settings.serverUrl + '/api/ingest/ping', { redirect: 'error', headers: { Authorization: 'Bearer ' + settings.apiKey } })
+    res = await fetchFn(settings.serverUrl + '/api/ingest/ping', { redirect: 'error', headers: deviceHeaders(settings.apiKey) })
   } catch (err) {
     throw new UploadError('offline', (err as Error).message || 'network error')
   }
   if (res.status === 401) throw new UploadError('auth', 'server rejected the API key')
   if (!res.ok) throw new UploadError('offline', `server returned ${res.status}`)
-  return (await res.json()) as { ok: true; device: string; organization: string }
+  return (await res.json()) as PingReply
 }
 
 /** Trade a pairing code from the web app for this laptop's device key (used once, then forgotten). */
@@ -152,7 +161,7 @@ export async function revokeDevice(settings: Settings, fetchFn: typeof fetch = f
     const res = await fetchFn(settings.serverUrl + '/api/ingest/disconnect', {
       method: 'POST',
       redirect: 'error',
-      headers: { Authorization: 'Bearer ' + settings.apiKey },
+      headers: deviceHeaders(settings.apiKey),
     })
     return res.ok
   } catch {
