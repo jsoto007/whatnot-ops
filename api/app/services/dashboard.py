@@ -57,7 +57,9 @@ def show_tiles(show: Show) -> dict:
                 "buyers"
             ),
             _rev(PAID).label("paid"),
-            _rev((SaleStatus.detected, SaleStatus.reserved)).label("pending"),
+            # Whatnot charges at the win, so only sales recorded before that wait for the
+            # payment file; an unrecognised item (detected) waits in Review, not for money.
+            _rev((SaleStatus.reserved,)).label("pending"),
             func.coalesce(func.sum(case((Sale.status.in_(LOST), 1), else_=0)), 0).label("lost"),
             *[
                 func.coalesce(
@@ -328,7 +330,7 @@ FULFIL = (OrderStatus.paid, OrderStatus.picking, OrderStatus.packed)
 def overview(org_id: int) -> dict:
     rows = shows_table(org_id)
     low = _low_stock(org_id)
-    # Shows with money still on the table: sales reserved or detected, no payment file applied.
+    # Shows with money still on the table: older sales still reserved, no payment file applied.
     unreconciled = [
         {
             "showId": r["showId"],

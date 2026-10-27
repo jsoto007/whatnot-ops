@@ -17,13 +17,14 @@ from ..models import EventKind
 
 USER = r"@?(?P<buyer>[A-Za-z0-9._-]{2,40})"
 ITEM = r"(?P<item>.+?)"
-PRICE = r"(?:\s*(?:for|@|at)?\s*\$\s?(?P<price>\d{1,5}(?:[.,]\d{2})?))"
+PRICE = r"(?:(?:\s+(?:for|@|at))?\s*\$\s?(?P<price>\d{1,5}(?:[.,]\d{2})?))"
 QTY_IN_ITEM = re.compile(
     r"(?:^|\s)(?:x\s?(?P<a>\d{1,3})|(?P<b>\d{1,3})\s?x|\((?P<c>\d{1,3})\)|qty\s?(?P<d>\d{1,3}))(?=\s|$)",
     re.I,
 )
 
 ITEM_MAX = 240  # ParsedEvent.item_text / Sale.item_text
+LINE_MAX = 1000  # what classify() reads of one chat line
 BUYER_MAX = 80  # buyer_username
 
 # Order = priority when several words appear ("Red bundle" counts as red). The
@@ -201,6 +202,16 @@ PLAYER_WIN = re.compile(
     r"\$(?P<dollars>[0-9]{1,7})\.(?P<cents>[0-9]{2})$",
     re.ASCII,
 )
+# A card declined after a win, also written by the extension (declineBody): the same winner,
+# title and price as the win's own line, so the pipeline finds that sale exactly. Read from
+# Whatnot's player or the show's Sold tab, never from the chat.
+PLAYER_DECLINE = re.compile(
+    r"^(?P<buyer>[A-Za-z0-9._-]{1,80}) payment declined for (?P<item>.+) for "
+    r"\$(?P<dollars>[0-9]{1,7})\.(?P<cents>[0-9]{2})$",
+    re.ASCII,
+)
+# A decline the extension saw but could not tie to a recorded win: a person decides.
+PLAYER_DECLINE_UNTIED = re.compile(r"^payment declined \(not tied to a win\): (?P<text>.+)$", re.S)
 # "... SAM #760": Whatnot numbers repeated listings. Recorded as a detail; the item keeps the
 # full title, because the number can also be the product ("Charizard #4"). A product named
 # "Red bundle" still matches "Red bundle #752" (match_sku looks for the name inside the text).
@@ -211,6 +222,23 @@ PLAYER_MAX_CENTS = 10_000_000
 
 def _player_win(body: str) -> Classification:
     m = PLAYER_WIN.match(body)
+    if not m and (d := PLAYER_DECLINE.match(body)):
+        return Classification(
+            kind=EventKind.payment_failed,
+            rule="player_payment_declined",
+            buyer=d["buyer"][:BUYER_MAX],
+            item=re.sub(r"\s+", " ", d["item"]).strip()[:ITEM_MAX],
+            price_cents=int(d["dollars"]) * 100 + int(d["cents"]),
+            confidence=1.0,
+        )
+    if not m and (u := PLAYER_DECLINE_UNTIED.match(body)):
+        # Not applied to any sale: the pipeline opens a review with the text it saw.
+        return Classification(
+            kind=EventKind.chatter,
+            rule="player_decline_untied",
+            details={"text": u["text"][:ITEM_MAX]},
+            confidence=1.0,
+        )
     if not m:
         # Not a shape the extension writes: never a sale, and never silently dropped
         # (the pipeline opens a review for this rule).
@@ -261,7 +289,10 @@ def classify(
     more weight); `source` is "player" for a win read from the video player."""
     if source == "player":
         return _player_win((body or "").strip())
-    text = (body or raw_text or "").strip()
+    # One space between words and a bounded length before any pattern runs: long runs of
+    # spaces made the lazy item / price patterns backtrack for minutes (one viewer line could
+    # stall the worker). Real chat lines are far shorter.
+    text = " ".join((body or raw_text or "").split())[:LINE_MAX]
     is_system = not username  # platform lines have no username element
     is_host = bool(host) and username.lower() == (host or "").lower()
     authority = 1.0 if (is_system or is_host) else 0.6
@@ -285,7 +316,7 @@ def classify(
     # (confidence < 0.8) instead of creating a sale. A real capture will tell us whether
     # platform rows carry a marker the extension can forward (see audit 2026-10-24).
     if username and not is_host and SPLIT_VERB.match(text):
-        joined = f"{username} {text}"
+        joined = " ".join(f"{username} {text}".split())[:LINE_MAX]
         for kind, rule, rx in SPLIT_PATTERNS:
             m = rx.match(joined)
             if m:

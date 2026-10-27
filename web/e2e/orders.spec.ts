@@ -28,7 +28,7 @@ function row(seq: number, username: string, body: string) {
   }
 }
 
-test('sales become orders; the payment file verifies them; the queue drives pick → pack → ship', async ({ page, request }) => {
+test('wins are paid orders at once; a declined card comes off the queue; pick → pack → ship', async ({ page, request }) => {
   await signup(page)
   await page.getByRole('link', { name: 'Products' }).click()
   await page.getByLabel('Product name').fill('Red bundle')
@@ -49,14 +49,31 @@ test('sales become orders; the payment file verifies them; the queue drives pick
   })
   expect(res.ok()).toBe(true)
 
-  // Two buyers → two open orders, nothing to fulfil yet.
+  // Whatnot charges at the win: both orders are ready to pick at once, nothing awaits payment.
   await page.getByRole('link', { name: /^Orders/ }).click()
-  await expect(page.getByText('Nothing to pick')).toBeVisible()
-  await page.getByRole('tab', { name: 'Awaiting payment' }).click()
+  await expect(page.getByRole('tab', { name: /Awaiting payment/ })).toHaveCount(0)
   await expect(page.getByTestId('order-lani808')).toContainText('3 · 1× RED, 2× RED')
+  await expect(page.getByTestId('order-lani808')).toContainText('ready')
   await expect(page.getByTestId('order-kat.c')).toContainText('1 · 1× RED')
+  // Paid at the win: all four units left the shelf (5 − 3 − 1 = 1).
+  await page.getByRole('link', { name: 'Inventory' }).click()
+  await expect(cell(page, 'RED', 'on-hand')).toHaveText('1')
+  await expect(cell(page, 'RED', 'held')).toHaveText('0')
 
-  // Reconcile: lani808 paid, kat.c refunded.
+  // Then the platform says kat.c's card was declined: the sale closes and the unit comes back.
+  const declined = await request.post('/api/ingest', {
+    data: { version: 1, show: { id: SHOW, startedAt: SHOW }, rows: [row(4, '', 'payment failed for kat.c')] },
+    headers: { Authorization: 'Bearer ' + key },
+  })
+  expect(declined.ok()).toBe(true)
+  await page.reload()
+  await expect(cell(page, 'RED', 'on-hand')).toHaveText('2')
+  await page.getByRole('link', { name: /^Orders/ }).click()
+  await expect(page.getByTestId('order-kat.c')).toHaveCount(0) // not ready to pick any more
+  await page.getByRole('tab', { name: /Payment declined/ }).click()
+  await expect(page.getByTestId('declined-kat.c')).toContainText('payment declined')
+
+  // The payment file only confirms: lani808's two lots are already paid, kat.c's stays declined.
   await page.getByRole('link', { name: /^Shows/ }).click()
   await page.getByRole('link', { name: /show|\d{4}/ }).first().click()
   await page.getByRole('tab', { name: 'Payments' }).click()
@@ -64,21 +81,17 @@ test('sales become orders; the payment file verifies them; the queue drives pick
     name: 'orders.csv',
     mimeType: 'text/csv',
     buffer: Buffer.from(
-      'Order ID,Buyer,Product,Quantity,Sold Price,Status\nW1,lani808,Red bundle,1,25.00,Paid\nW2,lani808,Red bundle,2,50.00,Paid\nW3,kat.c,Red bundle,1,25.00,Refunded\n',
+      'Order ID,Buyer,Product,Quantity,Sold Price,Status\nW1,lani808,Red bundle,1,25.00,Paid\nW2,lani808,Red bundle,2,50.00,Paid\nW3,kat.c,Red bundle,1,25.00,Payment failed\n',
     ),
   })
   await page.getByRole('button', { name: 'Preview' }).click()
-  await expect(page.getByTestId('reconcile-summary')).toContainText('2 mark paid')
-  await expect(page.getByTestId('reconcile-summary')).toContainText('1 cancel')
+  await expect(page.getByTestId('reconcile-summary')).toContainText('3 unchanged')
   await page.getByTestId('apply-reconcile').click()
   await page.getByRole('tab', { name: 'Sales' }).click()
-  await expect(page.getByTestId('sales').locator('tr', { hasText: 'kat.c' })).toContainText('cancelled')
+  await expect(page.getByTestId('sales').locator('tr', { hasText: 'kat.c' })).toContainText('payment declined')
   await expect(page.getByTestId('sales').locator('tr', { hasText: 'lani808' }).first()).toContainText('paid')
-
-  // Stock left the shelf for the paid ones: 5 − 3 on hand, 0 reserved.
   await page.getByRole('link', { name: 'Inventory' }).click()
   await expect(cell(page, 'RED', 'on-hand')).toHaveText('2')
-  await expect(cell(page, 'RED', 'held')).toHaveText('0')
 
   // Queue: lani808's order is verified; pick list shows 3 × RED; pick → pack → ship.
   await page.getByRole('link', { name: /^Orders/ }).click()
@@ -93,7 +106,6 @@ test('sales become orders; the payment file verifies them; the queue drives pick
   await page.getByRole('tab', { name: 'In progress' }).click()
   await expect(page.getByTestId('order-lani808')).toContainText('picking')
   await page.getByTestId('order-lani808').getByRole('link').click()
-  await expect(page.getByTestId('packing-slip')).toContainText('all paid')
   // the slip reads like the shop's paper sheet: header, a tick box per unit, footer lines
   await expect(page.getByTestId('slip-title')).toHaveText(/Username: lani808 – 3 Items/)
   await expect(page.getByTestId('packing-slip')).toContainText('Product checklist')

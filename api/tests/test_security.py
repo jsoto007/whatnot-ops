@@ -145,7 +145,7 @@ def test_a_viewer_listing_does_not_decide_the_next_win(app, world):
         ],
     )
     run(app, world["show"])
-    assert sales(app, world["show"]) == [("lani808", "reserved", "RED", 1)]
+    assert sales(app, world["show"]) == [("lani808", "paid", "RED", 1)]
 
 
 def test_a_very_long_chat_line_does_not_stop_parsing(app, world):
@@ -159,7 +159,7 @@ def test_a_very_long_chat_line_does_not_stop_parsing(app, world):
     )
     stats = run(app, world["show"])
     assert stats.parsed == 2
-    assert sales(app, world["show"]) == [("lani808", "reserved", "RED", 1)]
+    assert sales(app, world["show"]) == [("lani808", "paid", "RED", 1)]
     c = rules.classify("", "kat.c won " + "y" * 500, "")
     assert len(c.item) <= rules.ITEM_MAX
 
@@ -322,3 +322,169 @@ def test_the_extension_disconnect_revokes_its_own_key(client, app, auth):
     assert client.get("/api/ingest/ping", headers=auth).status_code == 200
     assert client.post("/api/ingest/disconnect", headers=auth).status_code == 204
     assert client.get("/api/ingest/ping", headers=auth).status_code == 401
+
+
+# ---------- injected / disguised text and abuse limits (2026-10-27) ----------
+
+
+def test_control_characters_and_invisible_marks_are_stripped_from_chat(client, app, auth):
+    """A viewer's line is stored as plain text: no bidi overrides, zero-width or control
+    characters that would make Review show something other than what the parser read."""
+    sneaky = "‮won the auction‬ for​ $1\x07\r\nnext line"
+    r = client.post("/api/ingest", json=batch([row(1, text=sneaky)]), headers=auth)
+    assert r.status_code == 200
+    with app.app_context():
+        body = db.session.scalar(select(ChatMessage.body))
+    assert body == "won the auction for $1 next line"
+    family = "👨‍👩‍👧"  # emoji sequences keep their joiner
+    client.post("/api/ingest", json=batch([row(2, text=family)]), headers=auth)
+    with app.app_context():
+        assert db.session.scalar(select(ChatMessage.body).where(ChatMessage.seq == 2)) == family
+
+
+@pytest.mark.parametrize(
+    "url,kept",
+    [
+        ("/live/abc", "/live/abc"),
+        ("https://www.whatnot.com/live/abc", "https://www.whatnot.com/live/abc"),
+        ("javascript:alert(1)", None),
+        ("//evil.test/live", None),
+        ("https://evil.test/live", None),
+        ("http://www.whatnot.com/live/abc", None),
+        ("https://whatnot.com.evil.test/x", None),
+    ],
+)
+def test_only_a_whatnot_address_is_kept_for_a_show(client, app, auth, url, kept):
+    from app.models import Show
+
+    b = batch([row(1)])
+    b["show"]["url"] = url
+    assert client.post("/api/ingest", json=b, headers=auth).status_code == 200
+    with app.app_context():
+        assert db.session.scalar(select(Show.source_url)) == kept
+
+
+def test_uploaded_csv_cells_lose_controls_and_invisible_marks():
+    rows = reconcile.parse_csv("Buyer,Product,Status\n‮eve\x1b[31m,Red​ bundle,Paid\n")
+    assert (rows[0].buyer, rows[0].item) == ("eve[31m", "Red bundle")
+
+
+def test_wrong_device_keys_are_rate_limited_per_address(client):
+    codes = [
+        client.get("/api/ingest/ping", headers={"Authorization": f"Bearer wn_guess{i}"}).status_code
+        for i in range(35)
+    ]
+    assert codes[:30] == [401] * 30 and codes[-1] == 429
+
+
+def test_one_device_cannot_flood_the_api(client, auth, monkeypatch):
+    from app.routes import ingest as ingest_routes
+
+    monkeypatch.setattr(ingest_routes, "DEVICE_CALLS_PER_MIN", 5)
+    codes = [client.get("/api/ingest/ping", headers=auth).status_code for _ in range(7)]
+    assert codes[:5] == [200] * 5 and codes[-1] == 429
+
+
+def test_a_signed_in_person_has_a_write_limit(client, monkeypatch):
+    from app import auth as auth_mod
+
+    h = owner(client)
+    monkeypatch.setattr(auth_mod, "WRITES_PER_MIN", 3)
+    codes = [
+        client.post("/api/inventory/import", json={"csv": "x"}, headers=h).status_code
+        for _ in range(5)
+    ]
+    assert 429 in codes and 500 not in codes
+
+
+def test_upload_routes_refuse_non_text_bodies(client):
+    h = owner(client)
+    for bad in ({"csv": ["a"]}, {"csv": {"x": 1}}, {"csv": 5}):
+        assert client.post("/api/inventory/import", json=bad, headers=h).status_code == 400
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "bob won" + " " * 3990 + "x",
+        "bob won" + " ​" * 1990 + " x",
+        "sold to bob - " + "item " * 790 + "for",
+        "bob won " + "a " * 1990 + "$",
+    ],
+)
+def test_a_long_crafted_line_classifies_in_milliseconds(line):
+    """One viewer line made of spaces (or zero-width spaces the cleaner removes) used to make
+    the item / price patterns backtrack for minutes and stall every parse."""
+    import time
+
+    from app.services import text
+
+    stored = text.clean(line)
+    t = time.perf_counter()
+    rules.classify("", stored, stored)
+    rules.classify("viewer", stored, stored, host="host_shop")
+    assert time.perf_counter() - t < 0.05
+
+
+def test_a_friendly_host_line_does_not_back_an_ai_cancel():
+    from app.services.supervisor import _says_it_went_wrong
+
+    assert not _says_it_went_wrong("lani808 no refunds on mystery packs, enjoy!")
+    assert not _says_it_went_wrong("lani808 we do not cancel")
+    assert _says_it_went_wrong("lani808 card declined, relisting")
+
+
+def test_the_ai_has_an_hourly_budget_per_shop(app, world, monkeypatch):
+    from app.models import AiCall
+    from app.services import supervisor
+
+    monkeypatch.setenv("AI_PROVIDER", "fake")
+    monkeypatch.setattr(supervisor, "AI_CALLS_PER_HOUR", 2)
+    with app.app_context():
+        for _ in range(4):
+            supervisor.ask("classify_line", "x", "hello", {"type": "object"}, org_id=world["org"])
+        db.session.commit()
+        errors = db.session.scalars(select(AiCall.error).order_by(AiCall.id)).all()
+    assert errors[2:] == ["hourly AI budget", "hourly AI budget"]
+    assert "hourly AI budget" not in errors[:2]
+
+
+def test_pick_sale_only_takes_one_of_the_items_choices(app, world):
+    from app.models import User
+
+    world["say"](
+        app,
+        [
+            ("", "lani808 won Red bundle"),
+            ("", "lani808 won Red bundle for $25"),
+            ("", "kat.c won Red bundle"),
+        ],
+    )
+    world["say"](app, [("host_shop", "cancelled for lani808")])
+    run(app, world["show"])
+    with app.app_context():
+        item = db.session.scalar(select(ReviewItem).where(ReviewItem.reason == "ambiguous_sale"))
+        kat = db.session.scalar(select(Sale).where(Sale.buyer_username == "kat.c"))
+        u = User(
+            organization_id=world["org"],
+            email="o@x.test",
+            name="O",
+            password_hash="x",
+            role="owner",
+            session_token="t",
+        )
+        db.session.add(u)
+        db.session.flush()
+        with pytest.raises(pipeline.ReviewError, match="not one of this item's choices"):
+            pipeline.resolve(item, "pick_sale", {"saleId": kat.id}, user=u)
+        for bad in ({"saleId": "abc"}, {"saleId": [1]}, {"saleId": True}):
+            with pytest.raises(pipeline.ReviewError):
+                pipeline.resolve(item, "pick_sale", bad, user=u)
+        db.session.rollback()
+    assert [s[1] for s in sales(app, world["show"]) if s[0] == "kat.c"] == ["paid"]
+
+
+def test_deeply_nested_json_is_400_not_500(client, auth):
+    deep = "[" * 100_000 + "]" * 100_000
+    r = client.post("/api/ingest", data=deep, headers={**auth, "Content-Type": "application/json"})
+    assert r.status_code == 400

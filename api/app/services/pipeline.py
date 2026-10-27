@@ -9,7 +9,7 @@ unresolved listings); sales that exist are never rewritten by rules.
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import aliased
@@ -18,6 +18,7 @@ from ..db import db
 from ..models import (
     ChatMessage,
     EventKind,
+    MovementKind,
     ParsedEvent,
     ReviewItem,
     ReviewStatus,
@@ -32,7 +33,16 @@ from .jobs import enqueue, handler
 
 log = logging.getLogger(__name__)
 RULE_ACTOR = Actor("rule", None, "rules")
+# Whatnot charges the winner's card when the auction ends; a decline arrives as its own line.
+AUTOPAY_ACTOR = Actor("rule", None, "whatnot autopay")
+AUTOPAY_REASON = "paid at the win (Whatnot charges the winner automatically)"
 OPEN = (SaleStatus.detected, SaleStatus.reserved)
+# What a cancel or payment-declined line may close: a sale still in the shop. Paid sales count,
+# because every win is paid at once; a decline turns that payment back.
+CLOSABLE = OPEN + (SaleStatus.paid,)
+# The ledger's source type for a sale's second payment (a declined card that went through
+# after all): its own source keeps the reserve / commit / restock of each round idempotent.
+REPAID = "sale_repaid"
 DEAD_END = (EventKind.chatter, EventKind.claim, EventKind.listing)
 # The same player win seen in another show this close in time is a second laptop or a
 # restarted recording of one auction, not a second sale.
@@ -156,6 +166,20 @@ def _reserve(sale: Sale) -> bool:
     return True
 
 
+def autopay(sale: Sale, *, at=None) -> Sale:
+    """Whatnot charges the winner as the auction ends: a reserved sale is paid at once
+    (stock committed). A decline that follows closes it again (set_sale_status)."""
+    if sale.status is not SaleStatus.reserved:
+        return sale
+    set_sale_status(sale, SaleStatus.paid, reason=AUTOPAY_REASON, actor=AUTOPAY_ACTOR)
+    sale.paid_at = sale.paid_at or at or datetime.now(UTC)
+    return sale
+
+
+def _won_at(ev: ParsedEvent):
+    return ev.message.captured_at if ev.message is not None else None
+
+
 def create_sale(show: Show, ev: ParsedEvent, *, sku: Sku | None) -> Sale:
     sale = Sale(
         organization_id=show.organization_id,
@@ -191,15 +215,21 @@ def create_sale(show: Show, ev: ParsedEvent, *, sku: Sku | None) -> Sale:
         )
     else:
         _reserve(sale)
+        autopay(sale, at=_won_at(ev))
     return sale
 
 
 def close_sale(show: Show, ev: ParsedEvent, new_status: SaleStatus) -> Sale | None:
-    """A cancel / payment-failed line: release the buyer's matching open sale."""
-    q = select(Sale).where(Sale.show_id == show.id, Sale.status.in_(OPEN))
+    """A cancel / payment-failed line: close the buyer's matching sale (release or restock)."""
+    q = select(Sale).where(Sale.show_id == show.id, Sale.status.in_(CLOSABLE))
     if ev.buyer_username:
         q = q.where(func.lower(Sale.buyer_username) == ev.buyer_username.lower())
     candidates = list(db.session.scalars(q.order_by(Sale.id.desc())))
+    if ev.rule == "player_payment_declined":
+        found = _declined_win(show, ev)
+        if found is None or isinstance(found, Sale):
+            return found
+        candidates = found
     if ev.item_text and len(candidates) > 1:
         sku = match_sku(show.organization_id, ev.item_text)
         narrowed = [
@@ -242,8 +272,86 @@ def close_sale(show: Show, ev: ParsedEvent, new_status: SaleStatus) -> Sale | No
             },
         )
         return None
-    return set_sale_status(
+    sale = set_sale_status(
         candidates[0], new_status, reason=f"chat line #{ev.message.seq}", actor=RULE_ACTOR
+    )
+    if new_status is SaleStatus.payment_failed:
+        review_decline(sale, message_id=ev.message_id, event_id=ev.id)
+    return sale
+
+
+def _declined_win(show: Show, ev: ParsedEvent):
+    """The win a decline read from Whatnot's own UI is about: the same buyer, at exactly that
+    price, on that show day (another laptop's recording may hold it), the same title first.
+    Never a sale at another price. Returns the sale already declined (the same decline seen
+    again: nothing to do), None after opening a review, or the candidates to close."""
+    rows = list(
+        db.session.scalars(
+            select(Sale)
+            .join(Show, Sale.show_id == Show.id)
+            .where(
+                Sale.organization_id == show.organization_id,
+                Show.show_date == show.show_date,
+                func.lower(Sale.buyer_username) == ev.buyer_username.lower(),
+                Sale.price_cents == ev.price_cents,
+                Sale.status.in_(CLOSABLE + (SaleStatus.payment_failed,)),
+            )
+            .order_by(Sale.show_id != show.id, Sale.id)
+        )
+    )
+    titled = [s for s in rows if (s.item_text or "").lower() == (ev.item_text or "").lower()]
+    rows = titled or rows
+    open_ = [s for s in rows if s.status in CLOSABLE]
+    done = [s for s in rows if s.status is SaleStatus.payment_failed]
+    if done and not open_:
+        return done[0]
+    if open_ and not done:
+        here = [s for s in open_ if s.show_id == show.id]
+        return here or open_[:1]  # another laptop's copy of this win: close the one sale
+    summary = (
+        f"Whatnot showed {ev.buyer_username}'s payment declined for {ev.item_text} "
+        f"({money(ev.price_cents)}), but "
+        + (
+            "no sale at that price was found"
+            if not rows
+            else "one such sale is already declined and another is not — which one was it?"
+        )
+    )
+    open_review(
+        show.organization_id,
+        "no_open_sale" if not rows else "ambiguous_sale",
+        summary,
+        show_id=show.id,
+        message_id=ev.message_id,
+        event_id=ev.id,
+        proposal=None
+        if not rows
+        else {
+            "status": SaleStatus.payment_failed.value,
+            "candidates": [
+                {"saleId": s.id, "label": f"#{s.id} {s.item_text} ({s.status.value})"}
+                for s in open_
+            ],
+        },
+    )
+    return None
+
+
+def review_decline(sale: Sale, *, message_id: int | None = None, event_id: int | None = None):
+    """Whatnot gives a declined buyer until the end of the show to pay another way. The
+    decline stands, and this item lets a person put the sale back if the payment went through."""
+    back = sale.sku_id is not None and units_out(sale) == 0
+    return open_review(
+        sale.organization_id,
+        "payment_declined",
+        f"{sale.buyer_username}'s payment was declined for {sale.quantity} × "
+        f"{sale.item_text or (sale.sku.code if sale.sku else '?')} ({money(sale.price_cents)}). "
+        + ("The item is back in stock. " if back else "")
+        + "If they pay another way before the show ends, mark it paid.",
+        show_id=sale.show_id,
+        message_id=message_id,
+        event_id=event_id,
+        sale_id=sale.id,
     )
 
 
@@ -251,6 +359,11 @@ def set_sale_status(
     sale: Sale, new_status: SaleStatus, *, reason: str | None, actor: Actor
 ) -> Sale:
     """The one place a sale changes state; moves inventory accordingly."""
+    if sale.id is not None:
+        # One change at a time per sale, decided on its committed state (a decline racing the
+        # payment file or a person must not both act on a stale status).
+        db.session.flush()
+        db.session.refresh(sale, with_for_update=True)
     if sale.status == new_status:
         return sale
     if new_status in (SaleStatus.detected, SaleStatus.reserved):
@@ -261,9 +374,47 @@ def set_sale_status(
             f"{new_status.value}. Record a new sale instead.",
             409,
         )
+    picked = None
     if new_status in (SaleStatus.cancelled, SaleStatus.payment_failed):
         if sale.status is SaleStatus.reserved:
             inventory.release(
+                sale.sku_id,
+                sale.quantity,
+                source_type=_round(sale),
+                source_id=str(sale.id),
+                actor=actor,
+                reason=reason,
+            )
+        elif (
+            sale.status is SaleStatus.paid
+            and not _in_fulfilment(sale)
+            and not _moved(sale, MovementKind.restock, _round(sale))
+        ):
+            # Paid at the win and still on the shelf: the stock comes back.
+            inventory.move(
+                sale.sku_id,
+                MovementKind.restock,
+                sale.quantity,
+                source_type=_round(sale),
+                source_id=str(sale.id),
+                actor=actor,
+                reason=reason,
+            )
+        elif sale.status in (SaleStatus.paid, SaleStatus.fulfilled):
+            # Picked, packed or shipped: whether it goes back on the shelf is a person's call.
+            sale.flagged = True
+            picked = sale.status
+    elif new_status is SaleStatus.paid:
+        if sale.status is SaleStatus.payment_failed:
+            _repay(sale, actor=actor, reason=reason)
+        elif sale.status is not SaleStatus.reserved:
+            raise ReviewError(
+                f"sale {sale.id} is {sale.status.value}; only a reserved sale, or a declined "
+                "one with a product, can be marked paid",
+                409,
+            )
+        else:
+            inventory.commit(
                 sale.sku_id,
                 sale.quantity,
                 source_type="sale",
@@ -271,22 +422,6 @@ def set_sale_status(
                 actor=actor,
                 reason=reason,
             )
-        elif sale.status in (SaleStatus.paid, SaleStatus.fulfilled):
-            # Paid stock already left (maybe shipped); cancelling now is a restock decision.
-            sale.flagged = True
-    elif new_status is SaleStatus.paid:
-        if sale.status is not SaleStatus.reserved:
-            raise ValueError(
-                f"sale {sale.id} is {sale.status.value}, only reserved sales can be paid"
-            )
-        inventory.commit(
-            sale.sku_id,
-            sale.quantity,
-            source_type="sale",
-            source_id=str(sale.id),
-            actor=actor,
-            reason=reason,
-        )
     elif new_status is SaleStatus.fulfilled:
         if sale.status is not SaleStatus.paid:
             raise ValueError(
@@ -306,7 +441,128 @@ def set_sale_status(
         if new_status in (SaleStatus.cancelled, SaleStatus.payment_failed):
             item.status = ReviewStatus.dismissed
             item.resolution = {"by": "sale closed"}
+        elif new_status is SaleStatus.paid and item.reason in (
+            "payment_declined",
+            "closed_after_picking",
+        ):
+            item.status = ReviewStatus.resolved
+            item.resolution = {"by": "sale paid"}
+    if picked is not None:
+        stage = "shipped" if picked is SaleStatus.fulfilled else sale.order.status.value
+        what = {"picking": "being picked"}.get(stage, stage)
+        open_review(
+            sale.organization_id,
+            "closed_after_picking",
+            f"{sale.buyer_username}'s {sale.quantity} × "
+            f"{sale.item_text or (sale.sku.code if sale.sku else '?')} is "
+            f"{new_status.value.replace('_', ' ')} but its order was already {what}. Take it "
+            "out of the package and count it back in Inventory if it is not going out.",
+            show_id=sale.show_id,
+            sale_id=sale.id,
+        )
     return sale
+
+
+def _in_fulfilment(sale: Sale) -> bool:
+    """The sale's unit may already be in a box: its order is being picked or later, and the
+    sale was won before picking started (a later win on the same order was never pulled)."""
+    from .orders import FULFILLMENT
+
+    order = sale.order
+    if order is None or order.status not in FULFILLMENT:
+        return False
+    return order.picked_at is None or sale.paid_at is None or sale.paid_at <= order.picked_at
+
+
+def _moved(sale: Sale, kind: MovementKind, source_type: str) -> bool:
+    from ..models import InventoryMovement
+
+    return (
+        db.session.scalar(
+            select(InventoryMovement.id)
+            .where(
+                InventoryMovement.sku_id == sale.sku_id,
+                InventoryMovement.kind == kind,
+                InventoryMovement.source_type == source_type,
+                InventoryMovement.source_id == str(sale.id),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def units_out(sale: Sale) -> int:
+    """How many of the sale's units the ledger counts as gone from the shelf: committed by
+    any payment round, minus what a decline or cancel put back."""
+    from ..models import InventoryMovement
+
+    if sale.sku_id is None:
+        return 0
+    rows = db.session.execute(
+        select(InventoryMovement.kind, func.sum(InventoryMovement.quantity))
+        .where(
+            InventoryMovement.sku_id == sale.sku_id,
+            InventoryMovement.source_type.in_(("sale", REPAID)),
+            InventoryMovement.source_id == str(sale.id),
+            InventoryMovement.kind.in_((MovementKind.commit, MovementKind.restock)),
+        )
+        .group_by(InventoryMovement.kind)
+    ).all()
+    n = {k: int(q or 0) for k, q in rows}
+    return n.get(MovementKind.commit, 0) - n.get(MovementKind.restock, 0)
+
+
+def _repay(sale: Sale, *, actor: Actor, reason: str | None) -> None:
+    """A declined buyer paid another way. The unit leaves the shelf again only if the decline
+    had put it back; one such round per sale (a ledger source holds each kind once)."""
+    from .orders import OrderStatus
+
+    if sale.sku_id is None:
+        raise ReviewError(
+            f"sale {sale.id} has no product yet; choose one in Review, then mark it paid", 409
+        )
+    if sale.order is not None and sale.order.status is OrderStatus.shipped:
+        raise ReviewError(
+            f"sale {sale.id}'s order already shipped without it; record a new sale to send "
+            "it separately",
+            409,
+        )
+    if units_out(sale) < sale.quantity:
+        if _moved(sale, MovementKind.commit, REPAID):
+            raise ReviewError(
+                f"sale {sale.id} was already paid again after a decline once; "
+                "record a new sale instead",
+                409,
+            )
+        for kind in (MovementKind.reserve, MovementKind.commit):
+            inventory.move(
+                sale.sku_id,
+                kind,
+                sale.quantity,
+                source_type=REPAID,
+                source_id=str(sale.id),
+                actor=actor,
+                reason=reason,
+            )
+        sale.paid_at = datetime.now(UTC)
+
+
+def _round(sale: Sale) -> str:
+    """The ledger source of the sale's current payment: "sale", or REPAID once a declined
+    payment went through after all."""
+    from ..models import InventoryMovement
+
+    again = db.session.scalar(
+        select(InventoryMovement.id)
+        .where(
+            InventoryMovement.kind == MovementKind.commit,
+            InventoryMovement.source_type == REPAID,
+            InventoryMovement.source_id == str(sale.id),
+        )
+        .limit(1)
+    )
+    return REPAID if again is not None else "sale"
 
 
 # ---------- the pass over a show ----------
@@ -371,6 +627,9 @@ def process_show(show_id: int, *, reparse: bool = False, host: str | None = None
                 show_id=show.id,
                 message_id=m.id,  # not the event: a reparse deletes chatter events
             )
+            continue
+        if c.rule == "player_decline_untied":
+            _review_untied_decline(show, m, (c.details or {}).get("text", ""))
             continue
         if c.kind is EventKind.listing:
             # Only the host or the platform announces what is up next; a viewer typing
@@ -494,6 +753,55 @@ def process_show(show_id: int, *, reparse: bool = False, host: str | None = None
 
         schedule_audit(show)
     return stats
+
+
+# Untied declines open at once per show; more is noise (or someone typing variations).
+MAX_UNTIED_REVIEWS = 10
+
+
+def _review_untied_decline(show: Show, m: ChatMessage, text: str) -> None:
+    """A decline the extension saw but could not tie to a win changes nothing: a person picks
+    the sale. The sales whose buyer the text names come first as choices."""
+    open_now = db.session.scalar(
+        select(func.count())
+        .select_from(ReviewItem)
+        .where(
+            ReviewItem.show_id == show.id,
+            ReviewItem.reason == "decline_untied",
+            ReviewItem.status == ReviewStatus.open,
+        )
+    )
+    if (open_now or 0) >= MAX_UNTIED_REVIEWS:
+        return
+    words = {w.lstrip("@").lower() for w in text.split()}
+    sales = list(
+        db.session.scalars(
+            select(Sale)
+            .where(Sale.show_id == show.id, Sale.status.in_(CLOSABLE))
+            .order_by(Sale.id.desc())
+        )
+    )
+    named = [s for s in sales if s.buyer_username.lower() in words]
+    choices = (named or sales)[:8]
+    open_review(
+        show.organization_id,
+        "decline_untied",
+        "Whatnot showed a declined payment the extension could not tie to a win: "
+        f'"{text[:200]}" — pick the sale it is about, or ignore it',
+        show_id=show.id,
+        message_id=m.id,
+        proposal={
+            "status": SaleStatus.payment_failed.value,
+            "candidates": [
+                {
+                    "saleId": s.id,
+                    "label": f"#{s.id} {s.buyer_username}: {s.item_text or '?'} "
+                    f"{money(s.price_cents)}",
+                }
+                for s in choices
+            ],
+        },
+    )
 
 
 def _lock_buyer(org_id: int, buyer: str) -> None:
@@ -652,7 +960,7 @@ def _flag_chat_sale_for_the_same_win(show: Show, sale: Sale, m: ChatMessage) -> 
     q = _player_sales_near(
         show.organization_id, sale.buyer_username, m.captured_at, CHAT_DUPLICATE_WINDOW
     )
-    q = q.where(Sale.id != sale.id, ChatMessage.source == "chat", Sale.status.in_(OPEN))
+    q = q.where(Sale.id != sale.id, ChatMessage.source == "chat", Sale.status.in_(CLOSABLE))
     for chat_sale, chat_line in db.session.execute(q).all():
         if chat_sale.show_id == show.id and chat_line.seq > m.seq:
             continue  # after the win in this show: that line was routed to Review already
@@ -692,6 +1000,23 @@ class ReviewError(ValueError):
         self.status = status
 
 
+def _id(value) -> int:
+    """An id from a request body: a whole number, or a 400 (never a 500)."""
+    if isinstance(value, bool) or not isinstance(value, int | str):
+        raise ReviewError("expected a numeric id")
+    try:
+        return int(value)
+    except ValueError:
+        raise ReviewError("expected a numeric id") from None
+
+
+def _status(value) -> SaleStatus:
+    try:
+        return SaleStatus(value)
+    except ValueError:
+        raise ReviewError(f"unknown sale status {str(value)[:40]!r}") from None
+
+
 def record_sale_from_event(item: ReviewItem) -> Sale:
     """Turn the sale-shaped line behind a review item into a real sale: the same
     create_sale() the rules use (SKU match, reserve, or an unmatched_item review).
@@ -725,13 +1050,15 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
             "action": "confirm_sale",
             "saleId": sale.id,
             "skuId": sale.sku_id,
-            "reserved": sale.status is SaleStatus.reserved,
+            "reserved": sale.status in (SaleStatus.reserved, SaleStatus.paid),
         }
     elif action == "assign_sku":
         sale = item.sale
         if sale is None:
             raise ReviewError("this item has no sale to assign")
-        sku = catalog.get_sku(item.organization_id, int(body.get("skuId") or 0))
+        if sale.status not in OPEN:
+            raise ReviewError(f"sale {sale.id} is already {sale.status.value}", 409)
+        sku = catalog.get_sku(item.organization_id, _id(body.get("skuId")))
         if sale.status is SaleStatus.reserved and sale.sku_id and sale.sku_id != sku.id:
             inventory.release(
                 sale.sku_id,
@@ -749,14 +1076,26 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
         if body.get("remember") and sale.item_text:
             catalog.add_alias(item.organization_id, sku, sale.item_text, quiet=True)
         ok = _reserve(sale)
+        autopay(sale, at=_won_at(sale.event) if sale.event else None)
         item.status = ReviewStatus.resolved
         item.resolution = {"action": "assign_sku", "skuId": sku.id, "reserved": ok}
     elif action == "pick_sale":
-        sale = db.session.get(Sale, int(body.get("saleId") or 0))
+        # Only one of the sales this item offered: the choice is the item's, not any sale's.
+        offered = {
+            c.get("saleId")
+            for c in (item.proposal or {}).get("candidates", [])
+            if isinstance(c, dict)
+        }
+        sale_id = _id(body.get("saleId"))
+        if item.reason not in ("ambiguous_sale", "decline_untied") or sale_id not in offered:
+            raise ReviewError("that sale is not one of this item's choices", 400)
+        sale = db.session.get(Sale, sale_id)
         if sale is None or sale.organization_id != item.organization_id:
             raise ReviewError("sale not found", 404)
         status = SaleStatus((item.proposal or {}).get("status", "cancelled"))
         set_sale_status(sale, status, reason=f"review #{item.id}", actor=actor)
+        if status is SaleStatus.payment_failed:
+            review_decline(sale)
         item.status = ReviewStatus.resolved
         item.resolution = {"action": "pick_sale", "saleId": sale.id, "status": status.value}
     elif action == "apply_proposal":
@@ -767,15 +1106,19 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
         sale = item.sale
         if sale is None:
             raise ReviewError("this item has no sale")
-        set_sale_status(
-            sale, SaleStatus(body.get("status", "")), reason=f"review #{item.id}", actor=actor
-        )
+        if body.get("skuId") and sale.sku_id is None and sale.status is SaleStatus.payment_failed:
+            # A declined win whose item was never recognised: say what it was, then restore it.
+            sku = catalog.get_sku(item.organization_id, _id(body["skuId"]))
+            sale.sku = sku
+            sale.sku_id = sku.id
+            sale.flagged = False
+            if sale.price_cents is None:
+                sale.price_cents = sku.price_cents
+        set_sale_status(sale, _status(body.get("status")), reason=f"review #{item.id}", actor=actor)
         item.status = ReviewStatus.resolved
         item.resolution = {"action": "set_status", "status": sale.status.value}
     else:
         raise ReviewError(f"unknown action {action!r}")
-    from datetime import datetime
-
     item.resolved_by_id = user.id
     item.resolved_at = datetime.now(UTC)
     return item

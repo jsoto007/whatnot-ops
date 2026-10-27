@@ -1,4 +1,5 @@
 import { Recorder } from '../capture/recorder'
+import { DeclineWatcher, isDeclineBody, outside } from '../capture/decline'
 import { WinWatcher } from '../capture/player'
 import { buildSelector, chatContainer, findRow, scrollParent } from '../capture/row'
 import type { CapturedRow } from '../capture/types'
@@ -25,6 +26,8 @@ const FLUSH_AT = 50
 const FLUSH_MAX = 500
 const RETRY_MS = 3000
 const WIN_POLL_MS = 500
+/** Declines outside the player (the Sold tab) are looked for on the timer, at most this often. */
+const PAGE_SCAN_MS = 1000
 /** Stock moves once an upload is parsed (a few seconds), so a slower poll is enough. */
 const STOCK_POLL_MS = 8000
 /** How often a recording checks the tab is still on the show's page. */
@@ -61,6 +64,8 @@ export class Controller {
   private startedAt: string | null = null
   private recorder: Recorder | null = null
   private wins: WinWatcher | null = null
+  private declines: DeclineWatcher | null = null
+  private lastPageScan = 0
   private winTimer: ReturnType<typeof setInterval> | null = null
   private stockTimer: ReturnType<typeof setInterval> | null = null
   /** Last stock poll of this recording; null until the first one (the baseline). */
@@ -325,8 +330,12 @@ export class Controller {
     // Whatnot shows who won what only in the video player, never in the chat: read it too.
     this.wins = new WinWatcher(this.startedAt!)
     this.wins.remember(this.log)
-    this.winTimer = setInterval(() => this.checkPlayer(), WIN_POLL_MS)
-    this.checkPlayer()
+    // A card declined after a win: the player or the show's Sold tab says so (see decline.ts).
+    this.declines = new DeclineWatcher(this.startedAt!)
+    this.declines.remember(this.log)
+    this.lastPageScan = 0
+    this.winTimer = setInterval(() => this.checkPlayer(true), WIN_POLL_MS)
+    this.checkPlayer(true)
     this.stockTimer = setInterval(() => void this.checkStock(), STOCK_POLL_MS)
     void this.checkStock()
     if (rec.attached) this.panel.setStatus('Watching chat.', 'good')
@@ -340,6 +349,7 @@ export class Controller {
     if (this.winTimer) clearInterval(this.winTimer)
     this.winTimer = null
     this.wins = null
+    this.declines = null
     this.stopStock()
     this.playerObserver?.disconnect()
     this.playerObserver = null
@@ -350,13 +360,33 @@ export class Controller {
     }
   }
 
-  private checkPlayer(): void {
+  /** `timer`: the periodic check, which also looks outside the player for declines. */
+  private checkPlayer(timer = false): void {
     if (!this.wins) return // not recording (a late observer callback after Stop)
     this.watchPlayer()
-    const row = this.wins.check(document)
-    if (!row) return
-    this.onRow(row)
+    const rows: CapturedRow[] = []
+    const win = this.wins.check(document)
+    if (win) {
+      rows.push(win)
+      this.declines?.noteWin(win)
+    }
+    if (this.declines) rows.push(...this.declines.check(document, this.declineScan(timer)))
+    if (!rows.length) return
+    for (const row of rows) this.onRow(row)
     this.renderWins()
+  }
+
+  /**
+   * Where declines may be read. Never the chat (viewers type there) nor our panel. Outside the
+   * player only while the Recorder is attached, so the chat box is known and can be skipped.
+   */
+  private declineScan(timer: boolean): { page: boolean; ignore: (n: Node) => boolean } {
+    const rec = this.recorder
+    const now = Date.now()
+    const page = timer && !!rec?.attached && now - this.lastPageScan >= PAGE_SCAN_MS
+    if (page) this.lastPageScan = now
+    const selectors = [rec?.currentSelector ?? '', ...(this.spot?.selectors ?? [])]
+    return { page, ignore: outside((n) => this.panel.contains(n), rec?.box ?? null, selectors) }
   }
 
   /** Check on every change to the player too: Chrome slows timers in a hidden or muted tab, not observers. */
@@ -393,9 +423,11 @@ export class Controller {
   }
 
   private renderWins(): void {
-    const wins = this.log.filter((r) => r.source === 'player')
+    const player = this.log.filter((r) => r.source === 'player')
+    const wins = player.filter((r) => !isDeclineBody(r.body))
+    const declined = player.length - wins.length
     const last = wins[wins.length - 1]
-    this.panel.setWins(last ? `wins ${wins.length} · last: ${last.body}` : '')
+    this.panel.setWins(last ? `wins ${wins.length}` + (declined ? ` · declined ${declined}` : '') + ` · last: ${last.body}` : '')
   }
 
   private onRow(row: CapturedRow): void {

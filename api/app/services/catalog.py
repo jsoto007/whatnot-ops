@@ -10,6 +10,7 @@ from sqlalchemy import select
 from ..db import db
 from ..models import Product, ProductAlias, Sku
 from . import inventory
+from . import text as text_safe
 from .inventory import Actor
 
 
@@ -202,7 +203,8 @@ def _pick(header: list[str], candidates: tuple[str, ...]) -> int | None:
 
 
 def parse_csv(text: str) -> list[ImportRow]:
-    reader = csv.reader(io.StringIO(text))
+    # An uploaded file is plain text: no controls or invisible marks reach a name or a review.
+    reader = csv.reader(io.StringIO(text_safe.clean_file(text)))
     try:
         header = next(reader)
     except StopIteration:

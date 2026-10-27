@@ -68,6 +68,11 @@ def _security_headers(app: Flask) -> None:
         db.session.rollback()
         return jsonify({"error": str(e)}), 429
 
+    @app.errorhandler(RecursionError)
+    def too_deep(_e):
+        # JSON nested thousands deep: refused, not a 500.
+        return jsonify({"error": "request body is nested too deeply"}), 400
+
     @app.errorhandler(413)
     def too_large(_e):
         return jsonify({"error": "request body too large"}), 413

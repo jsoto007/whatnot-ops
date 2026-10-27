@@ -9,7 +9,7 @@ from .core import Show, utcnow
 
 
 class OrderStatus(enum.StrEnum):
-    open = "open"  # has standing sales, not all paid
+    open = "open"  # a standing sale still needs a person (item not recognised)
     paid = "paid"  # every standing sale is paid → ready to pick
     picking = "picking"
     packed = "packed"

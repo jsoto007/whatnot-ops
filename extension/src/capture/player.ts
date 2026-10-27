@@ -47,6 +47,27 @@ export const dollars = (cents: number): string => `${Math.floor(cents / 100)}.${
 /** The one line a win is stored and sent as; the server reads it back only from player rows. */
 export const winBody = (w: PlayerWin): string => `${w.winner} won the auction for ${w.title} for $${dollars(w.priceCents)}`
 
+/**
+ * The line for a card declined after a recorded win (see decline.ts). Winner, title and price
+ * are the win's own, as recorded, so the server finds that sale by buyer + item + price.
+ */
+export const declineBody = (w: PlayerWin): string =>
+  `${w.winner} payment declined for ${w.title} for $${dollars(w.priceCents)}`
+
+/** Same shape as the server's PLAYER_WIN / PLAYER_DECLINE (api/app/services/rules.py). */
+const WIN_BODY = /^([A-Za-z0-9._-]{1,80}) won the auction for (.+) for \$(\d{1,7})\.(\d{2})$/
+const DECLINE_BODY = /^([A-Za-z0-9._-]{1,80}) payment declined for (.+) for \$(\d{1,7})\.(\d{2})$/
+
+const parseBody = (re: RegExp, body: string): PlayerWin | null => {
+  const m = re.exec(body)
+  return m ? { winner: m[1]!, title: m[2]!, priceCents: Number(m[3]) * 100 + Number(m[4]) } : null
+}
+
+/** A saved win row's body read back (winBody's inverse); null for anything else. */
+export const parseWinBody = (body: string): PlayerWin | null => parseBody(WIN_BODY, body)
+/** A saved tied-decline row's body read back (declineBody's inverse); null for anything else. */
+export const parseDeclineBody = (body: string): PlayerWin | null => parseBody(DECLINE_BODY, body)
+
 const leaves = (root: Element, text: string) =>
   [...root.querySelectorAll('*')].filter((e) => e.children.length === 0 && e.textContent?.trim() === text)
 

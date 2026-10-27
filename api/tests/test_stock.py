@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from app.db import db
 from app.models import AuditLog, InventoryMovement, Sku
-from app.services import pipeline, stock
+from app.services import inventory, pipeline, stock
 
 PW = "correct-horse-battery"
 
@@ -164,10 +164,11 @@ def test_count_sets_the_shelf_and_reports_differences(client, app):
     assert bad.status_code == 400
 
 
-def test_count_below_what_sales_hold_makes_the_item_short(app, world):
-    world["say"](app, [("", "lani808 won Red bundle x2")])
+def test_count_below_what_is_held_makes_the_item_short(app, world):
+    # Sales are paid (committed) at the win, so they hold nothing; a hold comes straight from
+    # the ledger here, which still lets a count land below it.
     with app.app_context():
-        pipeline.process_show(world["show"])
+        inventory.reserve(world["red"], 2, source_type="test", source_id="hold")
         db.session.commit()
         stock.count(
             world["org"],
@@ -190,13 +191,15 @@ def test_activity_names_the_buyer_and_show_for_sale_movements(app, world):
         pipeline.process_show(world["show"])
         db.session.commit()
         rows = stock.activity(world["org"])
-        assert [r["kind"] for r in rows] == ["reserve", "restock"]
+        # paid at the win: the reserve is committed at once
+        assert [r["kind"] for r in rows] == ["commit", "reserve", "restock"]
         assert rows[0]["sale"]["buyer"] == "lani808"
         assert rows[0]["sale"]["showId"] == world["show"]
         assert rows[0]["skuCode"] == "RED" and rows[0]["productName"] == "Red bundle"
-        assert rows[1]["sale"] is None
+        assert rows[1]["sale"]["buyer"] == "lani808"
+        assert rows[2]["sale"] is None
         lv = {x["code"]: x for x in stock.levels(world["org"])}
-        assert lv["RED"]["sold"] == 2 and lv["RED"]["reserved"] == 2
+        assert lv["RED"]["sold"] == 2 and lv["RED"]["reserved"] == 0
 
 
 def test_activity_route_and_viewer_cannot_receive(app, client):
