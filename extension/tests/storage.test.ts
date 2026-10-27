@@ -6,6 +6,7 @@ import {
   getShow,
   kvGet,
   listShows,
+  markParked,
   markUploaded,
   pendingCount,
   pendingRows,
@@ -66,10 +67,40 @@ describe('db', () => {
     for (let d = 1; d <= 5; d++) {
       const id = `2026-10-0${d}T20:00:00.000Z`
       await putRows({ id, startedAt: id }, [row(id, 1)])
+      await markUploaded([`${id}-1`])
     }
     const dropped = await pruneShows(3)
     expect(dropped).toEqual(['2026-10-02T20:00:00.000Z', '2026-10-01T20:00:00.000Z'])
     expect((await listShows()).length).toBe(3)
+  })
+
+  it('never prunes a show whose rows have not been uploaded', async () => {
+    const old = { id: '2026-09-01T20:00:00.000Z', startedAt: '2026-09-01T20:00:00.000Z' }
+    await putRows(old, [row(old.id, 1), row(old.id, 2)])
+    await markUploaded([`${old.id}-1`]) // one sent, one still waiting
+    // Thirty newer shows, as empty Starts leave them: each one counts toward the limit.
+    for (let d = 1; d <= 30; d++) {
+      const id = `2026-10-${String(d).padStart(2, '0')}T20:00:00.000Z`
+      await putRows({ id, startedAt: id }, [])
+    }
+    expect(await pruneShows()).toEqual([])
+    expect((await getRows(old.id)).length).toBe(2)
+    expect(await pendingCount()).toBe(1)
+
+    // Once its last row is sent, it is an ordinary old show again.
+    await markUploaded([`${old.id}-2`])
+    expect(await pruneShows()).toEqual([old.id])
+    expect(await getShow(old.id)).toBeUndefined()
+  })
+
+  it('prunes a show whose waiting rows were set aside', async () => {
+    const old = { id: '2026-09-01T20:00:00.000Z', startedAt: '2026-09-01T20:00:00.000Z' }
+    await putRows(old, [row(old.id, 1)])
+    await markParked([`${old.id}-1`])
+    const newer = { id: '2026-10-01T20:00:00.000Z', startedAt: '2026-10-01T20:00:00.000Z' }
+    await putRows(newer, [row(newer.id, 1)]) // pending, but within the limit
+    expect(await pruneShows(1)).toEqual([old.id])
+    expect(await pendingCount()).toBe(1)
   })
 })
 
