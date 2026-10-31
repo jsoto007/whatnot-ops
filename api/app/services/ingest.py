@@ -3,6 +3,7 @@
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from itertools import islice
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -27,6 +28,7 @@ class BatchInvalid(ValueError):
 
 EARLIEST = datetime(2020, 1, 1, tzinfo=UTC)
 MAX_SEQ = 2**31 - 1  # chat_messages.seq is int4
+MAX_ROWS = _validator.schema["properties"]["rows"]["maxItems"]
 
 
 def _clean(s: str | None) -> str | None:
@@ -49,7 +51,14 @@ def _when(value: str, where: str) -> datetime:
 
 
 def validate(payload: object) -> dict:
-    errors = sorted(_validator.iter_errors(payload), key=lambda e: list(e.path))
+    # Shape first: jsonschema validates every element even when maxItems already failed,
+    # so a body of millions of tiny rows cost hundreds of MB of error objects.
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise BatchInvalid(["$: must be an object with a rows list"])
+    if len(rows) > MAX_ROWS:
+        raise BatchInvalid([f"rows: fails maxItems {MAX_ROWS}"])
+    errors = sorted(islice(_validator.iter_errors(payload), 20), key=lambda e: list(e.path))
     if errors:
         # Path and rule only: echoing the rejected value would hand chat text (possibly
         # markup) back to the extension's error line.

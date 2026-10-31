@@ -132,7 +132,12 @@ class ReviewItem(db.Model):
     """Something a person must decide. Rules, inventory gates and (Phase 6) AI all land here."""
 
     __tablename__ = "review_items"
-    __table_args__ = (Index("ix_review_items_org_status", "organization_id", "status"),)
+    __table_args__ = (
+        Index("ix_review_items_org_status", "organization_id", "status"),
+        Index("ix_review_items_show_status", "show_id", "status"),
+        Index("ix_review_items_sale_id", "sale_id"),
+        Index("ix_review_items_message_id", "message_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)

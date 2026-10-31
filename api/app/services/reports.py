@@ -35,13 +35,14 @@ def _sheet(
         c.font = HEAD
         c.fill = FILL
         c.alignment = Alignment(vertical="center")
-    for r in rows:
+    for k, r in enumerate(rows, start=2):
         ws.append(r)
         # Chat text, notes and names are written as text, never as formulas: a buyer or
         # item named "=HYPERLINK(...)" must not become a live formula in the owner's Excel.
-        for cell in ws[ws.max_row]:
-            if cell.data_type == "f":
-                cell.data_type = "s"
+        # Index the row just written: `ws[ws.max_row]` rescans the sheet (O(rows²)).
+        for j, v in enumerate(r, start=1):
+            if isinstance(v, str) and v.startswith("="):
+                ws.cell(row=k, column=j).data_type = "s"
     for col in money_cols:
         for row in ws.iter_rows(min_row=2, min_col=col, max_col=col):
             for cell in row:

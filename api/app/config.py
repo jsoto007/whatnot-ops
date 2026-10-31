@@ -58,9 +58,21 @@ class Config:
         elif url.startswith("postgresql://"):
             url = "postgresql+psycopg://" + url[len("postgresql://") :]
         self.SQLALCHEMY_DATABASE_URI = url
-        self.SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
+        # Explicit and small: two gunicorn processes plus the worker stay well under a
+        # small Render Postgres's connection limit, and rate-limit counters (which take a
+        # second connection while the request holds one) cannot exhaust a process's pool.
+        self.SQLALCHEMY_ENGINE_OPTIONS = {
+            "pool_pre_ping": True,
+            "pool_size": 5,
+            "max_overflow": 5,
+            "pool_timeout": 10,
+            "pool_recycle": 1800,
+        }
         if self.APP_ENV == "production" and not self.SECRET_KEY:
             raise ConfigError("SECRET_KEY must be set in production")
+        if self.APP_ENV == "production" and os.environ.get("JOBS_INLINE") == "1":
+            # Inline jobs would run every parse (and any AI call) inside a web request.
+            raise ConfigError("JOBS_INLINE=1 is for development and tests, not production")
         self.SESSION_COOKIE_NAME = "wn_session"
         self.SESSION_COOKIE_SECURE = self.APP_ENV == "production"
         self.SESSION_COOKIE_HTTPONLY = True

@@ -124,6 +124,7 @@ class ChatMessage(db.Model):
         UniqueConstraint("show_id", "client_id", name="uq_chat_messages_show_client"),
         Index("ix_chat_messages_show_seq", "show_id", "seq"),
         Index("ix_chat_messages_show_username", "show_id", "username"),
+        Index("ix_chat_messages_show_captured", "show_id", "captured_at"),
         CheckConstraint("source IN ('chat', 'player')", name="ck_chat_messages_source"),
     )
 

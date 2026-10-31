@@ -93,6 +93,15 @@ def register_cli(app: Flask) -> None:
         else:
             click.echo(f"support account {user.email} is an owner of '{user.organization.name}'")
 
+    @app.cli.command("prune")
+    def prune():
+        """Delete old queue rows, finished rate-limit windows and dead one-time tokens."""
+        from ..services import retention
+
+        click.echo(f"database: {db_host(app.config['SQLALCHEMY_DATABASE_URI'])}")
+        for table, n in retention.sweep().items():
+            click.echo(f"{table}: {n} deleted")
+
     @app.cli.command("ai-eval")
     def ai_eval():
         """Replay the rules corpus through the configured AI provider and report agreement."""

@@ -2,12 +2,13 @@ from flask import Blueprint, current_app, g, jsonify, request
 
 from .. import serializers
 from ..auth import (
-    CSRF_COOKIE,
-    CSRF_HEADER,
     SAFE_METHODS,
+    csrf_ok,
     csrf_token,
     current_user,
     end_session,
+    known_device_tags,
+    remember_device,
     require,
     set_csrf_cookie,
     start_session,
@@ -27,15 +28,9 @@ def _dev_links_allowed() -> bool:
 @bp.before_request
 def csrf_on_writes():
     """Even unauthenticated writes (login, sign-up) carry the double-submit token."""
-    if request.method in SAFE_METHODS:
+    if request.method in SAFE_METHODS or csrf_ok():
         return None
-    import secrets
-
-    cookie = request.cookies.get(CSRF_COOKIE)
-    header = request.headers.get(CSRF_HEADER)
-    if not cookie or not header or not secrets.compare_digest(cookie, header):
-        return jsonify({"error": "missing or invalid CSRF token"}), 403
-    return None
+    return jsonify({"error": "missing or invalid CSRF token"}), 403
 
 
 @bp.errorhandler(AccountError)
@@ -77,16 +72,21 @@ def signup():
         setup_code=d.get("setupCode"),
     )
     start_session(user)
-    return jsonify(serializers.me(user)), 201
+    return remember_device(jsonify(serializers.me(user)), user), 201
 
 
 @bp.post("/login")
 def login():
     ratelimit.per_ip("login", 30, 600)
     d = request.get_json(silent=True) or {}
-    user = accounts.login(d.get("email", ""), d.get("password", ""), ip=ratelimit.client_ip())
+    user = accounts.login(
+        d.get("email", ""),
+        d.get("password", ""),
+        ip=ratelimit.client_ip(),
+        known_tags=known_device_tags(),
+    )
     start_session(user)
-    return jsonify(serializers.me(user))
+    return remember_device(jsonify(serializers.me(user)), user)
 
 
 @bp.post("/logout")
@@ -107,6 +107,7 @@ def logout_everywhere():
 
 @bp.get("/invites/<token>")
 def invite_info(token: str):
+    ratelimit.per_ip("invite-info", 30, 600)
     inv = accounts.invite_by_token(token)
     return jsonify(
         {"email": inv.email, "role": inv.role.value, "organization": inv.organization.name}
@@ -119,7 +120,7 @@ def accept_invite():
     d = request.get_json(silent=True) or {}
     user = accounts.accept_invite(d.get("token", ""), d.get("name", ""), d.get("password", ""))
     start_session(user)
-    return jsonify(serializers.me(user)), 201
+    return remember_device(jsonify(serializers.me(user)), user), 201
 
 
 @bp.post("/password/forgot")
@@ -139,7 +140,7 @@ def reset():
     d = request.get_json(silent=True) or {}
     user = accounts.reset_password(d.get("token", ""), d.get("password", ""))
     start_session(user)
-    return jsonify(serializers.me(user))
+    return remember_device(jsonify(serializers.me(user)), user)
 
 
 ROLES = [r.value for r in Role]
