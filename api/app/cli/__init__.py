@@ -25,6 +25,60 @@ def register_cli(app: Flask) -> None:
 
     register_seed_demo(app)
 
+    @app.cli.command("autopay-reserved")
+    @click.option("--apply", is_flag=True, help="Write the change (default: only list it).")
+    def autopay_reserved(apply: bool):
+        """Mark sales recorded before automatic payment (still reserved) paid, as Whatnot
+        charged them at the win. Lists them first; --apply writes, audited as the autopay."""
+        from ..models import Sale, SaleStatus
+        from ..services import audit, pipeline, text
+
+        click.echo(f"database: {db_host(app.config['SQLALCHEMY_DATABASE_URI'])}")
+        from ..models import ReviewItem
+
+        reserved = db.session.scalars(
+            select(Sale).where(Sale.status == SaleStatus.reserved).order_by(Sale.id)
+        ).all()
+        # A payment file already left these out: they may never have been paid. A person
+        # decides in Review ("Sold but not in the payment file"); never mark them paid here.
+        doubtful = set(
+            db.session.scalars(
+                select(ReviewItem.sale_id).where(
+                    ReviewItem.reason == "no_payment_record",
+                    ReviewItem.sale_id.in_([s.id for s in reserved] or [0]),
+                )
+            )
+        )
+        skipped = [s for s in reserved if s.flagged or s.id in doubtful]
+        sales = [s for s in reserved if s not in skipped]
+        for s in skipped:
+            click.echo(
+                f"skip sale #{s.id} show {s.show_id} {text.clean(s.buyer_username)}: flagged or "
+                "missing from a payment file; decide it in Review"
+            )
+        for s in sales:
+            # Rows stored before text.clean may hold terminal escape codes: never echo raw.
+            click.echo(
+                f"sale #{s.id} show {s.show_id} {text.clean(s.buyer_username)}: {s.quantity} × "
+                f"{text.clean(s.item_text)} {pipeline.money(s.price_cents)}"
+            )
+            if apply:
+                pipeline.autopay(s, at=pipeline._won_at(s.event) if s.event else None)
+                db.session.flush()
+                audit.record(
+                    s.organization_id,
+                    "sale.autopaid",
+                    actor_type="system",
+                    actor_label="flask autopay-reserved",
+                    target_type="sale",
+                    target_id=s.id,
+                )
+        if apply:
+            db.session.commit()
+        click.echo(
+            f"{len(sales)} reserved sale(s) {'marked paid' if apply else 'would be marked paid'}"
+        )
+
     @app.cli.group()
     def devices():
         """Extension device keys."""

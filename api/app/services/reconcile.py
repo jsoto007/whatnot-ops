@@ -1,8 +1,10 @@
 """Payment truth from Whatnot's Seller Hub export (or any CSV with buyer + item [+ status]).
 
-Column names are matched loosely. A row with status paid / completed (or no
-status column) marks the matching open sale paid and commits stock; a row
-with status cancelled / refunded cancels it. A row that matches nothing opens
+Column names are matched loosely. Whatnot charges every win, so sales are
+already paid when the file comes: a paid / completed row (or no status column)
+confirms the sale, marks a still-open one paid, and restores one whose card was
+declined at the win; a cancelled / refunded row cancels it, a failed / declined
+row marks its payment failed. A row that matches nothing opens
 a review item; a sale the file should have covered but did not is flagged.
 Preview first, then apply. Re-applying the same file changes nothing.
 """
@@ -18,6 +20,7 @@ from sqlalchemy import select
 from ..db import db
 from ..models import ReviewItem, ReviewStatus, Sale, SaleStatus, Show
 from . import catalog, pipeline
+from . import text as text_safe
 from .inventory import Actor
 
 BUYER_COLS = ("buyer", "username", "buyer username", "customer", "user", "buyer name")
@@ -31,6 +34,7 @@ STATUS_COLS = ("status", "order status", "payment status")
 ORDER_COLS = ("order id", "order #", "order number", "order")
 PAID = re.compile(r"paid|complete|success|shipped|fulfilled|delivered", re.I)
 VOID = re.compile(r"cancel|refund|void|fail|declin", re.I)
+DECLINED = re.compile(r"fail|declin", re.I)
 
 
 class ReconcileError(ValueError):
@@ -45,9 +49,9 @@ class Row:
     item: str
     quantity: int = 1
     price_cents: int | None = None
-    status: str = "paid"  # paid | void | unknown
+    status: str = "paid"  # paid | void | failed | unknown
     external_id: str | None = None
-    action: str = ""  # mark_paid | cancel | unchanged | unmatched | skip
+    action: str = ""  # mark_paid | cancel | decline | unchanged | unmatched | skip
     sale_id: int | None = None
     note: str | None = None
 
@@ -111,7 +115,8 @@ def _cents(s: str) -> int | None:
 
 
 def parse_csv(text: str) -> list[Row]:
-    reader = csv.reader(io.StringIO(text))
+    # An uploaded file is plain text: no controls or invisible marks reach a name or a review.
+    reader = csv.reader(io.StringIO(text_safe.clean_file(text)))
     try:
         header = next(reader)
     except StopIteration:
@@ -155,7 +160,9 @@ def parse_csv(text: str) -> list[Row]:
             row.price_cents = total // row.quantity if exact else None
         status = cell(st)
         row.status = (
-            "void"
+            "failed"
+            if DECLINED.search(status)
+            else "void"
             if VOID.search(status)
             else "paid"
             if (not status or PAID.search(status))
@@ -188,7 +195,14 @@ def plan(show: Show, rows: list[Row]) -> Plan:
                     if sale.status in (SaleStatus.paid, SaleStatus.fulfilled)
                     else "mark_paid"
                 )
-                if sale.status in (SaleStatus.cancelled, SaleStatus.payment_failed):
+                if sale.status is SaleStatus.payment_failed and sale.sku_id is not None:
+                    # Declined at the win, paid another way before the show ended.
+                    if pipeline._round(sale) == pipeline.REPAID:
+                        row.action, row.note = (
+                            "unmatched",
+                            f"sale #{sale.id} was declined twice; paid in the file",
+                        )
+                elif sale.status in (SaleStatus.cancelled, SaleStatus.payment_failed):
                     row.action, row.note = (
                         "unmatched",
                         f"sale #{sale.id} is {sale.status.value}; paid in the file",
@@ -197,6 +211,8 @@ def plan(show: Show, rows: list[Row]) -> Plan:
                 row.action = (
                     "unchanged"
                     if sale.status in (SaleStatus.cancelled, SaleStatus.payment_failed)
+                    else "decline"
+                    if row.status == "failed"
                     else "cancel"
                 )
                 if sale.status is SaleStatus.fulfilled:
@@ -208,7 +224,13 @@ def plan(show: Show, rows: list[Row]) -> Plan:
     out.uncovered = [
         s.id
         for s in sales
-        if s.id not in taken and s.status in (SaleStatus.detected, SaleStatus.reserved)
+        if s.id not in taken
+        and (
+            s.status in (SaleStatus.detected, SaleStatus.reserved)
+            # Paid only because Whatnot charges at the win: the file should list it, and a
+            # sale missing from it may be a decline nobody saw.
+            or (s.status is SaleStatus.paid and s.status_reason == pipeline.AUTOPAY_REASON)
+        )
     ]
     return out
 
@@ -237,7 +259,7 @@ def _match(show: Show, row: Row, sales: list[Sale], taken: set[int]) -> Sale | N
             found,
             key=lambda s: (
                 not (paid is not None and s.price_cents == paid),
-                s.status not in pipeline.OPEN,
+                s.status not in pipeline.CLOSABLE,
                 s.id,
             ),
         )
@@ -273,7 +295,16 @@ def _player_price_differs(sale: Sale, row: Row) -> bool:
 
 def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Plan:
     for row in p.rows:
-        if row.action not in ("mark_paid", "cancel"):
+        if row.action == "unchanged" and row.status == "paid":
+            # Already paid (Whatnot charges at the win): the file only confirms it.
+            sale = db.session.get(Sale, row.sale_id)
+            if _player_price_differs(sale, row):
+                _review_price(show, sale, row)  # not confirmed until a person checks it
+            elif sale.status_reason == pipeline.AUTOPAY_REASON:
+                # The file agrees: the next file need not list it again.
+                sale.status_reason = f"paid at the win; in payment file {import_id}"
+                sale.external_order_id = sale.external_order_id or row.external_id
+        if row.action not in ("mark_paid", "cancel", "decline"):
             continue
         sale = db.session.get(Sale, row.sale_id)
         if row.action == "mark_paid":
@@ -295,20 +326,11 @@ def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Pl
             if sale.price_cents is None and row.price_cents is not None:
                 sale.price_cents = row.price_cents
             elif _player_price_differs(sale, row):
-                pipeline.open_review(
-                    show.organization_id,
-                    "price_mismatch",
-                    f"{sale.buyer_username}'s {sale.item_text}: the video player read "
-                    f"{pipeline.money(sale.price_cents)}, the payment file says "
-                    f"{pipeline.money(row.price_cents)} — check which one is right",
-                    show_id=show.id,
-                    sale_id=sale.id,
-                    source="reconcile",
-                )
+                _review_price(show, sale, row)
         else:
             pipeline.set_sale_status(
                 sale,
-                SaleStatus.cancelled,
+                SaleStatus.payment_failed if row.action == "decline" else SaleStatus.cancelled,
                 reason=f"payment file {import_id}: {row.status}",
                 actor=actor,
             )
@@ -335,6 +357,19 @@ def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Pl
     for order in _orders_of(show):
         orders.refresh(order)
     return p
+
+
+def _review_price(show: Show, sale: Sale, row: Row) -> None:
+    pipeline.open_review(
+        show.organization_id,
+        "price_mismatch",
+        f"{sale.buyer_username}'s {sale.item_text}: the video player read "
+        f"{pipeline.money(sale.price_cents)}, the payment file says "
+        f"{pipeline.money(row.price_cents)} — check which one is right",
+        show_id=show.id,
+        sale_id=sale.id,
+        source="reconcile",
+    )
 
 
 def _orders_of(show: Show):

@@ -8,6 +8,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 from .db import db
 from .models import User
+from .services import ratelimit
 from .services.permissions import allowed
 
 CSRF_COOKIE = "csrf"
@@ -109,6 +110,10 @@ def set_csrf_cookie(resp, token: str):
     return resp
 
 
+# Changes one signed-in person may make per minute (see require).
+WRITES_PER_MIN = 300
+
+
 def require(permission: str | None = None):
     """Route needs a logged-in user (and a permission). Also enforces CSRF on mutating requests."""
 
@@ -118,8 +123,11 @@ def require(permission: str | None = None):
             user = current_user()
             if user is None:
                 return jsonify({"error": "not signed in"}), 401
-            if request.method not in SAFE_METHODS and not csrf_ok():
-                return jsonify({"error": "missing or invalid CSRF token"}), 403
+            if request.method not in SAFE_METHODS:
+                if not csrf_ok():
+                    return jsonify({"error": "missing or invalid CSRF token"}), 403
+                # Generous for a person clicking; stops a script with a stolen session.
+                ratelimit.per_user("write", user.id, WRITES_PER_MIN, 60)
             if permission and not allowed(user.role, permission):
                 return jsonify(
                     {"error": "you do not have permission to do that", "permission": permission}

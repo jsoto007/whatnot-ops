@@ -8,7 +8,7 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import Order, OrderStatus, ParsedEvent, Sale, Show
-from ..services import audit, orders, reconcile
+from ..services import audit, orders, ratelimit, reconcile
 from ..services.inventory import Actor, InventoryError
 from ..services.orders import OrderError
 from ..services.reconcile import ReconcileError
@@ -160,9 +160,10 @@ def reconcile_show(show_id: int):
     show = db.session.get(Show, show_id)
     if show is None or show.organization_id != g.u.organization_id:
         return jsonify({"error": "show not found"}), 404
+    ratelimit.per_user("reconcile", g.u.id, 30, 600)
     d = request.get_json(silent=True) or {}
     text = d.get("csv") or ""
-    if not text.strip():
+    if not isinstance(text, str) or not text.strip():
         return jsonify({"error": "paste or upload the payment CSV"}), 400
     p = reconcile.plan(show, reconcile.parse_csv(text))
     if d.get("apply"):

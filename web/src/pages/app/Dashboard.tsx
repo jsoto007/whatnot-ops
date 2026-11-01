@@ -29,7 +29,7 @@ export function Kpis({ t, totals, label }: { t?: ShowTiles; totals?: Record<stri
   )
   return (
     <div className="tiles primary" aria-label={label ?? 'Key numbers'}>
-      {tile('Paid revenue', money(v('revenuePaidCents')), 'paid', v('revenuePendingCents') ? `${money(v('revenuePendingCents'))} still awaiting payment` : 'nothing awaiting payment')}
+      {tile('Paid revenue', money(v('revenuePaidCents')), 'paid', v('revenuePendingCents') ? `${money(v('revenuePendingCents'))} in older sales awaiting the payment file` : 'charged at the win')}
       {tile('Items sold', v('itemsSold'), 'items', `${v('cancelled')} cancelled or failed`)}
       {tile('Buyers', buyers, 'buyers', buyers ? `${money(avg)} paid per buyer` : 'no buyers yet')}
       {tile('Messages', v('messages'), 'messages', `${v('gifts')} gifts · ${v('noPicks')} no-picks · ${v('noWinner')} no winner`)}
@@ -114,7 +114,7 @@ function TopBuyers({ buyers }: { buyers: TopBuyer[] }) {
               </div>
               <div className="rank-num">
                 <div>{plural(b.items, 'item', 'items')}</div>
-                <div className={b.paidCents ? 'muted small' : 'small awaiting-ink'}>{b.paidCents ? `${money(b.paidCents)} paid` : 'awaiting payment'}</div>
+                <div className={b.paidCents ? 'muted small' : 'small awaiting-ink'}>{b.paidCents ? `${money(b.paidCents)} paid` : 'not confirmed'}</div>
               </div>
             </li>
           ))}
@@ -181,6 +181,9 @@ const REASON_WORDS: Record<string, [string, string]> = {
   low_confidence: ['unconfirmed sale line', 'unconfirmed sale lines'],
   no_open_sale: ['cancel with no sale', 'cancels with no sale'],
   no_payment_record: ['sale missing from a payment file', 'sales missing from a payment file'],
+  payment_declined: ['declined payment', 'declined payments'],
+  decline_untied: ['decline to match to a sale', 'declines to match to a sale'],
+  closed_after_picking: ['item to take out of a package', 'items to take out of a package'],
   unmatched_payment: ['payment with no sale', 'payments with no sale'],
   cancel_sale: ['possible cancellation', 'possible cancellations'],
   payment_failed: ['payment problem', 'payment problems'],
@@ -221,7 +224,7 @@ function attentionRows(a: Attention, can: (p: string) => boolean, lowStock: Over
       icon: 'orders',
       tone: 'blue',
       title: `${plural(a.toFulfil, 'paid order', 'paid orders')} to pick and ship`,
-      sub: `${plural(a.fulfilItems, 'item', 'items')}${a.fulfilOldestShow ? ` · oldest payment from the ${fmtDate(a.fulfilOldestShow)} show` : ''}`,
+      sub: `${plural(a.fulfilItems, 'item', 'items')}${a.fulfilOldestShow ? ` · oldest from the ${fmtDate(a.fulfilOldestShow)} show` : ''}`,
       to: '/app/orders?view=queue',
       verb: 'Start picking',
       primary: true,
@@ -234,7 +237,7 @@ function attentionRows(a: Attention, can: (p: string) => boolean, lowStock: Over
       key: 'reconcile',
       icon: 'card',
       tone: 'grey',
-      title: `${money(total)} still awaiting payment`,
+      title: `${money(total)} in sales not confirmed yet`,
       sub: `The ${joinDates(dates)} ${dates.length === 1 ? 'show needs its' : 'shows need their'} Seller Hub export`,
       to: `/app/shows/${a.unreconciledShows[a.unreconciledShows.length - 1]!.showId}?tab=payments`,
       verb: 'Reconcile',
@@ -337,7 +340,7 @@ function StandsPill({ s }: { s: ShowTiles }) {
         Live
       </span>
     )
-  if (s.revenuePendingCents > 0 && !s.toFulfil) return <span className="pill awaiting">Awaiting payment</span>
+  if (s.revenuePendingCents > 0 && !s.toFulfil) return <span className="pill awaiting">Not confirmed</span>
   if (s.toFulfil) return <span className="pill blue">{plural(s.toFulfil, 'order', 'orders')} to pick</span>
   return <span className="pill done">Done</span>
 }
@@ -354,7 +357,7 @@ function ShowsCard({ shows }: { shows: ShowTiles[] }) {
             <i className="sw paid" aria-hidden /> Paid
           </span>
           <span>
-            <i className="sw awaiting" aria-hidden /> Awaiting payment
+            <i className="sw awaiting" aria-hidden /> Not confirmed
           </span>
         </div>
       </div>
@@ -397,7 +400,7 @@ function ShowsCard({ shows }: { shows: ShowTiles[] }) {
                     <td className="num">{s.buyers}</td>
                     <td>
                       <div className="rev">
-                        <div className="rev-bar" role="img" aria-label={`${money(s.revenuePaidCents)} paid, ${money(s.revenuePendingCents)} awaiting`}>
+                        <div className="rev-bar" role="img" aria-label={`${money(s.revenuePaidCents)} paid, ${money(s.revenuePendingCents)} not confirmed`}>
                           {s.revenuePaidCents > 0 && <span className="paid" style={{ width: pct(s.revenuePaidCents) }} />}
                           {s.revenuePendingCents > 0 && <span className="awaiting" style={{ width: pct(s.revenuePendingCents) }} />}
                         </div>
@@ -424,7 +427,7 @@ function ShowsCard({ shows }: { shows: ShowTiles[] }) {
                     <b>{weekdayDate(s.date)}</b>
                     <StandsPill s={s} />
                   </div>
-                  <div className="rev-bar" role="img" aria-label={`${money(s.revenuePaidCents)} paid, ${money(s.revenuePendingCents)} awaiting`}>
+                  <div className="rev-bar" role="img" aria-label={`${money(s.revenuePaidCents)} paid, ${money(s.revenuePendingCents)} not confirmed`}>
                     {s.revenuePaidCents > 0 && <span className="paid" style={{ width: pct(s.revenuePaidCents) }} />}
                     {s.revenuePendingCents > 0 && <span className="awaiting" style={{ width: pct(s.revenuePendingCents) }} />}
                   </div>
@@ -463,7 +466,7 @@ function MoneyCard({ totals }: { totals: Record<string, number> }) {
       </div>
       {sold > 0 && (
         <div>
-          <div className="comp-bar" role="img" aria-label={`Revenue: ${money(paid)} paid, ${money(pending)} awaiting payment`}>
+          <div className="comp-bar" role="img" aria-label={`Revenue: ${money(paid)} paid, ${money(pending)} not confirmed`}>
             {paid > 0 && <span className="paid" style={{ width: `${share}%` }} />}
             {pending > 0 && <span className="awaiting" style={{ width: `${100 - share}%` }} />}
           </div>
@@ -472,7 +475,7 @@ function MoneyCard({ totals }: { totals: Record<string, number> }) {
               <i className="sw paid" aria-hidden /> Paid <b>{money(paid)}</b>
             </span>
             <span>
-              <i className="sw awaiting" aria-hidden /> Awaiting payment <b>{money(pending)}</b>
+              <i className="sw awaiting" aria-hidden /> Not confirmed <b>{money(pending)}</b>
             </span>
           </div>
         </div>

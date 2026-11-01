@@ -39,7 +39,9 @@ def attach(sale: Sale) -> Order:
 
 
 def refresh(order: Order) -> Order:
-    """Derive open / paid / cancelled from the sales; never touch picking / packed / shipped."""
+    """Derive open / paid / cancelled from the sales; never touch picking / packed / shipped.
+    Whatnot charges every win, so an order is paid (ready to pick) as soon as its items are
+    known; it stays open only while a sale still needs a person (item not recognised)."""
     if order.status in FULFILLMENT:
         return order
     standing = [s for s in order.sales if s.status in STANDING]
@@ -82,10 +84,10 @@ def advance(
     }
     if new_status not in allowed[order.status]:
         if order.status is OrderStatus.open:
-            raise OrderError("this order is not paid yet; reconcile payments first")
+            raise OrderError("an item in this order still needs a decision in Review")
         raise OrderError(f"cannot go from {order.status.value} to {new_status.value}")
     if not verified(order):
-        raise OrderError("every item must be paid before fulfilment")
+        raise OrderError("every item must be paid before fulfilment (see Review)")
     now = datetime.now(UTC)
     order.status = new_status
     if new_status is OrderStatus.picking:

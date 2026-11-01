@@ -1,5 +1,7 @@
-"""Attempt limits for unauthenticated endpoints (login, sign-up, password reset,
-invite acceptance, laptop pairing).
+"""Attempt limits: unauthenticated endpoints (login, sign-up, password reset, invite
+acceptance, laptop pairing, wrong device keys) per client address, and per device, user or shop
+for authenticated work that costs (uploads from a laptop, file imports, AI audits, re-parsing,
+and every change a signed-in person makes).
 
 Counters live in Postgres so both gunicorn workers share them. Each hit is one
 atomic `INSERT … ON CONFLICT DO UPDATE SET count = count + 1 RETURNING count`
@@ -106,3 +108,15 @@ def peek(key: str, window_s: int) -> int:
 
 def per_ip(scope: str, limit: int, window_s: int) -> None:
     hit(f"{scope}:ip:{client_ip()}", limit, window_s)
+
+
+def per_user(scope: str, user_id: int, limit: int, window_s: int) -> None:
+    hit(f"{scope}:user:{user_id}", limit, window_s)
+
+
+def per_device(scope: str, device_id: int, limit: int, window_s: int) -> None:
+    hit(f"{scope}:device:{device_id}", limit, window_s)
+
+
+def per_org(scope: str, org_id: int, limit: int, window_s: int) -> None:
+    hit(f"{scope}:org:{org_id}", limit, window_s)

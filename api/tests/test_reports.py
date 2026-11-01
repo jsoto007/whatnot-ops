@@ -123,7 +123,15 @@ def test_workbook_sheets_rows_and_currency_cells(app, world):
     inv = list(wb["Inventory remaining"].iter_rows(values_only=True))[1]
     assert inv[:5] == ("Red bundle", "RED", 1, 0, 1)
     moves = list(wb["Stock movements"].iter_rows(values_only=True))
-    assert [m[2] for m in moves[1:]] == ["restock", "reserve", "reserve", "release", "commit"]
+    # every win is paid at once (reserve + commit); kat.c's cancelled win is restocked
+    assert [m[2] for m in moves[1:]] == [
+        "restock",
+        "reserve",
+        "commit",
+        "reserve",
+        "commit",
+        "restock",
+    ]
 
 
 def test_report_routes_and_permissions(client, app, world):

@@ -79,6 +79,11 @@ export class Recorder {
     return this.selector
   }
 
+  /** The chat box being watched (the last one, while waiting). Other page readers must stay out of it. */
+  get box(): Element | null {
+    return this.container
+  }
+
   get running(): boolean {
     return this.watchdog !== null
   }

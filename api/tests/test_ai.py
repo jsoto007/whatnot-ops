@@ -136,10 +136,10 @@ def test_unmatched_item_is_assigned_by_ai_when_confident(app, world, fake_ai):
     world["say"](app, [("", "cardguy bought bundle red for $10")])
     run(app, world["show"])
     # "bundle red" matches no alias (rules need the alias in order); the fake matcher
-    # overlaps the words → 0.96 → auto-applied
-    assert sales(app, world["show"]) == [("cardguy", "reserved", "RED", 1)]
+    # overlaps the words → 0.96 → auto-applied, then paid (Whatnot charged the win)
+    assert sales(app, world["show"]) == [("cardguy", "paid", "RED", 1)]
     assert open_reviews(app) == []
-    assert level(app, world["red"]) == (3, 1)
+    assert level(app, world["red"]) == (2, 0)
     with app.app_context():
         entry = db.session.scalar(select(AuditLog).where(AuditLog.actor_type == "ai"))
         assert entry.action == "ai.applied" and entry.details["skuId"] == world["red"]
@@ -172,9 +172,13 @@ def test_show_audit_auto_cancels_only_when_the_host_says_so(app, world, fake_ai)
         assert (
             db.session.scalar(select(AuditLog).where(AuditLog.action == "ai.applied")) is not None
         )
+        # the decline leaves a payment_declined item for a person (buyer may pay another way)
+        assert [
+            r.reason for r in db.session.scalars(select(ReviewItem).order_by(ReviewItem.id))
+        ] == ["payment_failed", "payment_declined"]
         # running the audit again proposes nothing new
         supervisor.audit_show(world["show"])
-        assert db.session.scalar(select(db.func.count()).select_from(ReviewItem)) == 1
+        assert db.session.scalar(select(db.func.count()).select_from(ReviewItem)) == 2
 
 
 def test_a_buyers_own_line_is_only_a_proposal(app, world, fake_ai):
@@ -184,7 +188,7 @@ def test_a_buyers_own_line_is_only_a_proposal(app, world, fake_ai):
         app, [("", "lani808 won Red bundle"), ("lani808", "please cancel mine, card declined")]
     )
     run(app, world["show"])
-    assert sales(app, world["show"]) == [("lani808", "reserved", "RED", 1)]
+    assert sales(app, world["show"]) == [("lani808", "paid", "RED", 1)]
     with app.app_context():
         item = db.session.scalar(select(ReviewItem).where(ReviewItem.reason == "payment_failed"))
         assert item.status is ReviewStatus.open and item.proposal["action"] == "payment_failed"
@@ -231,7 +235,7 @@ def test_prompt_injection_in_chat_cannot_cancel_sales(app, world, monkeypatch):
         assert db.session.scalar(select(AuditLog).where(AuditLog.action == "ai.applied")) is None
         # findings are capped, so a model told to flood the queue cannot
         assert db.session.scalar(select(db.func.count()).select_from(ReviewItem)) <= 50
-    assert [s[1] for s in sales(app, world["show"])] == ["reserved", "reserved"]
+    assert [s[1] for s in sales(app, world["show"])] == ["paid", "paid"]
 
 
 def test_apply_proposal_by_a_person_and_never_mark_paid(app, world, monkeypatch):
@@ -256,7 +260,8 @@ def test_apply_proposal_by_a_person_and_never_mark_paid(app, world, monkeypatch)
         assert item.proposal["action"] == "classify_sale"
         pipeline.resolve(item, "apply_proposal", {}, user=user)
         db.session.commit()
-    assert sales(app, world["show"]) == [("randomguy", "reserved", "RED", 1)]
+    # paid by Whatnot's autopay at the win, never by the AI
+    assert sales(app, world["show"]) == [("randomguy", "paid", "RED", 1)]
     assert not may_auto_apply("mark_paid", 1.0)
 
 

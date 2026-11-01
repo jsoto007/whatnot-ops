@@ -11,13 +11,19 @@ const NEXT: Partial<Record<OrderStatus, { label: string; to: OrderStatus }>> = {
   packed: { label: 'Shipped', to: 'shipped' },
 }
 
+/** Whatnot charges the winner at the win, so nothing waits for a payment: an order is ready to
+ * pick at once. `open` only means an item still needs a person (not recognised); a declined
+ * card shows on the order and in its own tab. */
+const declined = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'payment_failed')
 const VIEWS: { key: string; label: string; match: (o: Order) => boolean }[] = [
   { key: 'queue', label: 'Ready to pick', match: (o) => o.status === 'paid' },
   { key: 'progress', label: 'In progress', match: (o) => o.status === 'picking' || o.status === 'packed' },
-  { key: 'open', label: 'Awaiting payment', match: (o) => o.status === 'open' },
+  { key: 'review', label: 'Needs review', match: (o) => o.status === 'open' },
+  { key: 'declined', label: 'Payment declined', match: (o) => declined(o).length > 0 },
   { key: 'shipped', label: 'Shipped', match: (o) => o.status === 'shipped' },
   { key: 'all', label: 'All', match: () => true },
 ]
+const STATUS_LABEL: Partial<Record<OrderStatus, string>> = { paid: 'ready', open: 'needs review' }
 const RANK: Record<OrderStatus, number> = { paid: 0, picking: 1, packed: 2, open: 3, shipped: 4, cancelled: 5 }
 
 function itemSummary(o: Order): string {
@@ -54,7 +60,7 @@ export function Orders() {
       <div className="page-head">
         <div>
           <h2>Orders</h2>
-          <div className="sub">One order per buyer per show. Paid orders are ready to pick; the oldest payment is first.</div>
+          <div className="sub">One order per buyer per show. Whatnot charges the winner at the win, so orders are ready to pick right away; the oldest win is first.</div>
         </div>
         {showId && (
           <Link className="btn ghost" to={`/app/orders/pick-list/${showId}`}>
@@ -89,8 +95,8 @@ export function Orders() {
         <p className="form-error">Could not load orders.</p>
       ) : visible.length === 0 ? (
         <div className="empty">
-          <b>{view === 'queue' ? 'Nothing to pick' : view === 'open' ? 'Nothing awaiting payment' : 'No orders here'}</b>
-          {view === 'queue' ? "Orders arrive here once their payments are reconciled on the show's Payments tab." : ''}
+          <b>{view === 'queue' ? 'Nothing to pick' : view === 'review' ? 'Nothing needs review' : view === 'declined' ? 'No declined payments' : 'No orders here'}</b>
+          {view === 'queue' ? 'Orders arrive here as soon as a buyer wins.' : view === 'declined' ? 'A card Whatnot declines after a win shows here. The item goes back in stock unless picking had started.' : ''}
         </div>
       ) : (
         <table className="table" data-testid="orders">
@@ -118,8 +124,21 @@ export function Orders() {
                 <td className="num">{money(o.totalCents)}</td>
                 <td className="muted">{o.showDate}</td>
                 <td>
-                  <span className={`status ${o.status}`}>{o.status === 'paid' ? 'ready' : o.status}</span>
-                  {!o.verified && o.status === 'open' && <div className="muted small">waiting for the payment file</div>}
+                  <span className={`status ${o.status}`}>{STATUS_LABEL[o.status] ?? o.status}</span>
+                  {o.status === 'open' && (
+                    <div className="muted small">
+                      {(o.sales ?? []).some((s) => s.status === 'detected') ? (
+                        <Link to="/app/review">item not recognised — see Review</Link>
+                      ) : (
+                        'older sale, waiting for the payment file'
+                      )}
+                    </div>
+                  )}
+                  {declined(o).length > 0 && (
+                    <div className="small" data-testid={`declined-${o.buyer}`}>
+                      <span className="status payment_failed">payment declined</span> {declined(o).map((s) => `${s.quantity}× ${s.sku ? s.sku.code : s.item || '?'}`).join(', ')}
+                    </div>
+                  )}
                   {o.tracking && <div className="muted small">{o.tracking}</div>}
                 </td>
                 <td>{can('orders.fulfill') && <Advance order={o} />}</td>
@@ -183,7 +202,7 @@ export function OrderDetail() {
         <h2>
           {o.buyer} · {o.showDate}
         </h2>
-        <span className={`status ${o.status}`}>{o.status}</span>
+        <span className={`status ${o.status}`}>{STATUS_LABEL[o.status] ?? o.status}</span>
       </div>
       <PackingSlip o={o} />
       {can('orders.fulfill') && (
@@ -259,7 +278,8 @@ function PackingSlip({ o }: { o: Order }) {
           Username: <b>{o.buyer}</b> – {count} Item{count === 1 ? '' : 's'}
         </div>
         <div className="muted small">
-          Auction date {date} · order #{o.id} · {o.verified ? 'all paid' : 'not all paid'}
+          Auction date {date} · order #{o.id}
+          {o.status === 'open' && <b className="no-print"> · an item still needs a decision in Review</b>}
         </div>
       </div>
       <table className="table slip-table">
@@ -310,7 +330,7 @@ function PackingSlip({ o }: { o: Order }) {
       </table>
       {dropped.length > 0 && (
         <p className="muted small no-print">
-          Not shipping: {dropped.map((s) => `${s.sku ? s.sku.productName : s.item} (${s.status.replace('_', ' ')})`).join(', ')}
+          Not shipping: {dropped.map((s) => `${s.sku ? s.sku.productName : s.item} (${s.status === 'payment_failed' ? 'payment declined' : s.status})`).join(', ')}
         </p>
       )}
       {o.notes && (
@@ -333,7 +353,7 @@ function PackingSlip({ o }: { o: Order }) {
         </span>
       </div>
       <p className="muted small no-print">
-        {o.items} item{o.items === 1 ? '' : 's'} · {money(o.totalCents)} · {o.verified ? 'all paid' : 'not all paid'}
+        {o.items} item{o.items === 1 ? '' : 's'} · {money(o.totalCents)}
       </p>
       <button className="btn small" onClick={() => window.print()}>
         Print packing slip

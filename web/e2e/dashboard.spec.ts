@@ -56,9 +56,11 @@ test('dashboard tiles, show analytics and the Excel report agree', async ({ page
   await expect(page.getByTestId('live-items')).toHaveText('3')
   await expect(page.getByTestId('tile-items')).toContainText('3')
   await expect(page.getByTestId('tile-buyers')).toContainText('2')
-  await expect(page.getByTestId('tile-paid')).toContainText('$0.00')
-  await expect(page.getByTestId('tile-paid')).toContainText('of $75.00 sold · 0% collected')
-  await expect(page.getByTestId('attention-empty')).toBeVisible() // live show: nothing to reconcile yet, no reviews
+  // Whatnot charges at the win: everything sold is already paid.
+  await expect(page.getByTestId('tile-paid')).toContainText('$75.00')
+  await expect(page.getByTestId('tile-paid')).toContainText('of $75.00 sold · 100% collected')
+  // Paid at the win, so both orders are ready to pick straight away; nothing else needs anyone.
+  await expect(page.locator('.attn-row', { hasText: '2 paid orders to pick and ship' })).toBeVisible()
   await expect(page.getByTestId('shows-table')).toContainText('Live')
   await expect(page.getByTestId('top-buyers')).toContainText('lani808')
   await expect(page.getByRole('link', { name: /Shows/ })).toContainText('Live') // sidebar badge
@@ -72,7 +74,7 @@ test('dashboard tiles, show analytics and the Excel report agree', async ({ page
   await page.getByRole('tab', { name: 'Walked away' }).click()
   await expect(page.getByTestId('walkaways-empty')).toBeVisible()
   await page.getByRole('tab', { name: 'Sales' }).click()
-  await expect(page.getByTestId('status-bar')).toContainText('2 reserved')
+  await expect(page.getByTestId('status-bar')).toContainText('2 paid')
   await page.getByRole('tab', { name: 'Analytics' }).click()
   await expect(page.getByTestId('top-skus')).toContainText('75%')
 

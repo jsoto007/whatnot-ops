@@ -25,7 +25,7 @@ from ..models import (
     Show,
     Sku,
 )
-from . import catalog, pipeline, rules
+from . import catalog, pipeline, ratelimit, rules
 from .ai import AiError, Decision, get_provider, provider_name
 from .ai.policy import may_auto_apply
 from .inventory import Actor
@@ -85,7 +85,19 @@ def _corroborated(show: Show, seq, buyer: str) -> bool:
     names_buyer = bool(buyer) and re.search(
         rf"(?<![A-Za-z0-9._-]){re.escape(buyer)}(?![A-Za-z0-9._-])", text, re.I
     )
-    return bool(names_buyer and CANCEL_WORDS.search(text))
+    return bool(names_buyer and _says_it_went_wrong(text))
+
+
+NEGATION = re.compile(r"\b(?:no|not|never|don'?t|can'?t|won'?t|without|zero)\W+(?:\w+\W+)?$", re.I)
+
+
+def _says_it_went_wrong(text: str) -> bool:
+    """A cancel / decline word that is not negated just before it: "lani808 card declined"
+    counts, "lani808 no refunds on mystery packs" does not."""
+    return any(not NEGATION.search(text[: m.start()]) for m in CANCEL_WORDS.finditer(text))
+
+
+AI_CALLS_PER_HOUR = 300
 
 
 def ask(
@@ -104,6 +116,13 @@ def ask(
         _log_call(org_id, show_id, provider_name(), purpose, 0, 0, None, False, str(e))
         return None
     if provider is None:
+        return None
+    try:
+        # Every call is paid: a hard hourly budget per shop, whatever triggers it (viewer
+        # lines opening reviews, many show keys from one laptop, the audit button).
+        ratelimit.per_org("ai", org_id, AI_CALLS_PER_HOUR, 3600)
+    except ratelimit.RateLimited:
+        _log_call(org_id, show_id, provider.name, purpose, 0, 0, None, False, "hourly AI budget")
         return None
     text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
     try:
@@ -337,6 +356,8 @@ def apply_proposal(item: ReviewItem, *, actor: Actor, user=None) -> ReviewItem:
     action = p.get("action")
     if action == "assign_sku":
         sale = item.sale
+        if sale is None or sale.status is not SaleStatus.detected:
+            raise pipeline.ReviewError("this sale already has a product", 409)
         sku = catalog.get_sku(item.organization_id, int(p["skuId"]))
         sale.sku = sku
         sale.sku_id = sku.id
@@ -344,6 +365,7 @@ def apply_proposal(item: ReviewItem, *, actor: Actor, user=None) -> ReviewItem:
         if sale.price_cents is None:
             sale.price_cents = sku.price_cents
         pipeline._reserve(sale)
+        pipeline.autopay(sale, at=sale.event.message.captured_at if sale.event else None)
         item.status = ReviewStatus.resolved
         item.resolution = {"action": "assign_sku", "skuId": sku.id, "by": actor.type}
     elif action in ("cancel_sale", "payment_failed", "cancel"):
@@ -359,6 +381,8 @@ def apply_proposal(item: ReviewItem, *, actor: Actor, user=None) -> ReviewItem:
         )
         item.status = ReviewStatus.resolved
         item.resolution = {"action": action, "saleId": sale.id, "by": actor.type}
+        if status is SaleStatus.payment_failed:
+            pipeline.review_decline(sale)
     elif action == "classify_sale":
         _apply_classify_sale(item)
         return item
@@ -384,14 +408,19 @@ def apply_proposal(item: ReviewItem, *, actor: Actor, user=None) -> ReviewItem:
 # ---------- per show audit ----------
 
 
+def _after_the_win(sale: Sale, seq) -> bool:
+    """A line about a decline or cancel can only be about a win it came after."""
+    if not isinstance(seq, int) or sale.event is None or sale.event.message is None:
+        return False
+    return seq > sale.event.message.seq
+
+
 def audit_show(show_id: int) -> dict:
     show = db.session.get(Show, show_id)
     if show is None:
         return {"skipped": "no show"}
     open_sales = db.session.scalars(
-        select(Sale).where(
-            Sale.show_id == show.id, Sale.status.in_((SaleStatus.detected, SaleStatus.reserved))
-        )
+        select(Sale).where(Sale.show_id == show.id, Sale.status.in_(pipeline.CLOSABLE))
     ).all()
     lines = db.session.scalars(
         select(ChatMessage)
@@ -456,7 +485,13 @@ def audit_show(show_id: int) -> dict:
             )
             if (
                 may_auto_apply(kind, conf)
-                and sale.status is SaleStatus.reserved
+                and (
+                    sale.status is SaleStatus.reserved
+                    # Paid at the win only: a payment file or a person has not vouched for it.
+                    or sale.status_reason == pipeline.AUTOPAY_REASON
+                )
+                and not pipeline._in_fulfilment(sale)
+                and _after_the_win(sale, f.get("seq"))
                 and _corroborated(show, f.get("seq"), sale.buyer_username)
             ):
                 apply_proposal(item, actor=AI_ACTOR)

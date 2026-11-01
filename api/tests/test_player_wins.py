@@ -144,20 +144,26 @@ def test_only_the_exact_player_marker_is_accepted(client, auth, source):
 # ---------- pipeline ----------
 
 
-def test_a_player_win_reserves_stock_at_the_price_paid(app, world):
+def test_a_player_win_is_sold_and_paid_at_the_price_paid(app, world):
     world["say"](app, [("", "lani808 won the auction for Red bundle #4 for $31.50", "player")])
     stats = run(app, world["show"])
     assert stats.sales == 1
-    assert sales(app, world["show"]) == [("lani808", "reserved", "RED", 1)]
+    # Whatnot charged the winner as the auction ended: paid, stock committed.
+    assert sales(app, world["show"]) == [("lani808", "paid", "RED", 1)]
     # The price the buyer paid, not the SKU's list price (2500); the lot stays in the item.
-    assert sale_rows(app, world["show"]) == [("lani808", "Red bundle #4", 3150, 1, "reserved")]
-    assert level(app, world["red"]) == (3, 1)
+    assert sale_rows(app, world["show"]) == [("lani808", "Red bundle #4", 3150, 1, "paid")]
+    assert level(app, world["red"]) == (2, 0)
+    with app.app_context():
+        sale = db.session.scalar(select(Sale))
+        msg = db.session.scalar(select(ChatMessage))
+        assert sale.status_reason == pipeline.AUTOPAY_REASON
+        assert sale.paid_at == msg.captured_at  # paid at the win line
     with app.app_context():
         ev = db.session.scalar(select(ParsedEvent))
         assert (ev.rule, ev.details) == ("player_win", {"lot": "4"})
     # Replaying the show moves nothing twice.
     assert run(app, world["show"]).parsed == 0
-    assert level(app, world["red"]) == (3, 1)
+    assert level(app, world["red"]) == (2, 0)
 
 
 def test_an_unreadable_player_row_opens_a_review_instead_of_vanishing(app, world):
@@ -206,7 +212,7 @@ def test_a_learned_title_is_exact_and_a_product_name_matches_every_lot(app, worl
         "$1 PERFUMES/ COLOGNES/ NICHE WITH SAM #762",
         26000,
         1,
-        "reserved",
+        "paid",
     )
 
 
@@ -240,11 +246,9 @@ def test_a_chat_win_line_in_a_player_show_waits_as_a_possible_duplicate(app, wor
         ],
     )
     run(app, world["show"])
-    assert sale_rows(app, world["show"]) == [
-        ("chonwhite828", "Red bundle #752", 19500, 1, "reserved")
-    ]
+    assert sale_rows(app, world["show"]) == [("chonwhite828", "Red bundle #752", 19500, 1, "paid")]
     assert reasons(app) == ["possible_duplicate"] * 3
-    assert level(app, world["red"]) == (3, 1)
+    assert level(app, world["red"]) == (2, 0)
     with app.app_context():
         show = db.session.get(Show, world["show"])
         assert dashboard.winners_without_purchase(show) == []  # not a walk-away either
@@ -258,8 +262,8 @@ def test_a_chat_sale_made_before_the_player_row_arrived_is_flagged_not_cancelled
     )
     run(app, world["show"])
     assert sale_rows(app, world["show"]) == [
-        ("chonwhite828", "red bundle", 2500, 1, "reserved"),
-        ("chonwhite828", "Red bundle #752", 19500, 1, "reserved"),
+        ("chonwhite828", "red bundle", 2500, 1, "paid"),
+        ("chonwhite828", "Red bundle #752", 19500, 1, "paid"),
     ]
     with app.app_context():
         item = db.session.scalar(select(ReviewItem))
@@ -268,8 +272,9 @@ def test_a_chat_sale_made_before_the_player_row_arrived_is_flagged_not_cancelled
         assert "cancel it if it is the same win" in item.summary
         pipeline.resolve(item, "set_status", {"status": "cancelled"}, user=owner(world["org"]))
         db.session.commit()
-    assert [s[4] for s in sale_rows(app, world["show"])] == ["cancelled", "reserved"]
-    assert level(app, world["red"]) == (3, 1)
+    # the chat copy was paid and not picked: cancelling it puts its unit back
+    assert [s[4] for s in sale_rows(app, world["show"])] == ["cancelled", "paid"]
+    assert level(app, world["red"]) == (2, 0)
 
 
 def _second_show(app, world):
@@ -310,12 +315,10 @@ def test_two_laptops_on_one_show_make_one_sale(app, world):
     _add(app, other, 1, body, at=now + timedelta(seconds=2))
     run(app, world["show"])
     run(app, other)
-    assert sale_rows(app, world["show"]) == [
-        ("chonwhite828", "Red bundle #752", 19500, 1, "reserved")
-    ]
+    assert sale_rows(app, world["show"]) == [("chonwhite828", "Red bundle #752", 19500, 1, "paid")]
     assert sale_rows(app, other) == []
     assert reasons(app) == ["possible_duplicate"]
-    assert level(app, world["red"]) == (3, 1)
+    assert level(app, world["red"]) == (2, 0)
 
 
 def test_the_same_title_and_price_an_hour_apart_is_a_new_sale(app, world):
@@ -365,8 +368,8 @@ def test_the_ai_cannot_cancel_or_fail_a_player_sale_citing_the_win(app, world, m
         out = supervisor.audit_show(world["show"])
         assert (out["applied"], out["proposed"]) == (0, 2)
         db.session.commit()
-    assert sales(app, world["show"]) == [("chonwhite828", "reserved", "RED", 1)]
-    assert level(app, world["red"]) == (3, 1)
+    assert sales(app, world["show"]) == [("chonwhite828", "paid", "RED", 1)]
+    assert level(app, world["red"]) == (2, 0)
 
 
 def test_a_host_win_line_is_not_evidence_of_a_cancellation(app, world):
@@ -424,8 +427,15 @@ def test_without_lot_numbers_the_price_pairs_the_rows(app, world):
             s.price_cents: s.status
             for s in db.session.scalars(select(Sale).where(Sale.show_id == world["show"]))
         }
-    assert got == {3000: SaleStatus.paid, 19500: SaleStatus.reserved}
+    # both lots were paid at the win; the file confirms only the $30 one
+    assert got == {3000: SaleStatus.paid, 19500: SaleStatus.paid}
     assert reasons(app) == ["no_payment_record"]  # the $195 lot, not the $30 one
+    with app.app_context():
+        flagged = {
+            s.price_cents: s.flagged
+            for s in db.session.scalars(select(Sale).where(Sale.show_id == world["show"]))
+        }
+    assert flagged == {3000: False, 19500: True}
 
 
 def test_a_payment_file_price_that_differs_from_the_player_asks_and_changes_nothing(app, world):
@@ -489,7 +499,8 @@ def test_a_host_congratulation_cannot_fail_a_player_sale(app, world, monkeypatch
         monkeypatch.setattr(supervisor, "get_provider", lambda: scripted)
         assert supervisor.audit_show(world["show"])["applied"] == 0
         db.session.commit()
-    assert level(app, world["red"]) == (3, 1)
+    assert sales(app, world["show"]) == [("lani808", "paid", "RED", 1)]
+    assert level(app, world["red"]) == (2, 0)
 
 
 def test_a_re_exported_payment_file_never_cancels_the_lot_already_paid(app, world):
@@ -564,7 +575,7 @@ def test_a_chat_line_after_another_laptops_player_win_waits_in_review(app, world
     run(app, world["show"])
     assert sale_rows(app, world["show"]) == []
     assert reasons(app) == ["possible_duplicate"]
-    assert level(app, world["red"]) == (3, 1)
+    assert level(app, world["red"]) == (2, 0)
 
 
 def test_two_shows_parsed_at_the_same_moment_still_make_one_sale(app, world, monkeypatch):
@@ -606,4 +617,4 @@ def test_two_shows_parsed_at_the_same_moment_still_make_one_sale(app, world, mon
     assert errors == []
     assert len(sale_rows(app, world["show"]) + sale_rows(app, other)) == 1
     assert reasons(app) == ["possible_duplicate"]
-    assert level(app, world["red"]) == (3, 1)
+    assert level(app, world["red"]) == (2, 0)
