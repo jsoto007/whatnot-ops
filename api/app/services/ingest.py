@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from ..db import db
 from ..models import ChatMessage, Device, Show
+from . import text
 from .showdate import show_date
 
 SCHEMA_PATH = Path(__file__).resolve().parents[3] / "shared" / "chat-event-batch.schema.json"
@@ -30,10 +31,9 @@ MAX_SEQ = 2**31 - 1  # chat_messages.seq is int4
 
 
 def _clean(s: str | None) -> str | None:
-    """Postgres refuses NUL and lone surrogates; drop them rather than fail the batch."""
-    if s is None:
-        return None
-    return s.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
+    """Chat is typed by anyone watching: store it as plain single-line text, without the
+    control characters and invisible marks that could hide what a line says (see text.py)."""
+    return text.clean(s)
 
 
 def _when(value: str, where: str) -> datetime:
@@ -114,7 +114,10 @@ def ingest(device: Device, payload: dict) -> IngestResult:
     batch = validate(payload)
     started_at = _parse_dt(batch["show"]["startedAt"])
     show = get_or_create_show(
-        device.organization_id, batch["show"]["id"], started_at, _clean(batch["show"].get("url"))
+        device.organization_id,
+        batch["show"]["id"],
+        started_at,
+        text.whatnot_url(batch["show"].get("url")),
     )
     values = [
         {

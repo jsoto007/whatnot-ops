@@ -7,6 +7,7 @@ from flask import current_app, g, jsonify, request, session
 
 from .db import db
 from .models import User
+from .services import ratelimit
 from .services.permissions import allowed
 
 CSRF_COOKIE = "csrf"
@@ -56,6 +57,10 @@ def set_csrf_cookie(resp, token: str):
     return resp
 
 
+# Changes one signed-in person may make per minute (see require).
+WRITES_PER_MIN = 300
+
+
 def require(permission: str | None = None):
     """Route needs a logged-in user (and a permission). Also enforces CSRF on mutating requests."""
 
@@ -70,6 +75,9 @@ def require(permission: str | None = None):
                 header = request.headers.get(CSRF_HEADER)
                 if not cookie or not header or not secrets.compare_digest(cookie, header):
                     return jsonify({"error": "missing or invalid CSRF token"}), 403
+            if request.method not in SAFE_METHODS:
+                # Generous for a person clicking; stops a script with a stolen session.
+                ratelimit.per_user("write", user.id, WRITES_PER_MIN, 60)
             if permission and not allowed(user.role, permission):
                 return jsonify(
                     {"error": "you do not have permission to do that", "permission": permission}

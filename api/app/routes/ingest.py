@@ -2,13 +2,15 @@ from flask import Blueprint, g, jsonify, request
 
 from ..db import db
 from ..models import Show
-from ..services import stock
+from ..services import ratelimit, stock
 from ..services.devices import device_for_key, touch
 from ..services.ingest import BatchInvalid, ingest, message_count
 from ..services.pipeline import schedule_parse
 from .extension import latest_version as extension_version
 
 bp = Blueprint("ingest", __name__)
+WRONG_KEYS_PER_10_MIN = 30
+DEVICE_CALLS_PER_MIN = 600
 
 
 @bp.after_request
@@ -34,7 +36,12 @@ def auth():
     key = header.removeprefix("Bearer ").strip() if header.startswith("Bearer ") else None
     device = device_for_key(key)
     if device is None:
+        # Wrong keys count per address, so keys cannot be guessed or sprayed without end.
+        ratelimit.per_ip("device-key", WRONG_KEYS_PER_10_MIN, 600)
         return jsonify({"error": "invalid or revoked device key"}), 401
+    # A laptop flushes about every 1.5 s, pings and polls stock: far below this. A leaked
+    # key, or an extension stuck in a loop, cannot flood the database.
+    ratelimit.per_device("ingest", device.id, DEVICE_CALLS_PER_MIN, 60)
     touch(device, request.headers.get("X-Extension-Version"))
     g.device = device
     return None

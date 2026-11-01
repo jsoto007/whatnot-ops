@@ -93,6 +93,12 @@ def move(
     ).scalar_one_or_none()
     if sku is None:
         raise InventoryError("unknown SKU", 404)
+    # Another transaction may have written this movement while we waited for the lock: now
+    # that we hold it, its row is visible. Returning it here (not via the IntegrityError
+    # below) keeps the caller's earlier work in this transaction.
+    done = _existing(sku_id, kind, source_type, source_id)
+    if done is not None:
+        return done
 
     if kind is MovementKind.restock:
         sku.on_hand += quantity

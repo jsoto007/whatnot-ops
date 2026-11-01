@@ -38,8 +38,9 @@ export function Reconcile({ showId }: { showId: string }) {
     <div className="card import">
       <h3>Reconcile payments</h3>
       <p className="muted small">
-        Upload Whatnot's order export for this show (columns like <b>Buyer</b>, <b>Product</b>, <b>Status</b>). Paid rows mark the
-        matching sale paid and take the stock; cancelled or refunded rows release it. Preview first.
+        Upload Whatnot's order export for this show (columns like <b>Buyer</b>, <b>Product</b>, <b>Status</b>). Whatnot charges at the
+        win, so sales are already paid: paid rows confirm them (and restore one whose card was declined), failed or declined rows
+        mark the payment declined, cancelled or refunded rows cancel the sale. Either way the stock goes back. Preview first.
       </p>
       <div className="inline-form">
         <label className="btn">

@@ -9,7 +9,7 @@ const REASON_LABEL: Record<string, string> = {
   ambiguous_sale: 'Which sale?',
   low_confidence: 'Not sure',
   no_open_sale: 'No open sale to cancel',
-  no_payment_record: 'Sold but not in the payment file',
+  no_payment_record: 'Not in the payment file',
   unmatched_payment: 'Paid but no matching sale',
   cancel_sale: 'AI: looks cancelled',
   payment_failed: 'AI: payment problem',
@@ -19,6 +19,9 @@ const REASON_LABEL: Record<string, string> = {
   possible_duplicate: 'Same win twice?',
   player_unreadable: 'Win not readable',
   price_mismatch: 'Price differs from the payment file',
+  payment_declined: 'Payment declined',
+  decline_untied: 'Declined payment: which sale?',
+  closed_after_picking: 'Closed after picking',
 }
 const ACTION_LABEL: Record<string, string> = {
   assign_sku: 'Assign the suggested SKU',
@@ -141,7 +144,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
             </button>
           </>
         )}
-        {item.reason === 'ambiguous_sale' && item.proposal && Array.isArray(item.proposal.candidates) && (
+        {(item.reason === 'ambiguous_sale' || item.reason === 'decline_untied') && item.proposal && Array.isArray(item.proposal.candidates) && (
           <>
             {(item.proposal.candidates as { saleId: number; label: string }[]).map((c) => (
               <button key={c.saleId} className="btn" onClick={() => resolve.mutate({ action: 'pick_sale', saleId: c.saleId })}>
@@ -167,13 +170,47 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
             It is a separate sale
           </button>
         )}
+        {/* Paid at the win, yet the Seller Hub file does not list it: maybe a decline nobody saw. */}
+        {item.reason === 'no_payment_record' && item.sale?.status === 'paid' && (
+          <button className="btn" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'set_status', status: 'payment_failed' })} data-testid="mark-declined">
+            Payment was declined
+          </button>
+        )}
+        {/* Whatnot lets a declined buyer pay another way until the show ends. "Keep declined"
+            leaves the sale closed and the item in stock. */}
+        {item.reason === 'payment_declined' && item.sale?.status === 'payment_failed' && (
+          <>
+            {/* The win's item was never recognised: say which product it was first. */}
+            {!item.sale.sku && (
+              <label className="field">
+                <span>SKU</span>
+                <select value={skuId} onChange={(e) => setSkuId(e.target.value)} aria-label={`SKU for review ${item.id}`}>
+                  <option value="">Choose…</option>
+                  {skus.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.productName} {s.name} ({s.code})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <button
+              className="btn primary"
+              disabled={resolve.isPending || (!item.sale.sku && !skuId)}
+              onClick={() => resolve.mutate({ action: 'set_status', status: 'paid', ...(item.sale?.sku ? {} : { skuId: Number(skuId) }) })}
+              data-testid="mark-paid-after-decline"
+            >
+              They paid after all
+            </button>
+          </>
+        )}
         {!!item.proposal?.action && item.proposal.action !== 'none' && item.proposal.action !== 'dismiss' && (
           <button className="btn primary" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'apply_proposal' })} data-testid="apply-proposal">
             Apply suggestion
           </button>
         )}
         <button className="btn" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'dismiss' })}>
-          Ignore
+          {item.reason === 'payment_declined' ? 'Keep declined' : 'Ignore'}
         </button>
       </div>
       {error && <p className="form-error">{error}</p>}

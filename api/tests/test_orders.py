@@ -47,8 +47,9 @@ def test_sales_group_into_one_order_per_buyer_and_show(app, world):
         ],
     )
     run(app, world["show"])
-    assert order_of(app, "lani808") == ("open", 2, False)
-    assert order_of(app, "kat.c") == ("open", 1, False)
+    # Whatnot charges every win, so each order is paid (ready to pick) right away.
+    assert order_of(app, "lani808") == ("paid", 2, True)
+    assert order_of(app, "kat.c") == ("paid", 1, True)
     with app.app_context():
         assert db.session.scalar(select(db.func.count()).select_from(Order)) == 2
 
@@ -59,16 +60,20 @@ def test_order_follows_its_sales_until_fulfilment(app, world):
     assert order_of(app, "lani808") == ("cancelled", 1, False)
 
 
-def test_unpaid_order_cannot_be_picked(app, world):
-    world["say"](app, [("", "lani808 won Red bundle")])
+def test_order_with_an_unrecognised_item_cannot_be_picked(app, world):
+    """A sale whose item matched no product stays detected (nothing reserved or paid), so
+    its order stays open until a person assigns the item in Review."""
+    world["say"](app, [("", "cardguy bought mystery box for $10")])
     run(app, world["show"])
+    assert sales(app, world["show"]) == [("cardguy", "detected", None, 1)]
     with app.app_context():
         o = db.session.scalar(select(Order))
-        with pytest.raises(OrderError, match="not paid"):
+        assert o.status is OrderStatus.open
+        with pytest.raises(OrderError, match="needs a decision in Review"):
             orders.advance(o, OrderStatus.picking, actor_label="o")
 
 
-def test_reconcile_preview_then_apply_commits_and_releases_stock(app, world):
+def test_reconcile_preview_then_apply_confirms_payments_and_restocks_refunds(app, world):
     world["say"](
         app,
         [
@@ -79,17 +84,19 @@ def test_reconcile_preview_then_apply_commits_and_releases_stock(app, world):
         ],
     )
     run(app, world["show"])
-    # 1 + 2 + 1 + 1 reserved against 3 on the shelf: oversold by 2, nothing refused
-    assert level(app, world["red"]) == (3, 5)
+    # 1 + 2 + 1 + 1 sold (paid at the win) against 3 on the shelf: oversold by 2, nothing
+    # refused
+    assert level(app, world["red"]) == (-2, 0)
     with app.app_context():
         show = db.session.get(Show, world["show"])
         p = reconcile.plan(show, reconcile.parse_csv(CSV))
-        assert [r.action for r in p.rows] == ["mark_paid", "mark_paid", "cancel", "unmatched"]
-        assert p.summary == {"mark_paid": 2, "cancel": 1, "unmatched": 1, "uncovered": 1}
+        # lani808's sales are already paid: the file only confirms them
+        assert [r.action for r in p.rows] == ["unchanged", "unchanged", "cancel", "unmatched"]
+        assert p.summary == {"unchanged": 2, "cancel": 1, "unmatched": 1, "uncovered": 1}
         dave = db.session.scalar(select(Sale).where(Sale.buyer_username == "dave-77"))
         assert p.uncovered == [dave.id]
         db.session.rollback()
-    assert level(app, world["red"]) == (3, 5)  # preview changed nothing
+    assert level(app, world["red"]) == (-2, 0)  # preview changed nothing
     with app.app_context():
         show = db.session.get(Show, world["show"])
         u = owner(app, world["org"])
@@ -101,11 +108,11 @@ def test_reconcile_preview_then_apply_commits_and_releases_stock(app, world):
             ("lani808", "paid", "RED", 1),
             ("lani808", "paid", "RED", 2),
             ("kat.c", "cancelled", "RED", 1),
-            ("dave-77", "reserved", "RED", 1),
+            ("dave-77", "paid", "RED", 1),
         ]
     )
-    # 3 committed for lani808, kat.c's refund released hers, dave's 1 still held: 1 to buy
-    assert level(app, world["red"]) == (0, 1)
+    # 3 for lani808 and dave's 1 stay sold, kat.c's refund put hers back: 1 to buy
+    assert level(app, world["red"]) == (-1, 0)
     assert order_of(app, "lani808") == ("paid", 2, True)
     assert order_of(app, "kat.c") == ("cancelled", 1, False)
     # dave: not in the file; stranger: in the file but no sale.
@@ -131,7 +138,7 @@ def test_reconcile_preview_then_apply_commits_and_releases_stock(app, world):
         )
         db.session.commit()
         assert db.session.scalar(select(db.func.count()).select_from(ReviewItem)) == n
-    assert level(app, world["red"]) == (0, 1)
+    assert level(app, world["red"]) == (-1, 0)
 
 
 def test_parse_csv_is_tolerant_about_headers_and_statuses():
@@ -222,24 +229,27 @@ def test_order_routes_and_permissions(client, app, world):
         u = db.session.scalar(select(User))
         u.organization_id = world["org"]
         db.session.commit()
-    assert client.get("/api/orders?status=queue").get_json()["orders"] == []
-    opened = client.get("/api/orders?status=open").get_json()["orders"]
+    # paid at the win: the order is in the pick queue at once, nothing is open
+    assert client.get("/api/orders?status=open").get_json()["orders"] == []
+    queued = client.get("/api/orders?status=queue").get_json()["orders"]
     assert (
-        opened[0]["buyer"] == "lani808"
-        and opened[0]["verified"] is False
-        and opened[0]["totalCents"] == 2500
+        queued[0]["buyer"] == "lani808"
+        and queued[0]["status"] == "paid"
+        and queued[0]["verified"] is True
+        and queued[0]["totalCents"] == 2500
     )
-    oid = opened[0]["id"]
+    oid = queued[0]["id"]
     assert (
-        client.post(f"/api/orders/{oid}/status", json={"status": "picking"}, headers=h).status_code
+        client.post(f"/api/orders/{oid}/status", json={"status": "shipped"}, headers=h).status_code
         == 409
-    )
+    )  # must pick and pack first
     r = client.post(
         f"/api/orders/shows/{world['show']}/reconcile",
         json={"csv": "Buyer,Product,Status\nlani808,Red bundle,paid\n", "apply": True},
         headers=h,
     )
-    assert r.status_code == 200 and r.get_json()["summary"] == {"mark_paid": 1}
+    # the payment file confirms what the win already paid
+    assert r.status_code == 200 and r.get_json()["summary"] == {"unchanged": 1}
     assert client.get("/api/orders?status=queue").get_json()["orders"][0]["status"] == "paid"
     assert (
         client.get(f"/api/orders/shows/{world['show']}/pick-list").get_json()["items"][0][

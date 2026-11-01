@@ -114,6 +114,19 @@
       idle(title, price = '$1') { footer().innerHTML = item(title) + `<section class="ml-3"><strong>${esc(price)}</strong><strong data-testid="show-timer">00:20</strong></section></section>`; },
       bidding(name, price, title) { footer().innerHTML = `<div><strong data-testid="show-winning-status">${esc(name)} is <strong>Winning!</strong></strong></div>` + item(title) + `<section class="ml-3"><strong>${esc(price)}</strong><strong data-testid="show-timer">00:03</strong></section></section>`; },
       won(name, price, title) { footer().innerHTML = `<div><strong data-testid="show-winning-status">${esc(name)} <strong>won!</strong></strong><strong>bid $1.00</strong></div>` + item(title) + `<section class="ml-3"><strong>${esc(price)}</strong><strong>Sold</strong></section></section>`; },
+      // A card declined after the win, shown in the footer (made-up markup: no real decline captured yet).
+      declined(text = 'Payment declined') { const d = document.createElement('div'); const s = document.createElement('span'); s.textContent = text; d.appendChild(s); footer().prepend(d); },
+    };
+    // The show's Sold tab (outside the chat): one row per item sold, with a status. Made-up markup.
+    window.__sold = {
+      add(buyer, title, price, status = 'Paid') {
+        let tab = document.getElementById('sold-tab');
+        if (!tab) { tab = document.createElement('div'); tab.id = 'sold-tab'; tab.setAttribute('role', 'tabpanel'); document.querySelector('.video').appendChild(tab); }
+        const row = document.createElement('div'); row.className = 'row';
+        for (const t of ['@' + buyer, title, price, status]) { const s = document.createElement('span'); s.textContent = t; row.appendChild(s); }
+        tab.appendChild(row);
+        return row;
+      },
     };
     api.appendMany(10, 'seed');
   })();

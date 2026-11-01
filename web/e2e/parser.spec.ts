@@ -74,18 +74,18 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   await expect(page.getByTestId('tile-items')).toContainText('1') // cardguy's; lani808 and pokemom are cancelled/failed
   await expect(page.getByTestId('tile-items')).toContainText('2 cancelled or failed')
   await expect(page.getByTestId('status-bar')).toContainText('1 cancelled')
-  await expect(page.getByTestId('status-bar')).toContainText('1 payment failed')
-  await expect(page.getByTestId('next-steps')).toContainText('2 lines need a decision')
+  await expect(page.getByTestId('status-bar')).toContainText('1 payment declined')
+  await expect(page.getByTestId('next-steps')).toContainText('3 lines need a decision')
 
   const sales = page.getByTestId('sales')
-  await expect(sales.locator('tr', { hasText: 'lani808' })).toContainText('payment failed')
+  await expect(sales.locator('tr', { hasText: 'lani808' })).toContainText('payment declined')
   await expect(sales.locator('tr', { hasText: 'pokemom_22' })).toContainText('cancelled')
   await expect(sales.locator('tr', { hasText: 'cardguy' })).toContainText('unmatched')
 
   // Running the audit again proposes nothing new.
   await page.getByTestId('ai-audit').click()
   await expect(page.getByTestId('tile-items')).toContainText('2 cancelled or failed')
-  await expect(page.getByTestId('next-steps')).toContainText('2 lines need a decision')
+  await expect(page.getByTestId('next-steps')).toContainText('3 lines need a decision')
 
   // Stock: nothing reserved (lani808 released by the AI, pokemom by the rules); 3 available.
   await page.getByRole('link', { name: 'Inventory' }).click()
@@ -99,6 +99,12 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
 
   // Review: teach the app that "mystery box" is a red bundle.
   await page.getByRole('link', { name: /^Review/ }).click()
+  await expect(page.locator('.review')).toHaveCount(3)
+  // lani808's declined card: the item is back in stock; they never paid another way.
+  const decline = page.locator('.review', { hasText: 'Payment declined' })
+  await expect(decline).toContainText("lani808's payment was declined")
+  await expect(decline.getByTestId('mark-paid-after-decline')).toBeVisible()
+  await decline.getByRole('button', { name: 'Keep declined' }).click()
   await expect(page.locator('.review')).toHaveCount(2)
   const select = page.getByLabel(/SKU for review/)
   const redValue = await select.locator('option', { hasText: 'RED' }).getAttribute('value')
@@ -106,25 +112,26 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   await page.getByRole('button', { name: 'Use this SKU' }).click()
   await expect(page.locator('.review')).toHaveCount(1)
   // The split winner line: the rules would not trust it, a person vouches for it and it becomes
-  // a real sale (item from the listing), stock is held, and it leaves the queue for good.
+  // a real sale (item from the listing), paid at the win like any other, and it leaves the queue.
   const split = page.locator('.review', { hasText: 'viewer_vic' })
   await expect(split).toContainText('Not sure')
   await split.getByTestId('confirm-sale').click()
   await expect(page.getByText('Nothing waiting', { exact: true })).toBeVisible()
   await page.getByRole('link', { name: 'Inventory' }).click()
-  await expect(cell(page, 'RED', 'held')).toHaveText('2')
+  await expect(cell(page, 'RED', 'on-hand')).toHaveText('1') // 3 − the two paid sales
+  await expect(cell(page, 'RED', 'held')).toHaveText('0')
   await page.getByRole('link', { name: 'Products' }).click()
   await expect(page.locator('.chip', { hasText: 'mystery box' })).toBeVisible()
 
-  // Overselling: 3 on the shelf, 2 held, kat.c wins 4 more. The sale is reserved anyway and
-  // the shortfall says how many to buy, instead of a "not enough stock" review.
+  // Overselling: 1 on the shelf, kat.c wins 4 more. The sale is paid anyway, the shelf goes
+  // to -3 and the shortfall says how many to buy, instead of a "not enough stock" review.
   const more = await request.post('/api/ingest', {
     data: { ...batch, rows: [row(10, '', 'kat.c won Red bundle x4')] },
     headers: { Authorization: 'Bearer ' + key },
   })
   expect(more.ok()).toBe(true)
   await page.getByRole('link', { name: 'Inventory' }).click()
-  await expect(cell(page, 'RED', 'held')).toHaveText('6')
+  await expect(cell(page, 'RED', 'held')).toHaveText('0')
   await expect(cell(page, 'RED', 'available')).toContainText('-3')
   await expect(cell(page, 'RED', 'available')).toContainText('buy 3')
   await expect(page.getByTestId('to-buy')).toHaveText('1 oversold, buy 3 more')

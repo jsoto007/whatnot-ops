@@ -51,7 +51,7 @@ def open_reviews(app):
         ]
 
 
-def test_sales_reserve_stock_and_cancellations_release_it(app, world):
+def test_wins_are_paid_at_once_and_cancellations_restock(app, world):
     world["say"](
         app,
         [
@@ -64,11 +64,13 @@ def test_sales_reserve_stock_and_cancellations_release_it(app, world):
     )
     stats = run(app, world["show"])
     assert (stats.parsed, stats.sales) == (5, 2)
+    # Whatnot charges every win: lani808's sale is paid (stock committed); pokemom_22's was
+    # paid too, then cancelled before picking, so its 2 went back on the shelf.
     assert sales(app, world["show"]) == [
-        ("lani808", "reserved", "RED", 1),
+        ("lani808", "paid", "RED", 1),
         ("pokemom_22", "cancelled", "RED", 2),
     ]
-    assert level(app, world["red"]) == (3, 1)
+    assert level(app, world["red"]) == (2, 0)
     with app.app_context():
         kinds = [
             e.kind.value for e in db.session.scalars(select(ParsedEvent).order_by(ParsedEvent.id))
@@ -81,10 +83,10 @@ def test_sales_reserve_stock_and_cancellations_release_it(app, world):
     # Running again changes nothing.
     stats = run(app, world["show"])
     assert stats.parsed == 0
-    assert level(app, world["red"]) == (3, 1)
+    assert level(app, world["red"]) == (2, 0)
 
 
-def test_unmatched_item_goes_to_review_and_assigning_a_sku_reserves_and_remembers(app, world):
+def test_unmatched_item_goes_to_review_and_assigning_a_sku_sells_it_and_remembers(app, world):
     world["say"](app, [("", "cardguy bought mystery box for $10")])
     run(app, world["show"])
     assert sales(app, world["show"]) == [("cardguy", "detected", None, 1)]
@@ -105,23 +107,26 @@ def test_unmatched_item_goes_to_review_and_assigning_a_sku_reserves_and_remember
         db.session.flush()
         pipeline.resolve(item, "assign_sku", {"skuId": world["red"], "remember": True}, user=user)
         db.session.commit()
-    assert sales(app, world["show"]) == [("cardguy", "reserved", "RED", 1)]
-    assert level(app, world["red"]) == (3, 1)
+    # assigning the SKU reserves and then autopays (the win was charged)
+    assert sales(app, world["show"]) == [("cardguy", "paid", "RED", 1)]
+    assert level(app, world["red"]) == (2, 0)
     assert open_reviews(app) == []
     with app.app_context():
         assert catalog.resolve_alias(world["org"], "mystery box").code == "RED"
     # Next show: the alias is known, no review needed.
     world["say"](app, [("", "kat.c bought mystery box")])
     run(app, world["show"])
-    assert sales(app, world["show"])[-1] == ("kat.c", "reserved", "RED", 1)
+    assert sales(app, world["show"])[-1] == ("kat.c", "paid", "RED", 1)
 
 
-def test_overselling_reserves_the_sale_without_a_review(app, world):
+def test_overselling_sells_without_a_review(app, world):
     world["say"](app, [("", "lani808 won Red bundle x5")])
     run(app, world["show"])
-    assert sales(app, world["show"]) == [("lani808", "reserved", "RED", 5)]
+    assert sales(app, world["show"]) == [("lani808", "paid", "RED", 5)]
     assert open_reviews(app) == []
-    assert level(app, world["red"]) == (3, 5)  # 2 short: the shop buys more
+    assert level(app, world["red"]) == (-2, 0)  # 2 short: the shop buys more
+    with app.app_context():
+        assert db.session.get(Sku, world["red"]).short == 2
 
 
 def test_ambiguous_cancellation_asks_which_sale(app, world):
@@ -156,8 +161,8 @@ def test_ambiguous_cancellation_asks_which_sale(app, world):
         db.session.flush()
         pipeline.resolve(item, "pick_sale", {"saleId": pick}, user=user)
         db.session.commit()
-    assert sorted(s[1] for s in sales(app, world["show"])) == ["cancelled", "reserved"]
-    assert level(app, world["red"]) == (3, 1)
+    assert sorted(s[1] for s in sales(app, world["show"])) == ["cancelled", "paid"]
+    assert level(app, world["red"]) == (2, 0)  # the cancelled one went back on the shelf
 
 
 def test_cancel_with_no_open_sale_and_low_confidence_sale_go_to_review(app, world):
@@ -178,7 +183,7 @@ def test_reparse_only_revisits_dead_end_lines(app, world):
     with app.app_context():
         assert db.session.scalar(select(Sale)).id == before
         assert db.session.scalar(select(db.func.count()).select_from(ParsedEvent)) == n_events
-    assert level(app, world["red"]) == (3, 1)
+    assert level(app, world["red"]) == (2, 0)
 
 
 # ---------- jobs ----------
@@ -259,8 +264,8 @@ def test_ingest_schedules_a_parse_and_inline_mode_parses_immediately(
     )
     assert r.status_code == 200
     assert sales(app, world["show"]) == [
-        ("lani808", "reserved", "RED", 1),
-        ("kat.c", "reserved", "RED", 1),
+        ("lani808", "paid", "RED", 1),
+        ("kat.c", "paid", "RED", 1),
     ]
     with app.app_context():
         assert db.session.scalar(select(Job)).status is JobStatus.done
@@ -290,7 +295,7 @@ def test_review_and_show_routes(client, app, world):
         db.session.commit()
     assert client.post(f"/api/shows/{world['show']}/parse", headers=h).get_json()["sales"] == {
         "detected": 1,
-        "reserved": 1,
+        "paid": 1,
     }
     ev = client.get(f"/api/shows/{world['show']}/events").get_json()
     assert [e["kind"] for e in ev["events"]] == ["sale", "sale"]
@@ -314,7 +319,7 @@ def test_review_and_show_routes(client, app, world):
         == 409
     )
     stats = client.get(f"/api/shows/{world['show']}").get_json()["stats"]
-    assert stats["sales"] == {"reserved": 2} and stats["openReviews"] == 0
+    assert stats["sales"] == {"paid": 2} and stats["openReviews"] == 0
     actions = [e["action"] for e in client.get("/api/audit").get_json()["entries"]]
     assert "review.resolved" in actions and "show.parsed" in actions
 
@@ -351,7 +356,7 @@ def _owner(org_id):
 
 def test_a_person_can_record_a_low_confidence_line_as_a_sale(app, world):
     """The human half of the split-winner-line fix: Review's "Record as a sale" goes through
-    create_sale (SKU match from the listing, reserve, order), once, and never twice."""
+    create_sale (SKU match from the listing, reserve + autopay, order), once, and never twice."""
     world["say"](
         app,
         [
@@ -389,12 +394,13 @@ def test_a_person_can_record_a_low_confidence_line_as_a_sale(app, world):
         pipeline.resolve(viewer, "confirm_sale", {}, user=user)
         db.session.commit()
 
-    # Both wins are real sales now: item from the listing context, stock held, orders open.
+    # Both wins are real sales now: item from the listing context, paid at the win (stock
+    # committed), one order each.
     assert sales(app, world["show"]) == [
-        ("lani808", "reserved", "RED", 1),
-        ("randomguy", "reserved", "RED", 1),
+        ("lani808", "paid", "RED", 1),
+        ("randomguy", "paid", "RED", 1),
     ]
-    assert level(app, world["red"]) == (3, 2)
+    assert level(app, world["red"]) == (1, 0)
     assert [r for r, _ in open_reviews(app)] == ["no_open_sale"]  # the cancel, untouched
     with app.app_context():
         from app.models import Order

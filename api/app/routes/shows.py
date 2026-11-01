@@ -6,7 +6,7 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import ChatMessage, EventKind, Job, ParsedEvent, ReviewItem, ReviewStatus, Sale, Show
-from ..services import audit, pipeline, sale_chat
+from ..services import audit, pipeline, ratelimit, sale_chat
 
 bp = Blueprint("shows", __name__)
 
@@ -89,6 +89,8 @@ def parse_now(show_id: int):
     show = _show_or_404(show_id)
     if show is None:
         return jsonify({"error": "show not found"}), 404
+    # A full parse of a long show is heavy: a shop gets a few a minute.
+    ratelimit.per_org("parse", g.u.organization_id, 20, 60)
     reparse = bool((request.get_json(silent=True) or {}).get("reparse"))
     stats = pipeline.process_show(show.id, reparse=reparse)
     audit.record(
@@ -113,6 +115,8 @@ def ai_audit(show_id: int):
 
     if not supervisor.status(g.u.organization_id)["enabled"]:
         return jsonify({"error": "AI is not configured (AI_PROVIDER)"}), 409
+    # Each audit is a paid call to the AI vendor.
+    ratelimit.per_org("ai-audit", g.u.organization_id, 30, 3600)
     supervisor.schedule_audit(show, delay_s=0)
     audit.record(
         g.u.organization_id,
@@ -180,7 +184,9 @@ def messages(show_id: int):
     show = _show_or_404(show_id)
     if show is None:
         return jsonify({"error": "show not found"}), 404
-    q = (request.args.get("q") or "").strip()
+    q = (request.args.get("q") or "").strip()[:200]
+    if q:
+        ratelimit.per_user("chat-search", g.u.id, 120, 60)
     limit = max(1, min(request.args.get("limit", 200, type=int) or 200, 1000))
     offset = max(request.args.get("offset", 0, type=int) or 0, 0)
     stmt = select(ChatMessage).where(ChatMessage.show_id == show.id)

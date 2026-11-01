@@ -5,7 +5,7 @@ from flask import Blueprint, Response, g, jsonify, request
 from ..auth import require
 from ..db import db
 from ..models import Show
-from ..services import audit, dashboard, reports
+from ..services import audit, dashboard, ratelimit, reports
 
 bp = Blueprint("reports", __name__)
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -43,9 +43,13 @@ def get_show_dashboard(show_id: int):
     )
 
 
+REPORTS_PER_10_MIN = 30
+
+
 @bp.get("/reports/show/<int:show_id>.xlsx")
 @require("reports.view")
 def show_report(show_id: int):
+    ratelimit.per_user("report", g.u.id, REPORTS_PER_10_MIN, 600)  # built synchronously
     show = db.session.get(Show, show_id)
     if show is None or show.organization_id != g.u.organization_id:
         return jsonify({"error": "show not found"}), 404
@@ -63,6 +67,7 @@ def show_report(show_id: int):
 @bp.get("/reports/overview.xlsx")
 @require("reports.view")
 def overview_report():
+    ratelimit.per_user("report", g.u.id, REPORTS_PER_10_MIN, 600)
     try:
         since, until = _date(request.args.get("from")), _date(request.args.get("to"))
     except ValueError:

@@ -46,10 +46,16 @@ commands.
 - **Fail closed.** `APP_ENV` defaults to production and must be
   development/test/production; dev conveniences (dev secret, open sign-up,
   links in API responses) only for development/test (`config.is_dev`).
-- **Rate limits** for unauthenticated endpoints live in
-  `services/ratelimit.py` (Postgres counters, own transaction). Add a limit
-  to any new unauthenticated route. `RATE_LIMITS=off` works only in dev/test
-  (the browser e2e sets it).
+- **Rate limits** live in `services/ratelimit.py` (Postgres counters, own
+  transaction): per address for unauthenticated routes and wrong device keys,
+  per device for `/api/ingest*`, per user for every signed-in write
+  (`auth.require`) and uploads, per shop for "Parse now" and AI audits. Add a
+  limit to any new unauthenticated or costly route. `RATE_LIMITS=off` works
+  only in dev/test (the browser e2e sets it).
+- **Text from outside** (captured chat, uploaded CSVs, the show URL) goes
+  through `services/text.py` before it is stored: no control characters or
+  invisible / bidi marks, show URLs only on whatnot.com. Store and show it as
+  plain text; never render it as HTML.
 - **Chat is attacker-controlled.** Anyone watching can type in it: never let
   a viewer line become a sale, a cancel or the current listing without the
   host/platform or a person. The AI may auto-apply only what
@@ -105,9 +111,13 @@ commands.
   Postgres enums, drop the enum types too (see 0004).
 - **Orders** derive `open / paid / cancelled` from their sales
   (`services/orders.refresh()`), and only `advance()` moves them through
-  fulfilment, which requires every item paid. Payment comes only from
-  `services/reconcile.py` (the Seller Hub CSV) or a person in Review; chat
-  never marks anything paid.
+  fulfilment, which requires every item paid. Whatnot charges the winner at
+  the win, so `pipeline.autopay()` marks every won sale paid at once (orders
+  never wait for payment). A decline — read by the extension from Whatnot's
+  player / Sold tab (`extension/src/capture/decline.ts`, unverified against a
+  real decline), said by the host/platform, or in the Seller Hub CSV — closes
+  it `payment_failed` and restocks unless picking began; a person may restore
+  it once in Review. A viewer's chat line never pays or declines anything.
 - **Numbers.** Dashboard tiles and the Excel sheets both read
   `services/dashboard.py`; add a metric there, never inline in a route or
   the workbook builder. Reports are built synchronously with openpyxl

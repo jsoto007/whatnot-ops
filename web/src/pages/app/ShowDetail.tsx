@@ -116,7 +116,7 @@ function countBy(sales: Sale[]): Counts {
 }
 
 const ORDER: SaleStatus[] = ['fulfilled', 'paid', 'reserved', 'detected', 'payment_failed', 'cancelled']
-const LABEL: Record<SaleStatus, string> = { fulfilled: 'Shipped', paid: 'Paid', reserved: 'Reserved', detected: 'Needs a decision', payment_failed: 'Payment failed', cancelled: 'Cancelled' }
+const LABEL: Record<SaleStatus, string> = { fulfilled: 'Shipped', paid: 'Paid', reserved: 'Reserved', detected: 'Needs a decision', payment_failed: 'Payment declined', cancelled: 'Cancelled' }
 
 /** Where every sale of the show stands, as one bar: the reader sees at once how much money is settled. */
 function SaleStatusBar({ counts }: { counts: Counts }) {
@@ -143,8 +143,10 @@ function NextSteps({ t, counts, walkaways, showId, canReconcile, canReview, onTa
   const steps: React.ReactNode[] = []
   if (walkaways) steps.push(<li key="w">{walkaways} winner{walkaways === 1 ? '' : 's'} walked away (nothing picked, cancelled, unpaid) — <a href="#walkaways" onClick={(e) => { e.preventDefault(); onTab('walkaways') }}>see who</a></li>)
   if (canReview && t.openReviews) steps.push(<li key="r">{t.openReviews} line{t.openReviews === 1 ? '' : 's'} need{t.openReviews === 1 ? 's' : ''} a decision — <Link to="/app/review">open Review</Link></li>)
-  const open = (counts.reserved?.n ?? 0) + (counts.detected?.n ?? 0)
-  if (canReconcile && open && !t.live) steps.push(<li key="p">{open} sale{open === 1 ? '' : 's'} await{open === 1 ? 's' : ''} the payment file — <a href="#payments" onClick={(e) => { e.preventDefault(); onTab('payments') }}>reconcile payments</a></li>)
+  // Whatnot charges every win, so sales are paid at once. Only sales recorded before that (still
+  // reserved) wait for the payment file.
+  const open = counts.reserved?.n ?? 0
+  if (canReconcile && open && !t.live) steps.push(<li key="p">{open} older sale{open === 1 ? '' : 's'} still wait{open === 1 ? 's' : ''} for the payment file — <a href="#payments" onClick={(e) => { e.preventDefault(); onTab('payments') }}>reconcile payments</a></li>)
   if (t.toFulfil) steps.push(<li key="f">{t.toFulfil} paid order{t.toFulfil === 1 ? '' : 's'} ready to pick — <Link to={`/app/orders?view=queue&show=${showId}`}>open the queue</Link></li>)
   if (!steps.length) return null
   return (
@@ -157,10 +159,10 @@ function NextSteps({ t, counts, walkaways, showId, canReconcile, canReview, onTa
 
 const FILTERS: { key: string; label: string; match: (s: Sale) => boolean }[] = [
   { key: 'all', label: 'All', match: () => true },
-  { key: 'open', label: 'Awaiting payment', match: (s) => s.status === 'reserved' || s.status === 'detected' },
   { key: 'paid', label: 'Paid', match: (s) => s.status === 'paid' || s.status === 'fulfilled' },
   { key: 'flagged', label: 'Needs a decision', match: (s) => s.flagged || s.status === 'detected' },
-  { key: 'lost', label: 'Cancelled / failed', match: (s) => s.status === 'cancelled' || s.status === 'payment_failed' },
+  { key: 'declined', label: 'Payment declined', match: (s) => s.status === 'payment_failed' },
+  { key: 'lost', label: 'Cancelled / declined', match: (s) => s.status === 'cancelled' || s.status === 'payment_failed' },
 ]
 
 /**
@@ -238,7 +240,7 @@ function SalesTab({ sales, loading }: { sales: Sale[]; loading: boolean }) {
                 <td className="num">{money((s.priceCents ?? 0) * s.quantity)}</td>
                 <td className="muted">{s.auctionType}</td>
                 <td>
-                  <span className={`status ${s.status}`}>{s.status.replace('_', ' ')}</span>
+                  <span className={`status ${s.status}`}>{s.status === 'payment_failed' ? 'payment declined' : s.status}</span>
                   {s.statusReason && <div className="muted small">{s.statusReason}</div>}
                 </td>
                 <td>

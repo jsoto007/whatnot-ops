@@ -91,6 +91,11 @@ def info():
 @bp.get("/download")
 @require("shows.view")
 def download():
+    from flask import g
+
+    from ..services import ratelimit
+
+    ratelimit.per_user("extension-download", g.u.id, 20, 600)  # zipped on every call
     dist = dist_dir()
     version = _version(dist)
     if version is None:

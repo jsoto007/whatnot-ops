@@ -8,7 +8,7 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import Product, Sku
-from ..services import audit, catalog, inventory, stock
+from ..services import audit, catalog, inventory, ratelimit, stock
 from ..services.catalog import CatalogError
 from ..services.inventory import Actor, InventoryError
 
@@ -272,9 +272,10 @@ def adjust(sku_id: int):
 @bp.post("/inventory/import")
 @require("inventory.write")
 def import_sheet():
+    ratelimit.per_user("import", g.u.id, 30, 600)
     d = _body()
     text = d.get("csv") or ""
-    if not text.strip():
+    if not isinstance(text, str) or not text.strip():
         return jsonify({"error": "paste or upload a CSV"}), 400
     plan = catalog.plan_import(g.u.organization_id, catalog.parse_csv(text))
     if d.get("apply"):
