@@ -2,7 +2,7 @@ from flask import Blueprint, g, jsonify, request
 
 from ..db import db
 from ..models import Show
-from ..services import ratelimit, stock
+from ..services import ratelimit, shipments, stock
 from ..services.devices import device_for_key, touch
 from ..services.ingest import BatchInvalid, ingest, message_count
 from ..services.pipeline import schedule_parse
@@ -105,6 +105,24 @@ def post_batch():
             },
         }
     )
+
+
+@bp.post("/ingest/shipments")
+def post_shipments():
+    """Rows the scraper read off Whatnot's Seller Hub Shipments table, after a show. Stored
+    as evidence for the show's order slips; nothing about a sale or stock changes."""
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return jsonify({"error": "body must be JSON"}), 400
+    # A read is one click for a person; this only stops a loop.
+    ratelimit.per_device("shipments", g.device.id, 30, 600)
+    try:
+        result = shipments.ingest(g.device, payload)
+    except shipments.ShipmentsInvalid as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
+    db.session.commit()
+    return jsonify(result)
 
 
 @bp.get("/ingest/stock")

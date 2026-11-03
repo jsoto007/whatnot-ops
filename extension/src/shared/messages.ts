@@ -1,4 +1,5 @@
 import type { CapturedRow, ShowMeta } from '../capture/types'
+import type { ShipmentRow } from '../shipments/read'
 
 export interface ShowRef {
   id: string
@@ -36,6 +37,8 @@ export type Request =
   | { cmd: 'settingsChanged' }
   /** extension pages only: a different shop was connected; set unsent rows aside */
   | { cmd: 'parkPending' }
+  /** rows read off Seller Hub's Shipments table → ShipmentsReply | { error } */
+  | { cmd: 'shipments'; rows: ShipmentRow[] }
 
 /**
  * The shop's web app → background (chrome.runtime.sendMessage(id, …) via

@@ -10,6 +10,7 @@ import { Dashboard } from './pages/app/Dashboard'
 import { Inventory } from './pages/app/Inventory'
 import { AppLayout } from './pages/app/Layout'
 import { OrderDetail, Orders, PickList } from './pages/app/Orders'
+import { OrderSlips } from './pages/app/OrderSlips'
 import { Products } from './pages/app/Products'
 import { Reports } from './pages/app/Reports'
 import { Settings } from './pages/app/Settings'
@@ -74,6 +75,7 @@ export function App() {
               <Route path="shows/:id" element={<ShowDetail />} />
               <Route path="orders" element={<Orders />} />
               <Route path="orders/pick-list/:showId" element={<PickList />} />
+              <Route path="orders/slips/:showId" element={<OrderSlips />} />
               <Route path="orders/:id" element={<OrderDetail />} />
               <Route path="inventory" element={<Inventory />} />
               <Route path="products" element={<Products />} />

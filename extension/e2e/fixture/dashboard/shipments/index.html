@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: Seller Hub Shipments</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  table { border-collapse: collapse; } th, td { border: 1px solid #ccc; padding: 4px 8px; }
+</style>
+</head>
+<body>
+<!-- Header and pager markup as read from Seller Hub's Shipments page on 2026-11-02
+     (classes and icons stripped). The rows are made up; no filled page has been captured. -->
+<main>
+  <table>
+    <thead><tr>
+      <th><div><div><div><button role="checkbox" aria-checked="false"></button><input type="checkbox" tabindex="-1" aria-hidden="true"></div></div></div></th>
+      <th aria-sort="none"><div><section><button type="button"><div><svg></svg></div></button>Recipient</section><div><svg></svg></div></div></th>
+      <th aria-sort="none"><div>Order Date<div><svg></svg></div></div></th>
+      <th aria-sort="none"><div>Items<div><svg></svg></div></div></th>
+      <th aria-sort="none"><div>Value<div><svg></svg></div></div></th>
+      <th aria-sort="none"><div>Weight<div><svg></svg></div></div></th>
+      <th aria-sort="none"><div>Dimensions<div><svg></svg></div></div></th>
+      <th><div>Requirements</div></th>
+      <th aria-sort="none"><div>Status<div><svg></svg></div></div></th>
+      <th aria-sort="none"><div>Tracking<div><svg></svg></div></div></th>
+      <th><div>Actions</div></th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div><div><button id="prev"><div><svg></svg></div></button><button id="next"><div><svg></svg></div></button></div>
+    <div><div aria-haspopup="dialog" role="button"><input type="hidden" value="2"><input role="combobox" readonly value="Show 2"><button type="button" tabindex="-1"><div><svg></svg></div></button></div></div>
+    <strong id="showing"></strong></div>
+</main>
+<script>
+  const ALL = [
+    ['e2e_buyer1', 'Oct 31, 2026, 8:15 PM', '3 items', '$45.20', 'Unfulfilled'],
+    ['e2e_buyer2', 'Oct 31, 2026, 9:02 PM', '1 item', '$14.89', 'Unfulfilled'],
+    ['e2e_buyer3', 'Nov 1, 2026, 12:40 AM', '2 items', '$30.00', 'Shipped'],
+  ]
+  const SIZE = 2
+  let page = 0
+  function render() {
+    const rows = ALL.slice(page * SIZE, page * SIZE + SIZE)
+    document.getElementById('rows').innerHTML = rows.map(([u, d, i, v, s]) =>
+      `<tr><td><button role="checkbox"></button></td><td><div>${u}</div><div>Test Person</div><div>1 Test St</div></td><td>${d}</td><td>${i}</td><td>${v}</td><td>1 lb</td><td>10x8x4</td><td></td><td><span>${s}</span></td><td></td><td><button>Print label</button></td></tr>`).join('')
+    const from = page * SIZE + 1, to = page * SIZE + rows.length
+    document.getElementById('showing').textContent = `Showing ${from}-${to} of ${ALL.length}`
+    document.getElementById('prev').disabled = page === 0
+    document.getElementById('next').disabled = to >= ALL.length
+  }
+  // Like a real app: the next page arrives a moment after the click.
+  document.getElementById('next').addEventListener('click', () => setTimeout(() => { page += 1; render() }, 150))
+  document.getElementById('prev').addEventListener('click', () => setTimeout(() => { page -= 1; render() }, 150))
+  render()
+</script>
+</body>
+</html>

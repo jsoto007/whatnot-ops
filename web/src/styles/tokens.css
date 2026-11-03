@@ -51,6 +51,10 @@
   --tint-violet-ink: #3a38a8;
   --tint-grey: rgba(118, 118, 128, 0.14);
   --tint-grey-ink: #3c3f55;
+  /* The shop's paper order slips: pink header row, yellow lots that carry gifts. */
+  --slip-head: #ffd6ea;
+  --slip-gift: #fff2c2;
+  --slip-rule: #111111;
 
   --radius-s: 10px;
   --radius-m: 16px;

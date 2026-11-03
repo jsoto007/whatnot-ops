@@ -174,6 +174,7 @@ def sale(s, chat: list[dict] | None = None) -> dict:
         "status": s.status.value,
         "statusReason": s.status_reason,
         "flagged": s.flagged,
+        "giftCount": s.gift_count,
         "orderId": s.order_id,
         "externalOrderId": s.external_order_id,
         "paidAt": s.paid_at.isoformat() if s.paid_at else None,

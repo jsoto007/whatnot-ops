@@ -103,6 +103,8 @@ class Sale(db.Model):
     external_order_id: Mapped[str | None] = mapped_column(String(80))
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     flagged: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False)
+    # Free gifts packed with this lot ("Gift 2" on the order slips). Set by a person only.
+    gift_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )

@@ -63,9 +63,14 @@ export function Orders() {
           <div className="sub">One order per buyer per show. Whatnot charges the winner at the win, so orders are ready to pick right away; the oldest win is first.</div>
         </div>
         {showId && (
-          <Link className="btn ghost" to={`/app/orders/pick-list/${showId}`}>
-            Pick list for this show
-          </Link>
+          <span className="row-actions">
+            <Link className="btn ghost" to={`/app/orders/slips/${showId}`}>
+              Order slips
+            </Link>
+            <Link className="btn ghost" to={`/app/orders/pick-list/${showId}`}>
+              Pick list for this show
+            </Link>
+          </span>
         )}
       </div>
       <div className="toolbar">
@@ -270,12 +275,14 @@ function PackingSlip({ o }: { o: Order }) {
   const gifts = o.gifts ?? []
   const date = fmtLongDate(o.showDate)
   const count = o.items + gifts.length // the sheet counts gift lines among the items
+  const extras = shipping.reduce((n, s) => n + s.giftCount, 0) // "Gift N" lots: free gifts in the box
   const label = (s: Sale) => `${TYPE_LABEL[s.auctionType] ?? 'Listing'}${s.seq ? ` · line ${s.seq}` : ''}`
   return (
     <div className="card slip" data-testid="packing-slip">
       <div className="slip-head">
         <div className="slip-title" data-testid="slip-title">
           Username: <b>{o.buyer}</b> – {count} Item{count === 1 ? '' : 's'}
+          {extras > 0 && ` + ${extras} Gift${extras === 1 ? '' : 's'}`}
         </div>
         <div className="muted small">
           Auction date {date} · order #{o.id}
@@ -305,7 +312,7 @@ function PackingSlip({ o }: { o: Order }) {
                 {s.sku ? <code className="sku">{s.sku.code}</code> : <span className="badge warn">unmatched</span>}
                 {s.quantity > 1 && <span className="muted small"> × {s.quantity}</span>}
               </td>
-              <td />
+              <td>{s.giftCount ? `Gift ${s.giftCount}` : ''}</td>
               <td className="no-print">
                 <span className={`status ${s.status}`}>{s.status.replace('_', ' ')}</span>
                 {s.externalOrderId && <span className="muted small"> · #{s.externalOrderId}</span>}
@@ -343,7 +350,7 @@ function PackingSlip({ o }: { o: Order }) {
           <span className={'tick' + (o.status === 'shipped' ? ' on' : '')} /> Ready to ship
         </span>
         <span>
-          <span className={'tick' + (gifts.length ? ' on' : '')} /> Gift(s) included (if applicable)
+          <span className={'tick' + (gifts.length || extras ? ' on' : '')} /> Gift(s) included (if applicable)
         </span>
         <span>
           Packed by: {o.packedBy ? <b>{o.packedBy}</b> : <span className="blank" />}

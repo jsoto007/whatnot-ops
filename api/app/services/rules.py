@@ -75,6 +75,36 @@ def auction_type(text: str) -> str:
     return ""
 
 
+# ---- the "Auction Number" column of the order slips ("Quick Hit 2", "Ultra 19", "Listing") ----
+LOT_LABELS = {
+    "red": "Red",
+    "mega": "Mega",
+    "ultra": "Ultra",
+    "bundle": "Bundle",
+    "quick_hit": "Quick Hit",
+}
+_LOT_WORDS = r"(?:quick\s*-?\s*hits?|ultra|mega|red|bundles?|flash|auction|lot|listing)"
+_LOT_NUM = re.compile(rf"\b{_LOT_WORDS}\s*#?\s*(?P<n>\d{{1,6}})\b|#\s?(?P<h>\d{{1,6}})\s*$", re.I)
+# A title that names only the lot ("Quick Hit 188", "Red bundle #752"): no product in it.
+_LOT_ONLY = re.compile(rf"^(?:{_LOT_WORDS}[\s#:–-]*)+\d{{0,6}}[\s!.]*$", re.I)
+_FLASH = re.compile(r"^\s*flash\b", re.I)
+
+
+def lot_label(item: str, auction_type_: str = "") -> str:
+    """How the shop's sheet names the lot a sale came from: the auction type and Whatnot's
+    lot number from the listing title when it has one, else "Listing" as on the sheet."""
+    item = item or ""
+    name = LOT_LABELS.get(auction_type_) or ("Flash" if _FLASH.match(item) else "Listing")
+    m = _LOT_NUM.search(item)
+    num = (m["n"] or m["h"]) if m else None
+    return f"{name} {int(num)}" if num else name
+
+
+def is_lot_title(item: str) -> bool:
+    """True when the text is only a lot's title, so nobody has said which product it is."""
+    return bool(_LOT_ONLY.match((item or "").strip()))
+
+
 # ---- platform / host confirmation lines (a sale) ----
 SALE_PATTERNS = [
     # "X won the auction!" (no item named; the pipeline fills it from the last listing)

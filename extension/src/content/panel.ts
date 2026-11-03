@@ -135,6 +135,14 @@ const HTML = `
         <div class="sync" id="sync"></div>
         <div class="sync" id="wins" hidden></div>
       </div>
+      <div class="card" id="ship" hidden>
+        <div class="st" id="shipSt">Whatnot shipments</div>
+        <div class="sync" id="shipNote">Pick the show in Whatnot's show filter and include every status, then send. Every page is read.</div>
+        <div class="row"><button class="b" id="shipSend">Send shipments to Sales Ops</button></div>
+      </div>
+      <div class="row" id="shipNext" hidden>
+        <button class="b sec" id="shipOpen" title="Opens Seller Hub's Shipments page in a new tab">Next: get Whatnot shipments</button>
+      </div>
       <div class="row" id="resumeRow" hidden>
         <button class="b" id="resume">Resume last show</button>
         <button class="b sec" id="fresh">Start fresh</button>
@@ -300,6 +308,13 @@ export class Panel {
 
   setStatus(msg: string, kind: StatusKind = ''): void {
     const s = this.el('st')
+    s.textContent = msg
+    s.className = 'st ' + kind
+  }
+
+  /** The Shipments card's line (only on Seller Hub's Shipments page). */
+  setShipStatus(msg: string, kind: StatusKind = ''): void {
+    const s = this.el('shipSt')
     s.textContent = msg
     s.className = 'st ' + kind
   }

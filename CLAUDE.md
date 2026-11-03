@@ -118,6 +118,19 @@ commands.
   real decline), said by the host/platform, or in the Seller Hub CSV — closes
   it `payment_failed` and restocks unless picking began; a person may restore
   it once in Review. A viewer's chat line never pays or declines anything.
+- **Order slips** (`services/order_slips.py`, `/app/orders/slips/:showId`) are
+  the per-show packing document staff used to build from Whatnot's shipments
+  tab: a cover with totals, then one printed page per buyer. Auction Number
+  comes from the lot title (`rules.lot_label`); "Gift N" is
+  `Sale.gift_count`, set only by a person; giveaways are "Gift" rows and
+  count as items.
+- **Whatnot shipments** (`services/shipments.py`, `POST /api/ingest/shipments`,
+  `extension/src/shipments/`): after a show the host opens Seller Hub →
+  Shipments and presses "Send shipments" in the panel; it reads every page of
+  the table by column header and the server matches rows to a show by order
+  date. Evidence only — never changes a sale, order or stock; only the
+  recipient's username is kept (no address). The table was seen empty only:
+  confirm the reader against a filled page from the shop's account.
 - **Numbers.** Dashboard tiles and the Excel sheets both read
   `services/dashboard.py`; add a metric there, never inline in a route or
   the workbook builder. Reports are built synchronously with openpyxl

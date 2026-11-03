@@ -33,6 +33,7 @@ const sale = (over: Partial<Sale>): Sale => ({
   status: 'reserved',
   statusReason: null,
   flagged: false,
+  giftCount: 0,
   orderId: null,
   externalOrderId: null,
   paidAt: null,
