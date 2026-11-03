@@ -13,6 +13,7 @@ from .sales import (
     Sale,
     SaleStatus,
 )
+from .shipments import WhatnotShipment
 
 __all__ = [
     "AiCall",
@@ -42,4 +43,5 @@ __all__ = [
     "Show",
     "Sku",
     "User",
+    "WhatnotShipment",
 ]

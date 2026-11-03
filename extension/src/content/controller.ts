@@ -13,6 +13,9 @@ import {
   showPage,
 } from '../shared/messages'
 import { showDate } from '../shared/showDate'
+import { collectAll } from '../shipments/collect'
+import { onShipmentsPage } from '../shipments/read'
+import type { ShipmentsReply } from '../shipments/upload'
 import { type StockSeen, stockAlerts } from '../stock/alerts'
 import type { StockReply } from '../stock/fetch'
 import { Panel, readLayout } from './panel'
@@ -20,6 +23,8 @@ import { Panel, readLayout } from './panel'
 const WORDS_KEY = 'cs_watchwords'
 /** Where the host dragged the panel and how big they made it; every Whatnot tab shares it. */
 const LAYOUT_KEY = 'cs_panel_layout'
+/** Seller Hub's Shipments page: after a show, the host sends its rows from there. */
+const SHIPMENTS_URL = 'https://www.whatnot.com/dashboard/shipments'
 const FLUSH_MS = 1500
 const FLUSH_AT = 50
 /** Most rows in one message; the background refuses more than 1000. */
@@ -105,9 +110,15 @@ export class Controller {
     p.el('search').onclick = () => {
       void this.flush().finally(() => send({ cmd: 'openSearch' }).catch(() => {}))
     }
+    p.el('shipSend').onclick = () => void this.sendShipments()
+    p.el('shipOpen').onclick = () => window.open(SHIPMENTS_URL, '_blank', 'noopener')
     p.el('backup').onclick = () => this.download('backup')
     p.el('settings').onclick = () => send({ cmd: 'openOptions' }).catch(() => {})
-    this.uploadTimer = setInterval(() => (cutOff() ? this.cutOff() : void this.refreshUpload()), 5000)
+    this.uploadTimer = setInterval(() => {
+      if (cutOff()) return this.cutOff()
+      this.renderShip() // Seller Hub navigates without reloading the page
+      void this.refreshUpload()
+    }, 5000)
     p.el('clear').onclick = () => this.clear()
     p.el<HTMLInputElement>('find').addEventListener('input', (e) => {
       this.findTerm = (e.target as HTMLInputElement).value.trim().toLowerCase()
@@ -637,8 +648,56 @@ export class Controller {
     this.findTimer = setTimeout(() => this.renderFind(), 300)
   }
 
+  // ---------- Whatnot's Shipments page (after the show) ----------
+  private shipBusy = false
+
+  /** Read every page of Seller Hub's Shipments table and send it to the web app. */
+  private async sendShipments(): Promise<void> {
+    if (this.shipBusy) return
+    const p = this.panel
+    const btn = p.el<HTMLButtonElement>('shipSend')
+    this.shipBusy = true
+    btn.disabled = true
+    p.setShipStatus('Reading the Shipments table…', 'info')
+    try {
+      const got = await collectAll(document, (n, info) =>
+        p.setShipStatus(`Reading page ${n}${info ? ` (${info.to} of ${info.total})` : ''}…`, 'info'),
+      )
+      if (!got.rows.length) {
+        p.setShipStatus(got.stoppedEarly ?? "No shipments on this page. Check Whatnot's show and status filters.", 'bad')
+        return
+      }
+      p.setShipStatus(`Sending ${got.rows.length} shipments…`, 'info')
+      const reply = await send<ShipmentsReply | { error: string }>({ cmd: 'shipments', rows: got.rows })
+      if (!reply || 'error' in reply) {
+        p.setShipStatus(reply?.error ?? 'Could not send.', 'bad')
+        return
+      }
+      const parts = [`Sent ${reply.stored} shipment${reply.stored === 1 ? '' : 's'}`]
+      if (reply.unmatched) parts.push(`${reply.unmatched} had no show on their date`)
+      if (got.total !== null && got.rows.length < got.total) parts.push(`read ${got.rows.length} of ${got.total}`)
+      if (got.stoppedEarly) parts.push(got.stoppedEarly)
+      p.setShipStatus(parts.join(' · ') + '.', got.stoppedEarly || reply.unmatched ? 'info' : 'good')
+      p.el('shipNote').textContent = "Open the show's Order slips in the web app: it shows where Whatnot and the app disagree."
+    } catch {
+      p.setShipStatus('The extension was reloaded. Refresh this page.', 'bad')
+    } finally {
+      this.shipBusy = false
+      btn.disabled = false
+    }
+  }
+
+  private renderShip(): void {
+    const p = this.panel
+    const here = onShipmentsPage(location.pathname)
+    p.el('ship').hidden = !here
+    // After Stop: point the host at the next step. Not while recording, and not on that page.
+    p.el('shipNext').hidden = here || this.spot !== null || this.state !== 'stopped' || !this.log.length
+  }
+
   // ---------- render ----------
   private render(): void {
+    this.renderShip()
     const p = this.panel
     const s = this.state
     const recording = this.spot !== null

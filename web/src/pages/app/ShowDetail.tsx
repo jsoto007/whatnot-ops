@@ -55,17 +55,24 @@ export function ShowDetail() {
             </div>
           )}
         </div>
-        {can('review.act') && (
-          <span className="row-actions">
-            <button className="btn ghost" onClick={() => parse.mutate()} disabled={parse.isPending} data-testid="parse-now">
-              {parse.isPending ? 'Parsing…' : 'Parse now'}
-            </button>
-            <button className="btn ghost" onClick={() => aiAudit.mutate()} disabled={aiAudit.isPending} data-testid="ai-audit" title="Ask the AI supervisor to check this show">
-              {aiAudit.isPending ? 'Auditing…' : 'Run AI audit'}
-            </button>
-            {aiAudit.isError && <span className="form-error small">{(aiAudit.error as Error).message}</span>}
-          </span>
-        )}
+        <span className="row-actions">
+          {can('orders.view') && (
+            <Link className="btn ghost" to={`/app/orders/slips/${id}`} data-testid="order-slips-link">
+              Order slips
+            </Link>
+          )}
+          {can('review.act') && (
+            <>
+              <button className="btn ghost" onClick={() => parse.mutate()} disabled={parse.isPending} data-testid="parse-now">
+                {parse.isPending ? 'Parsing…' : 'Parse now'}
+              </button>
+              <button className="btn ghost" onClick={() => aiAudit.mutate()} disabled={aiAudit.isPending} data-testid="ai-audit" title="Ask the AI supervisor to check this show">
+                {aiAudit.isPending ? 'Auditing…' : 'Run AI audit'}
+              </button>
+              {aiAudit.isError && <span className="form-error small">{(aiAudit.error as Error).message}</span>}
+            </>
+          )}
+        </span>
       </div>
 
       {t && <Kpis t={t} label="This show" />}

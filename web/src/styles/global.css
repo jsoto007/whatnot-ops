@@ -306,14 +306,45 @@ tr.short td { background: rgba(255, 59, 48, 0.06); }
 .slip-order-notes { margin: var(--space-2) 0 0; }
 .slip-foot { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-top: var(--space-3); padding-top: var(--space-2); border-top: 1px dashed #999; }
 .blank { display: inline-block; width: 120px; border-bottom: 1px solid #333; vertical-align: -3px; }
+.order-slips .slips-cover, .order-slips .slips-page { margin-bottom: var(--space-4); text-align: center; color: var(--slip-rule); }
+.slips-cover-title { font-size: 26px; font-weight: 500; margin: 0; }
+.slips-totals { margin: var(--space-3) 0; }
+.slips-buyer { font-size: 20px; font-weight: 500; margin: 0 0 var(--space-2); }
+.order-slips .slips-grid { display: table; white-space: normal; width: 100%; border-collapse: collapse; text-align: center; border: 1px solid var(--slip-rule); border-radius: 0; overflow: visible; box-shadow: none; background: var(--surface); }
+.order-slips .slips-grid tbody tr:last-child td { border-bottom: 1px solid var(--slip-rule); }
+.order-slips .slips-grid tbody tr:hover td { background: none; }
+.slips-cover .slips-grid { max-width: 720px; margin: 0 auto; }
+.order-slips .slips-grid th { background: var(--slip-head); color: var(--slip-rule); font-weight: 600; font-size: 14px; letter-spacing: normal; text-transform: none; position: static; -webkit-backdrop-filter: none; backdrop-filter: none; }
+.order-slips .slips-grid th, .order-slips .slips-grid td { border: 1px solid var(--slip-rule); padding: 6px 8px; font-size: 14px; text-align: center; vertical-align: top; }
+/* The sheet draws a heavy rule under every fifth row so packers keep their place. */
+.slips-page .slips-grid tbody tr:nth-child(5n):not(:last-child) td { border-bottom-width: 3px; }
+.order-slips .slips-grid tr.has-gift td.slip-gift, .order-slips .slips-grid tr.has-gift td.slip-price { background: var(--slip-gift); }
+.slips-grid td.slip-gift { white-space: nowrap; font-size: 13px; }
+.slips-grid td.slip-gift select { font-size: 13px; padding: 2px 4px; min-height: 0; }
+.slips-grid td.unpicked { font-style: italic; }
+.slips-grid .tick { width: 13px; height: 13px; border-width: 1.5px; margin: 0 0 0 4px; }
+.slips-foot { display: grid; gap: var(--space-2); justify-items: center; margin-top: var(--space-4); }
+.slips-ready { font-size: 20px; font-weight: 500; }
+.slips-sign { width: 220px; height: 28px; border-bottom: 1px solid var(--slip-rule); }
+.print-only { display: none; }
+.warn-card { background: var(--tint-amber); color: var(--tint-amber-ink); }
+.warn-card > div { margin-top: var(--space-1); }
 @media print {
   body { background: #fff; }
   .sidebar, .topbar, .toolbar, .btn, .app-header, .tabs, .no-print, .page-head .head-actions { display: none !important; }
   .app { grid-template-columns: 1fr; padding: 0; } .content { padding: 0; max-width: none; }
   .card, .page-head, .table { background: #fff; box-shadow: none; border-color: #ccc; -webkit-backdrop-filter: none; backdrop-filter: none; }
+  /* A printed page is narrower than the phone breakpoint: keep tables tables, not scrollers. */
+  .table { display: table; white-space: normal; overflow: visible; }
   body { font-size: 12px; } .slip { break-inside: avoid; border: 0; }
   .slip .table th, .slip .table td { padding: 4px 6px; border-color: #999; }
   .tick, .blank { border-color: #333; }
+  .print-only { display: inline; }
+  .order-slips .slips-cover, .order-slips .slips-page { margin: 0; padding: 0; border-radius: 0; }
+  .order-slips .slips-page { break-before: page; }
+  .order-slips .slips-grid tr { break-inside: avoid; }
+  .order-slips .slips-grid th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .slips-grid tr.has-gift td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 
 /* ---------- dashboard ---------- */

@@ -8,7 +8,7 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import Order, OrderStatus, ParsedEvent, Sale, Show
-from ..services import audit, orders, ratelimit, reconcile
+from ..services import audit, order_slips, orders, ratelimit, reconcile
 from ..services.inventory import Actor, InventoryError
 from ..services.orders import OrderError
 from ..services.reconcile import ReconcileError
@@ -152,6 +152,39 @@ def pick_list(show_id: int):
     if show is None or show.organization_id != g.u.organization_id:
         return jsonify({"error": "show not found"}), 404
     return jsonify({"items": orders.pick_list(show)})
+
+
+@bp.get("/shows/<int:show_id>/order-slips")
+@require("orders.view")
+def show_order_slips(show_id: int):
+    show = db.session.get(Show, show_id)
+    if show is None or show.organization_id != g.u.organization_id:
+        return jsonify({"error": "show not found"}), 404
+    return jsonify(order_slips.build(show))
+
+
+@bp.patch("/sales/<int:sale_id>/gifts")
+@require("orders.fulfill")
+def set_sale_gifts(sale_id: int):
+    """How many free gifts go in with one lot ("Gift N" on the order slips)."""
+    sale = db.session.get(Sale, sale_id)
+    if sale is None or sale.organization_id != g.u.organization_id:
+        return jsonify({"error": "sale not found"}), 404
+    d = request.get_json(silent=True) or {}
+    try:
+        before = order_slips.set_gift_count(sale, d.get("giftCount"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    audit.record(
+        g.u.organization_id,
+        "sale.gifts",
+        user=g.u,
+        target_type="sale",
+        target_id=sale.id,
+        details={"before": before, "after": sale.gift_count},
+    )
+    db.session.commit()
+    return jsonify({"saleId": sale.id, "giftCount": sale.gift_count})
 
 
 @bp.post("/shows/<int:show_id>/reconcile")

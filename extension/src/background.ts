@@ -19,6 +19,7 @@ import {
   putRows,
   uploadedCount,
 } from './storage/db'
+import { cleanShipments, postShipments } from './shipments/upload'
 import { fetchStock } from './stock/fetch'
 import { migrateLegacyStorage } from './storage/migrate'
 import { type Tabs, claimRecording, endRecording, forgetRecording, resumeFor } from './storage/recording'
@@ -179,7 +180,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 /** Commands only the extension's own pages (Settings, Chat Search) may send; content scripts may not. */
 const PAGE_ONLY = new Set<Request['cmd']>(['settingsChanged', 'parkPending'])
-const CMDS = new Set<Request['cmd']>(['rows', 'recording', 'getSession', 'clearSession', 'openSearch', 'openOptions', 'getUploadStatus', 'flushUploads', 'getStock', 'settingsChanged', 'parkPending'])
+const CMDS = new Set<Request['cmd']>(['rows', 'recording', 'getSession', 'clearSession', 'openSearch', 'openOptions', 'getUploadStatus', 'flushUploads', 'getStock', 'settingsChanged', 'parkPending', 'shipments'])
 
 /** A content-script batch, cut to the server's limits so one bad line cannot stall uploads. */
 function cleanRows(msg: Extract<Request, { cmd: 'rows' }>): Extract<Request, { cmd: 'rows' }> | null {
@@ -243,6 +244,12 @@ async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promi
     case 'getStock':
       // The key never reaches the content script; it only gets the stock rows.
       return fetchStock(await loadSettings(), typeof msg.showId === 'string' && msg.showId.length <= 64 ? msg.showId : undefined)
+    case 'shipments': {
+      // Only from a content script on Seller Hub's Shipments page; the key never reaches it.
+      const rows = sender.url && new URL(sender.url).pathname.startsWith('/dashboard/shipments') ? cleanShipments(msg.rows) : null
+      if (!rows) return { error: 'bad shipments message' }
+      return postShipments(await loadSettings(), rows)
+    }
     case 'openOptions':
       await chrome.runtime.openOptionsPage()
       return { ok: true }

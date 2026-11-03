@@ -235,6 +235,8 @@ export interface Sale {
   status: SaleStatus
   statusReason: string | null
   flagged: boolean
+  /** Free gifts packed with this lot ("Gift 2" on the order slips); set by a person. */
+  giftCount: number
   orderId: number | null
   externalOrderId: string | null
   paidAt: string | null
@@ -309,6 +311,41 @@ export interface Order {
   sales: Sale[] | null
   /** Gift lines the host gave this buyer in the show (detail view only; gifts are not sales). */
   gifts: { item: string; seq: number | null }[] | null
+}
+/** One row of a buyer's order slip: a unit to pack, or a giveaway ("Gift"). */
+export interface SlipRow {
+  kind: 'sale' | 'gift'
+  saleId: number | null
+  /** "Quick Hit 2", "Ultra 19", "Listing", "Gift". */
+  auction: string
+  /** The product to pick, or "No Pick" when nobody has said which it is yet. */
+  product: string
+  matched: boolean
+  giftCount: number
+  /** The lot's price, on its first row only. */
+  priceCents: number | null
+  /** A further unit of the lot above: the sheet shows "-" for its price. */
+  continued: boolean
+}
+export interface BuyerSlip {
+  username: string
+  orderId: number | null
+  orderStatus: OrderStatus | null
+  needsReview: boolean
+  items: number
+  gifts: number
+  rows: SlipRow[]
+  /** This buyer on Whatnot's Shipments list; null when not read yet or not listed there. */
+  whatnot: { items: number | null; statuses: string[] } | null
+}
+export interface OrderSlips {
+  showId: number
+  showDate: string
+  totals: { buyers: number; items: number; gifts: number }
+  summary: { username: string; items: number; gifts: number }[]
+  slips: BuyerSlip[]
+  /** Whatnot's Shipments list as the scraper read it; null until it has been read. */
+  whatnot: { readAt: string; shipments: number; missingHere: string[]; notOnWhatnot: string[] } | null
 }
 export interface PickItem {
   skuId: number
