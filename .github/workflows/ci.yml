@@ -11,7 +11,9 @@ permissions:
 
 jobs:
   api:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest became 26.04, which has no prebuilt Python 3.13.5
+    # (.python-version, the same version Render runs).
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
@@ -50,7 +52,9 @@ jobs:
       - run: npm run build
 
   extension:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest became 26.04, which has no prebuilt Python 3.13.5
+    # (.python-version, the same version Render runs).
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
@@ -92,7 +96,9 @@ jobs:
         with: { name: extension-playwright-report, path: extension/playwright-report }
 
   e2e:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest became 26.04, which has no prebuilt Python 3.13.5
+    # (.python-version, the same version Render runs).
+    runs-on: ubuntu-24.04
     needs: [api, web]
     services:
       postgres:

@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 
@@ -66,16 +67,36 @@ def _security_headers(app: Flask) -> None:
         from .db import db
 
         db.session.rollback()
-        return jsonify({"error": str(e)}), 429
-
-    @app.errorhandler(RecursionError)
-    def too_deep(_e):
-        # JSON nested thousands deep: refused, not a 500.
-        return jsonify({"error": "request body is nested too deeply"}), 400
+        resp = jsonify({"error": str(e)})
+        if e.retry_after:
+            resp.headers["Retry-After"] = str(e.retry_after)
+        return resp, 429
 
     @app.errorhandler(413)
     def too_large(_e):
         return jsonify({"error": "request body too large"}), 413
+
+    @app.errorhandler(Exception)
+    def unhandled(e):
+        """Anything a route did not turn into a response: roll back, log, answer JSON.
+        HTTP errors (404, 405, ...) keep their own status."""
+        from werkzeug.exceptions import HTTPException
+
+        from .db import db
+
+        if isinstance(e, HTTPException):
+            if not request.path.startswith("/api/"):
+                return e
+            resp = e.get_response()  # keeps Allow on 405, Location on redirects, ...
+            resp.set_data(json.dumps({"error": e.description or e.name}))
+            resp.content_type = "application/json"
+            return resp
+        db.session.rollback()
+        if isinstance(e, RecursionError):  # most likely a JSON body nested thousands deep
+            log.warning("RecursionError on %s %s", request.method, request.path, exc_info=e)
+            return jsonify({"error": "request body is nested too deeply"}), 400
+        log.exception("unhandled error on %s %s", request.method, request.path)
+        return jsonify({"error": "something went wrong on our side"}), 500
 
 
 def create_app(config: Config | None = None) -> Flask:

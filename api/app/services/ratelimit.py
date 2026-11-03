@@ -10,7 +10,6 @@ back still counts. The client address comes from `request.remote_addr`, which
 ProxyFix sets from Render's X-Forwarded-For in production.
 """
 
-import random
 from datetime import UTC, datetime, timedelta
 
 from flask import request
@@ -24,8 +23,15 @@ from ..models import RateLimit
 class RateLimited(Exception):
     status = 429
 
-    def __init__(self, message: str = "too many attempts; try again in a few minutes"):
+    def __init__(
+        self,
+        message: str = "too many attempts; try again in a few minutes",
+        *,
+        retry_after: int | None = None,
+    ):
         super().__init__(message)
+        #: Seconds until the window resets, sent as Retry-After.
+        self.retry_after = retry_after
 
 
 def client_ip() -> str:
@@ -35,6 +41,12 @@ def client_ip() -> str:
 def _window(seconds: int) -> datetime:
     now = datetime.now(UTC).timestamp()
     return datetime.fromtimestamp(now - now % seconds, UTC)
+
+
+def seconds_left(window_s: int) -> int:
+    """Seconds until the current fixed window of `window_s` ends."""
+    now = datetime.now(UTC).timestamp()
+    return max(1, int(window_s - now % window_s))
 
 
 def enabled() -> bool:
@@ -66,15 +78,17 @@ def hit(key: str, limit: int, window_s: int) -> int:
     )
     with db.engine.begin() as conn:
         n = conn.execute(stmt).scalar_one()
-        if random.random() < 0.01:  # cheap housekeeping
-            conn.execute(
-                delete(RateLimit).where(
-                    RateLimit.window_start < datetime.now(UTC) - timedelta(days=1)
-                )
-            )
     if n > limit:
-        raise RateLimited()
+        raise RateLimited(retry_after=seconds_left(window_s))
     return n
+
+
+def prune(older_than: timedelta = timedelta(days=1)) -> int:
+    """Drop finished windows (the worker's housekeeping sweep calls this)."""
+    r = db.session.execute(
+        delete(RateLimit).where(RateLimit.window_start < datetime.now(UTC) - older_than)
+    )
+    return r.rowcount
 
 
 def peek(key: str, window_s: int) -> int:

@@ -93,13 +93,38 @@ def move(
     ).scalar_one_or_none()
     if sku is None:
         raise InventoryError("unknown SKU", 404)
-    # Another transaction may have written this movement while we waited for the lock: now
-    # that we hold it, its row is visible. Returning it here (not via the IntegrityError
-    # below) keeps the caller's earlier work in this transaction.
+    # Look again under the lock: a concurrent transaction holding it may have just
+    # committed this very movement (the parse worker and "Parse now" on one show).
     done = _existing(sku_id, kind, source_type, source_id)
     if done is not None:
         return done
 
+    try:
+        # A SAVEPOINT, so a lost race undoes only this movement. A plain rollback here
+        # threw away everything the caller had done earlier in its transaction (a whole
+        # reconcile or parse run) and then let it commit the remainder.
+        with db.session.begin_nested():
+            return _apply(
+                sku, kind, quantity, source_type, source_id, reason, actor, allow_negative
+            )
+    except IntegrityError:
+        # Two transactions raced on the same source: the other one won; hand back its movement.
+        done = _existing(sku_id, kind, source_type, source_id)
+        if done is None:
+            raise
+        return done
+
+
+def _apply(
+    sku: Sku,
+    kind: MovementKind,
+    quantity: int,
+    source_type: str,
+    source_id: str,
+    reason: str | None,
+    actor: Actor,
+    allow_negative: bool,
+) -> InventoryMovement:
     if kind is MovementKind.restock:
         sku.on_hand += quantity
     elif kind is MovementKind.adjust:
@@ -141,15 +166,7 @@ def move(
         reserved_after=sku.reserved,
     )
     db.session.add(m)
-    try:
-        db.session.flush()
-    except IntegrityError:
-        # Two workers raced on the same source: the other one won; hand back its movement.
-        db.session.rollback()
-        done = _existing(sku_id, kind, source_type, source_id)
-        if done is None:
-            raise
-        return done
+    db.session.flush()
     return m
 
 

@@ -193,10 +193,25 @@ def signup(
 # ---------- login ----------
 
 
-def login(email: str, password: str, *, ip: str = "unknown") -> User:
+def device_tag(user: User) -> str:
+    """What a known-device cookie remembers for `user`: keyed on the password hash, so a
+    password reset or change forgets every browser that signed in before it."""
+    import hmac
+
+    key = current_app.config["SECRET_KEY"].encode()
+    msg = f"{user.id}:{user.password_hash}".encode()
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()[:32]
+
+
+def login(
+    email: str, password: str, *, ip: str = "unknown", known_tags: frozenset[str] = frozenset()
+) -> User:
     """Failed attempts are limited per email + client address (so a stranger cannot lock
     the owner out from elsewhere) and per email overall (distributed guessing). The
-    same answer is given whether or not the account exists."""
+    per-email cap does not apply to a browser that has signed in to this account before
+    (`known_tags`, from a signed cookie the route reads; see `device_tag`): many
+    strangers guessing must not lock the owner out of their own laptop. The same answer
+    is given whether or not the account exists."""
     from . import ratelimit
 
     try:
@@ -204,20 +219,22 @@ def login(email: str, password: str, *, ip: str = "unknown") -> User:
     except AccountError:
         raise AccountError("wrong email or password", 401) from None
     pair_key, email_key = f"login-fail:{email}:{ip}", f"login-fail:{email}"
-    if (
-        ratelimit.peek(pair_key, FAIL_WINDOW_S) >= MAX_FAILED_LOGINS
-        or ratelimit.peek(email_key, 3600) >= MAX_FAILS_PER_EMAIL
-    ):
-        raise ratelimit.RateLimited()
+    if ratelimit.peek(pair_key, FAIL_WINDOW_S) >= MAX_FAILED_LOGINS:
+        raise ratelimit.RateLimited(retry_after=ratelimit.seconds_left(FAIL_WINDOW_S))
     user = db.session.scalar(select(User).where(User.email == email))
-    if user is not None and is_protected(user.email):
-        _restore_admin(user)
+    known = user is not None and device_tag(user) in known_tags
+    if not known and ratelimit.peek(email_key, 3600) >= MAX_FAILS_PER_EMAIL:
+        raise ratelimit.RateLimited(retry_after=ratelimit.seconds_left(3600))
+    # A protected account (ADMIN_EMAIL / IT_SUPPORT) is restored only once its password
+    # is proven: before that, anyone who knew the address could force the restore (and
+    # log the account out everywhere) without credentials.
+    protected = user is not None and is_protected(user.email)
     ok = (
         user is not None
-        and not user.disabled
+        and (protected or not user.disabled)
         and _verify(user.password_hash, password if isinstance(password, str) else "")
     )
-    if user is None or user.disabled:
+    if user is None or (user.disabled and not protected):
         hash_password(password if isinstance(password, str) else "")  # constant-ish time
     if not ok:
         for key, window in ((pair_key, FAIL_WINDOW_S), (email_key, 3600)):
@@ -235,6 +252,8 @@ def login(email: str, password: str, *, ip: str = "unknown") -> User:
             )
             db.session.commit()
         raise AccountError("wrong email or password", 401)
+    if protected:
+        _restore_admin(user)
     if _ph.check_needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
     user.failed_logins = 0

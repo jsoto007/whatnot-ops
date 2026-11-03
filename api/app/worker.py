@@ -6,7 +6,8 @@ import signal
 import time
 
 from . import create_app
-from .services import jobs
+from .db import db
+from .services import jobs, retention
 
 log = logging.getLogger("worker")
 
@@ -29,6 +30,13 @@ def main() -> None:
         while not stop:
             if time.monotonic() - last_sweep > 300:
                 jobs.requeue_stale()
+                try:
+                    pruned = {k: n for k, n in retention.sweep().items() if n}
+                    if pruned:
+                        log.info("pruned %s", pruned)
+                except Exception:  # noqa: BLE001 - housekeeping must never stop the queue
+                    db.session.rollback()
+                    log.exception("retention sweep failed")
                 last_sweep = time.monotonic()
             job = jobs.run_once()
             if job is None:
