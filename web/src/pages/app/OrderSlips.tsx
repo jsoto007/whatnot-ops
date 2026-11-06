@@ -75,11 +75,32 @@ function WhatnotCheck({ doc }: { doc: Doc }) {
       </p>
     )
   }
+  const read = `${count(w.shipments, 'shipment')} · read ${new Date(w.readAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+  if (w.lots > 0) {
+    const clean = !w.lotsNotInApp && !w.salesNotOnWhatnot
+    return (
+      <div className={`card small ${clean ? '' : 'warn-card'}`} data-testid="whatnot-check">
+        <b>Pick list from Whatnot</b> · {count(w.lots, 'lot')} in {read}
+        <div>One row per Whatnot lot. The product is the one in the app, or "No Pick" with what the winner said in chat, for you to pick.</div>
+        {clean && <div>Every lot matches a win in the app.</div>}
+        {w.lotsNotInApp > 0 && (
+          <div data-testid="lots-not-in-app">
+            <b>{count(w.lotsNotInApp, 'lot')} on Whatnot with no win in the app</b> (marked "not in app"): check the show's chat for what was picked.
+          </div>
+        )}
+        {w.salesNotOnWhatnot > 0 && (
+          <div data-testid="sales-not-on-whatnot">
+            <b>{count(w.salesNotOnWhatnot, 'win')} in the app that Whatnot does not list</b> (marked "not on Whatnot"): cancelled there, a misread win, or hidden by Whatnot's status filter. Don't pack them until checked.
+          </div>
+        )}
+      </div>
+    )
+  }
   const off = doc.slips.filter((b) => b.whatnot && b.whatnot.items !== null && b.whatnot.items !== b.items)
   const clean = !w.missingHere.length && !w.notOnWhatnot.length && !off.length
   return (
     <div className={`card small ${clean ? '' : 'warn-card'}`} data-testid="whatnot-check">
-      <b>Whatnot's shipment list</b> · {count(w.shipments, 'shipment')} · read {new Date(w.readAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+      <b>Whatnot's shipment list</b> · {read}
       {clean && <div>Every buyer and item count matches the slips.</div>}
       {w.missingHere.length > 0 && (
         <div data-testid="missing-here">
@@ -187,10 +208,20 @@ function Row({ r, date, buyer, showId, canEdit }: { r: SlipRow; date: string; bu
   return (
     <tr className={r.giftCount ? 'has-gift' : undefined} data-testid="slip-row">
       <td>{date}</td>
-      <td>{r.auction}</td>
+      <td>
+        {r.auction}
+        {r.whatnotOrder && !r.continued && <div className="no-print muted small">Order #{r.whatnotOrder}</div>}
+        {!r.inApp && <span className="badge warn no-print">not in app</span>}
+        {!r.onWhatnot && <span className="badge danger no-print">not on Whatnot</span>}
+      </td>
       <td>{buyer}</td>
       <td className={r.matched || r.kind === 'gift' ? undefined : 'unpicked'}>
         {r.product} <span className="tick" />
+        {r.said.length > 0 && (
+          <div className="slip-said small" data-testid="slip-said">
+            Chat: {r.said.map((t) => `“${t}”`).join(' · ')}
+          </div>
+        )}
       </td>
       <td className="slip-gift">
         {editable ? (

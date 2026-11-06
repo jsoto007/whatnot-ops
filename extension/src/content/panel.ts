@@ -137,7 +137,7 @@ const HTML = `
       </div>
       <div class="card" id="ship" hidden>
         <div class="st" id="shipSt">Whatnot shipments</div>
-        <div class="sync" id="shipNote">Pick the show in Whatnot's show filter and include every status, then send. Every page is read.</div>
+        <div class="sync" id="shipNote">Pick this show in Whatnot's show filter and include every status, then send. Every page and every lot is read.</div>
         <div class="row"><button class="b" id="shipSend">Send shipments to Sales Ops</button></div>
       </div>
       <div class="row" id="shipNext" hidden>

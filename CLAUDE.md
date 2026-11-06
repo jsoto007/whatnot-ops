@@ -126,11 +126,18 @@ commands.
   count as items.
 - **Whatnot shipments** (`services/shipments.py`, `POST /api/ingest/shipments`,
   `extension/src/shipments/`): after a show the host opens Seller Hub →
-  Shipments and presses "Send shipments" in the panel; it reads every page of
-  the table by column header and the server matches rows to a show by order
-  date. Evidence only — never changes a sale, order or stock; only the
-  recipient's username is kept (no address). The table was seen empty only:
-  confirm the reader against a filled page from the shop's account.
+  Shipments, picks the show in Whatnot's show filter and presses "Send
+  shipments" in the panel. It reads every page by column header and opens
+  each row (Expand) for its lots: listing title, Whatnot order number, qty,
+  price, shipping, sale type (`whatnot_lots`, unique per order number). The
+  show comes from the filter label ("<title> Oct 22•1:44 AM EDT", shop zone,
+  5 AM rollover); "All Shows" is refused. Row Order Dates are only "Oct 22"
+  (no year/time) and are a fallback for older scrapers. With lots read, the
+  order slips ARE the final pick list: one row per Whatnot lot, joined to a
+  sale by `external_order_id`, else buyer + lot number (+ price); the product
+  is the sale's SKU, else "No Pick" plus what the winner said in chat
+  (`sale_chat`) — the winner picks the product in chat. Read-only: never
+  changes a sale, order, payment or stock; only the username is kept.
 - **Numbers.** Dashboard tiles and the Excel sheets both read
   `services/dashboard.py`; add a metric there, never inline in a route or
   the workbook builder. Reports are built synchronously with openpyxl

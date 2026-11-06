@@ -19,7 +19,7 @@ import {
   putRows,
   uploadedCount,
 } from './storage/db'
-import { cleanShipments, postShipments } from './shipments/upload'
+import { cleanShipments, cleanShowLabel, postShipments } from './shipments/upload'
 import { fetchStock } from './stock/fetch'
 import { migrateLegacyStorage } from './storage/migrate'
 import { type Tabs, claimRecording, endRecording, forgetRecording, resumeFor } from './storage/recording'
@@ -248,7 +248,7 @@ async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promi
       // Only from a content script on Seller Hub's Shipments page; the key never reaches it.
       const rows = sender.url && new URL(sender.url).pathname.startsWith('/dashboard/shipments') ? cleanShipments(msg.rows) : null
       if (!rows) return { error: 'bad shipments message' }
-      return postShipments(await loadSettings(), rows)
+      return postShipments(await loadSettings(), rows, cleanShowLabel(msg.show))
     }
     case 'openOptions':
       await chrome.runtime.openOptionsPage()

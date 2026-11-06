@@ -1,31 +1,37 @@
-"""Whatnot's Seller Hub Shipments table, read by the scraper after a show, as a cross-check
-for the show's order slips.
+"""Whatnot's Seller Hub Shipments table, read by the scraper after a show. Its lots, with the
+product each winner picked in chat, are the show's final pick list (services/order_slips.py).
 
 The scraper runs on the seller's own laptop, in the Chrome that is signed in to Seller Hub,
 and reads the table by its column headers (Recipient, Order Date, Items, Value, Status,
-Tracking). Each row is matched to a show by its order date (shop zone, 5 AM rollover, as
-for chat). The rows are evidence only: they never create, pay, cancel or move anything. The
-slips page shows where Whatnot and the app disagree, for a person to look at.
+Tracking). It opens each shipment for its lots: listing title, Whatnot's order number, qty,
+price, shipping and sale type (seen on the shop's account 2026-11-05).
 
-Nobody has captured a filled Shipments page yet (the first account checked had no shows),
-so what the Items and Order Date cells hold is read loosely and kept as text too.
+Which show: the scraper sends Whatnot's show filter ("<title> Oct 22•1:44 AM EDT"); its
+start time, in the shop zone with the 5 AM rollover, names the show date. Without it (older
+scraper builds) each row's Order Date is used, which on the real page is only "Oct 22": the
+year is the latest one not in the future.
+
+Rows and lots are evidence only: they never create, pay, cancel or move anything.
 """
 
 import hashlib
 import re
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from ..db import db
-from ..models import Device, Show, WhatnotShipment
+from ..models import Device, Show, WhatnotLot, WhatnotShipment
+from . import rules
 from . import text as text_safe
 from .reconcile import _cents
 from .showdate import SHOP_TZ, show_date
 
 MAX_ROWS = 2000  # one show is a few hundred shipments; a page read is capped well above that
 MAX_LINES = 60
+MAX_LOTS = 200  # per shipment
+ORDER_ID = re.compile(r"^\d{1,20}$")
 USERNAME = re.compile(r"^@?[A-Za-z0-9._-]{1,80}$")
 
 
@@ -48,7 +54,10 @@ def _row(raw) -> dict | None:
         return None
     lines = raw.get("itemLines")
     lines = [_text(x, 240) for x in lines[:MAX_LINES]] if isinstance(lines, list) else []
+    lots = raw.get("lots")
+    lots = [x for x in map(_lot, lots[:MAX_LOTS]) if x] if isinstance(lots, list) else []
     return {
+        "lots": lots,
         "recipient": recipient,
         "order_date_text": _text(raw.get("orderDate"), 80),
         "items_text": _text(raw.get("items"), 1000),
@@ -56,6 +65,27 @@ def _row(raw) -> dict | None:
         "value": _text(raw.get("value"), 40),
         "status": _text(raw.get("status"), 80),
         "tracking": _text(raw.get("tracking"), 120),
+    }
+
+
+def _lot(raw) -> dict | None:
+    """One lot of an expanded row. None without Whatnot's order number: that number is what
+    makes a second read update the lot instead of adding one."""
+    if not isinstance(raw, dict):
+        return None
+    order_id = _text(raw.get("orderId"), 20)
+    if not ORDER_ID.match(order_id):
+        return None
+    title = _text(raw.get("title"), 240)
+    qty = re.fullmatch(r"\s*(\d{1,3})\s*", _text(raw.get("quantity"), 20))
+    return {
+        "whatnot_order_id": order_id,
+        "title": title,
+        "lot_number": rules.lot_number(title),
+        "quantity": max(1, int(qty[1])) if qty else 1,
+        "price_cents": _cents(_text(raw.get("price"), 40)),
+        "shipping_cents": _cents(_text(raw.get("shipping"), 40)),
+        "sale_type": _text(raw.get("saleType"), 80),
     }
 
 
@@ -70,40 +100,89 @@ def item_count(items_text: str, lines: list | None) -> int | None:
     return len(lines) if lines else None
 
 
-_DATE_FORMATS = ("%b %d %Y", "%B %d %Y", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%m-%d-%Y")
-_DATE = re.compile(
-    r"([A-Za-z]{3,9}\.? \d{1,2},? \d{4}"  # Oct 31, 2026
-    r"|\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}-\d{1,2}-\d{4})"
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+# "Oct 31, 2026", "Oct. 31", "October 31": a month name, then the day, maybe a year.
+_NAMED = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
+    r"|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(\d{1,2})\b"
+    r"(?:,?\s+(\d{4}))?",
+    re.I,
 )
-_TIME = re.compile(r"(\d{1,2}):(\d{2})\s*([AaPp][Mm])?")
+_NUMERIC_FORMATS = ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%m-%d-%Y")
+_NUMERIC = re.compile(r"(\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}-\d{1,2}-\d{4})")
+_TIME = re.compile(
+    r"^\s*[•·,@-]?\s*(?:at\s+)?(\d{1,2}):(\d{2})\s*([AaPp][Mm])?(?:\s+([A-Z]{2,4})\b)?"
+)
+# What Seller Hub prints after a time; an unknown one is taken as the shop's zone.
+_ZONES = {
+    "EDT": -4, "EST": -5, "CDT": -5, "CST": -6, "MDT": -6, "MST": -7,
+    "PDT": -7, "PST": -8, "AKDT": -8, "AKST": -9, "HST": -10, "UTC": 0, "GMT": 0,
+}  # fmt: skip
+# A year-less date this far ahead of today is last year's (a show is read after it ends).
+_AHEAD = timedelta(days=2)
 
 
-def ordered_on(order_date_text: str) -> tuple[date | None, bool]:
-    """(show date, whether a time of day was read). With a time the 5 AM rollover applies
-    (the page shows the seller's local time; the shop's zone is assumed)."""
-    m = _DATE.search(order_date_text or "")
-    if not m:
-        return None, False
-    raw = " ".join(m[1].replace(".", " ").replace(",", " ").split())
-    d = None
-    for fmt in _DATE_FORMATS:
-        try:
-            d = datetime.strptime(raw, fmt).date()
+def _today() -> date:
+    return datetime.now(SHOP_TZ).date()
+
+
+def _with_year(month: int, day: int, year: str | None, today: date) -> date | None:
+    try:
+        if year:
+            return date(int(year), month, day)
+        d = date(today.year, month, day)
+        return d if d <= today + _AHEAD else date(today.year - 1, month, day)
+    except ValueError:
+        return None
+
+
+def _when(text: str, today: date, *, last: bool = False) -> tuple[date | None, bool]:
+    """(show date, whether a time of day was read) from the first (or `last`) date in the
+    text. With a time the 5 AM rollover applies, in the zone printed after it, else the
+    shop's."""
+    text = text or ""
+    named = list(_NAMED.finditer(text))
+    d = end = None
+    for m in reversed(named) if last else named:
+        d = _with_year(_MONTHS.index(m[1].lower()[:3]) + 1, int(m[2]), m[3], today)
+        if d:
+            end = m.end()
             break
-        except ValueError:
-            continue
+    if d is None and (m := _NUMERIC.search(text)):
+        for fmt in _NUMERIC_FORMATS:
+            try:
+                d = datetime.strptime(m[1], fmt).date()
+                end = m.end()
+                break
+            except ValueError:
+                continue
     if d is None:
         return None, False
-    t = _TIME.search(order_date_text[m.end() :])
+    t = _TIME.match(text[end:])
     if not t:
         return d, False
     hour, minute = int(t[1]), int(t[2])
     if t[3]:
+        if hour > 12:
+            return d, False
         hour = hour % 12 + (12 if t[3].lower() == "pm" else 0)
     if hour > 23 or minute > 59:
         return d, False
-    local = datetime(d.year, d.month, d.day, hour, minute, tzinfo=SHOP_TZ)
-    return show_date(local), True
+    offset = _ZONES.get((t[4] or "").upper())
+    tz = timezone(timedelta(hours=offset)) if offset is not None else SHOP_TZ
+    return show_date(datetime(d.year, d.month, d.day, hour, minute, tzinfo=tz)), True
+
+
+def ordered_on(order_date_text: str, today: date | None = None) -> tuple[date | None, bool]:
+    """A row's Order Date ("Oct 22", "Oct 31, 2026 11:42 PM") as (show date, timed)."""
+    return _when(order_date_text, today or _today())
+
+
+def show_on(label: str, today: date | None = None) -> date | None:
+    """The show date in Whatnot's show filter label ("<title> Oct 22•1:44 AM EDT"). Only a
+    label with a start time counts: a title may hold other numbers ("$10,000", "Mega 25")."""
+    d, timed = _when(label, today or _today(), last=True)
+    return d if timed else None
 
 
 def _match_show(org_id: int, d: date | None, timed: bool) -> int | None:
@@ -123,6 +202,12 @@ def _match_show(org_id: int, d: date | None, timed: bool) -> int | None:
 
 
 def _key(org_id: int, r: dict) -> str:
+    """What identifies a shipment: its first Whatnot order number once its lots were read
+    (a box keeps its lots), else what the row shows."""
+    if r["lots"]:
+        first = min(r["lots"], key=lambda x: (len(x["whatnot_order_id"]), x["whatnot_order_id"]))
+        ident = "|".join([str(org_id), r["recipient"].lower(), "lot", first["whatnot_order_id"]])
+        return hashlib.sha256(ident.encode()).hexdigest()
     ident = "|".join(
         [str(org_id), r["recipient"].lower(), r["order_date_text"], r["items_text"], r["value"]]
     )
@@ -137,8 +222,13 @@ def ingest(device: Device, payload) -> dict:
     if len(rows) > MAX_ROWS:
         raise ShipmentsInvalid(f"at most {MAX_ROWS} rows per read")
     org_id = device.organization_id
+    today = _today()
+    label = _text(payload.get("show"), 300)
+    # The show picked in Whatnot's filter names the show for every row of this read.
+    label_date = show_on(label, today) if label else None
+    label_show = _match_show(org_id, label_date, True) if label_date else None
     shows: dict[int, int] = {}
-    stored = skipped = unmatched = 0
+    stored = skipped = unmatched = lots = 0
     seen: set[str] = set()
     for raw in rows:
         r = _row(raw)
@@ -149,8 +239,11 @@ def ingest(device: Device, payload) -> dict:
         if key in seen:
             continue
         seen.add(key)
-        d, timed = ordered_on(r["order_date_text"])
-        show_id = _match_show(org_id, d, timed)
+        d, timed = ordered_on(r["order_date_text"], today)
+        if label_date:
+            show_id = label_show
+        else:
+            show_id = _match_show(org_id, d, timed)
         values = {
             "organization_id": org_id,
             "row_key": key,
@@ -165,9 +258,10 @@ def ingest(device: Device, payload) -> dict:
             "value_cents": _cents(r["value"]),
             "status": r["status"],
             "tracking": r["tracking"],
+            "show_label": label,
         }
         stmt = insert(WhatnotShipment).values(**values)
-        db.session.execute(
+        shipment_id = db.session.scalar(
             stmt.on_conflict_do_update(
                 constraint="uq_whatnot_shipments_org_key",
                 set_={
@@ -179,17 +273,61 @@ def ingest(device: Device, payload) -> dict:
                         "item_lines",
                         "status",
                         "tracking",
+                        "show_label",
                     )
                 }
                 | {"updated_at": datetime.now(UTC)},
-            )
+            ).returning(WhatnotShipment.id)
         )
+        for lot in r["lots"]:
+            lots += _store_lot(org_id, show_id, shipment_id, r["recipient"], lot)
         stored += 1
         if show_id is None:
             unmatched += 1
         else:
             shows[show_id] = shows.get(show_id, 0) + 1
-    return {"stored": stored, "skipped": skipped, "unmatched": unmatched, "shows": shows}
+    filed = db.session.get(Show, label_show) if label_show else None
+    return {
+        "stored": stored,
+        "lots": lots,
+        "skipped": skipped,
+        "unmatched": unmatched,
+        "shows": shows,
+        # The app's show the filter named, so the scraper can say where the read went.
+        "show": {"id": filed.id, "date": filed.show_date.isoformat()} if filed else None,
+    }
+
+
+def _store_lot(org_id: int, show_id: int | None, shipment_id: int, recipient: str, lot: dict):
+    """Insert or refresh one lot by Whatnot's order number. Returns 1."""
+    stmt = insert(WhatnotLot).values(
+        organization_id=org_id,
+        show_id=show_id,
+        shipment_id=shipment_id,
+        recipient=recipient,
+        **lot,
+    )
+    db.session.execute(
+        stmt.on_conflict_do_update(
+            constraint="uq_whatnot_lots_org_order",
+            set_={
+                k: stmt.excluded[k]
+                for k in (
+                    "show_id",
+                    "shipment_id",
+                    "recipient",
+                    "title",
+                    "lot_number",
+                    "quantity",
+                    "price_cents",
+                    "shipping_cents",
+                    "sale_type",
+                )
+            }
+            | {"updated_at": datetime.now(UTC)},
+        )
+    )
+    return 1
 
 
 def for_show(show: Show) -> dict | None:
@@ -220,8 +358,15 @@ def for_show(show: Show) -> dict | None:
             b["items"] += r.item_count
         if r.status and r.status not in b["statuses"]:
             b["statuses"].append(r.status)
+    lots = db.session.scalars(
+        select(WhatnotLot)
+        .where(WhatnotLot.show_id == show.id)
+        # Whatnot's order numbers grow as the show goes on: this is win order.
+        .order_by(func.length(WhatnotLot.whatnot_order_id), WhatnotLot.whatnot_order_id)
+    ).all()
     return {
         "readAt": max(r.updated_at for r in rows).isoformat(),
         "shipments": len(rows),
         "buyers": buyers,
+        "lots": list(lots),
     }
