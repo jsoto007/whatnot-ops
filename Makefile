@@ -3,13 +3,12 @@ SHELL := /bin/bash
 PY := .venv/bin
 E2E_PORT ?= 5055
 
-.PHONY: install db-create db-url api web worker check test lint e2e build-web migrate ext-e2e smoke seed-demo cf-image
+.PHONY: install db-create db-url api web worker check test lint e2e build-web migrate ext-e2e smoke seed-demo
 
 install:
 	cd api && python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt
 	cd web && npm install
 	cd extension && npm install
-	cd cloudflare && npm install
 
 db-url:
 	@grep -E '^(DATABASE_URL|TEST_DATABASE_URL)=' .env | sed -E 's#://[^@/]*@#://***@#'
@@ -40,13 +39,11 @@ lint:
 	cd api && $(PY)/ruff check . && $(PY)/ruff format --check .
 	cd web && npm run lint && npm run typecheck
 	cd extension && npm run lint && npm run typecheck
-	cd cloudflare && npm run typecheck
 
 test: db-url
 	cd api && $(PY)/pytest
 	cd web && npm test
 	cd extension && npm test
-	cd cloudflare && npm test
 
 # Builds the extension (extension/dist, load unpacked) and runs its Playwright suite
 # against the fixture chat page with the test build.
@@ -65,10 +62,6 @@ e2e: build-web db-url
 	  pid=$$!; trap "kill $$pid 2>/dev/null" EXIT; \
 	  for i in $$(seq 1 30); do curl -sf http://localhost:$(E2E_PORT)/api/health >/dev/null && break; sleep 0.5; done; \
 	  cd web && E2E_BASE_URL=http://localhost:$(E2E_PORT) npx playwright test
-
-# Container image for the Cloudflare deployment (docs/CLOUDFLARE.md); needs Docker.
-cf-image:
-	docker build --platform linux/amd64 -t sales-ops:local .
 
 # Smoke test a deployed instance: make smoke BASE_URL=https://sales-ops.onrender.com
 BASE_URL ?= http://localhost:5055
