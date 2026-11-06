@@ -1,0 +1,28 @@
+// Sales Ops on Cloudflare: a Worker in front of one container (../Dockerfile).
+// A separate deployment from Render (render.yaml): its own database (Neon),
+// its own admin and secrets. Steps and checks: docs/CLOUDFLARE.md.
+//
+// Secrets are never written here. Set each with `npx wrangler secret put NAME`
+// (the list the container receives is PASSED_ENV in src/index.ts).
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sales-ops",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-05",
+  "observability": { "enabled": true },
+  "containers": [
+    {
+      "class_name": "SalesOps",
+      // Built from the repo root (the Dockerfile's folder) by `wrangler deploy`.
+      "image": "../Dockerfile",
+      // basic = 1/4 vCPU, 1 GiB: gunicorn (2 workers) + the job worker fit.
+      "instance_type": "basic",
+      // One instance only: jobs, migrations and rate-limit counters assume it.
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "SALES_OPS", "class_name": "SalesOps" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SalesOps"] }]
+}
