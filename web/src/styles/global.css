@@ -322,6 +322,7 @@ tr.short td { background: rgba(255, 59, 48, 0.06); }
 .slips-grid td.slip-gift { white-space: nowrap; font-size: 13px; }
 .slips-grid td.slip-gift select { font-size: 13px; padding: 2px 4px; min-height: 0; }
 .slips-grid td.unpicked { font-style: italic; }
+.slips-grid .slip-said { font-style: normal; text-align: left; margin-top: 2px; color: var(--text-muted); }
 .slips-grid .tick { width: 13px; height: 13px; border-width: 1.5px; margin: 0 0 0 4px; }
 .slips-foot { display: grid; gap: var(--space-2); justify-items: center; margin-top: var(--space-4); }
 .slips-ready { font-size: 20px; font-weight: 500; }

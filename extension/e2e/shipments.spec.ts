@@ -20,10 +20,17 @@ test("after a show, the panel reads every page of Seller Hub's Shipments and sen
   await expect(page.locator(panel('#ship'))).toBeVisible()
   await expect(page.locator(panel('#shipNext'))).toBeHidden()
   await page.locator(panel('#shipSend')).click()
-  // Two pages (2 + 1 rows); no show on those dates in the e2e shop, so all three are unmatched.
-  await expect(page.locator(panel('#shipSt'))).toHaveText('Sent 3 shipments · 3 had no show on their date.', { timeout: 20_000 })
+  // Two pages (2 + 1 rows), each shipment opened for its lots; the e2e shop has no show on
+  // the date in Whatnot's show filter, so nothing is filed under a show.
+  await expect(page.locator(panel('#shipSt'))).toHaveText('Sent 3 shipments (4 lots) · 3 matched no show in Sales Ops.', { timeout: 30_000 })
   await expect(page.locator('#showing')).toHaveText('Showing 3-3 of 3') // it pressed Next
+  await expect(page.locator('#rows tr')).toHaveCount(1) // and closed what it opened
   await expect(page.locator(panel('#shipNote'))).toContainText('Order slips')
+
+  // With "All Shows" picked there is no one show to file the read under: it refuses.
+  await page.locator('#showFilter').evaluate((b) => (b.firstChild!.textContent = 'All Shows & Marketplace'))
+  await page.locator(panel('#shipSend')).click()
+  await expect(page.locator(panel('#shipSt'))).toContainText("Pick this show in Whatnot's show filter first", { timeout: 20_000 })
 })
 
 test('Stop points the host at the Shipments page; recording does not', async ({ page, context }) => {

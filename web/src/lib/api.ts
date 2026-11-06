@@ -326,6 +326,14 @@ export interface SlipRow {
   priceCents: number | null
   /** A further unit of the lot above: the sheet shows "-" for its price. */
   continued: boolean
+  /** Whatnot's order number for the lot, when the row comes from Whatnot's Shipments read. */
+  whatnotOrder: string | null
+  /** False for a Whatnot lot with no win recorded in the app. */
+  inApp: boolean
+  /** False for an app sale Whatnot's Shipments read does not list. */
+  onWhatnot: boolean
+  /** For a "No Pick" row: what the winner (or the host, about them) said in chat around the win. */
+  said: string[]
 }
 export interface BuyerSlip {
   username: string
@@ -345,7 +353,16 @@ export interface OrderSlips {
   summary: { username: string; items: number; gifts: number }[]
   slips: BuyerSlip[]
   /** Whatnot's Shipments list as the scraper read it; null until it has been read. */
-  whatnot: { readAt: string; shipments: number; missingHere: string[]; notOnWhatnot: string[] } | null
+  whatnot: {
+    readAt: string
+    shipments: number
+    /** Lots read (0 from an older scraper that sent shipments only). */
+    lots: number
+    lotsNotInApp: number
+    salesNotOnWhatnot: number
+    missingHere: string[]
+    notOnWhatnot: string[]
+  } | null
 }
 export interface PickItem {
   skuId: number

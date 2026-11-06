@@ -100,9 +100,21 @@ def lot_label(item: str, auction_type_: str = "") -> str:
     return f"{name} {int(num)}" if num else name
 
 
+# A pick-your-own listing ("CHOOSE ANY PRODUCT YOU WANT #73"): the winner names the product
+# in chat, so the title is no product either.
+_CHOICE = re.compile(r"^(?:choose|pick)\b.{0,60}#\s?\d{1,6}[\s!.]*$", re.I)
+
+
 def is_lot_title(item: str) -> bool:
     """True when the text is only a lot's title, so nobody has said which product it is."""
-    return bool(_LOT_ONLY.match((item or "").strip()))
+    t = (item or "").strip()
+    return bool(_LOT_ONLY.match(t) or _CHOICE.match(t))
+
+
+def lot_number(item: str) -> int | None:
+    """Whatnot's lot number in a listing title ("Quick Hit 2", "… YOU WANT #73"), if any."""
+    m = _LOT_NUM.search(item or "")
+    return int(m["n"] or m["h"]) if m else None
 
 
 # ---- platform / host confirmation lines (a sale) ----

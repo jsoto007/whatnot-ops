@@ -38,7 +38,7 @@ export type Request =
   /** extension pages only: a different shop was connected; set unsent rows aside */
   | { cmd: 'parkPending' }
   /** rows read off Seller Hub's Shipments table → ShipmentsReply | { error } */
-  | { cmd: 'shipments'; rows: ShipmentRow[] }
+  | { cmd: 'shipments'; rows: ShipmentRow[]; show: string }
 
 /**
  * The shop's web app → background (chrome.runtime.sendMessage(id, …) via

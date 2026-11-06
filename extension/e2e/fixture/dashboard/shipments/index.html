@@ -9,9 +9,11 @@
 </style>
 </head>
 <body>
-<!-- Header and pager markup as read from Seller Hub's Shipments page on 2026-11-02
-     (classes and icons stripped). The rows are made up; no filled page has been captured. -->
+<!-- Header, pager, row, expanded-lot and show-filter markup as read from Seller Hub's
+     Shipments page (2026-11-02 empty, 2026-11-05 filled; classes, icons and images stripped).
+     Buyers, order numbers and prices are made up. -->
 <main>
+  <div><button type="button" id="showFilter">E2E Test Show Oct 31•8:00 PM CDT<div><svg></svg></div></button><button type="button">Unfulfilled<div><svg></svg></div></button><button>Reset</button></div>
   <table>
     <thead><tr>
       <th><div><div><div><button role="checkbox" aria-checked="false"></button><input type="checkbox" tabindex="-1" aria-hidden="true"></div></div></div></th>
@@ -34,21 +36,38 @@
 </main>
 <script>
   const ALL = [
-    ['e2e_buyer1', 'Oct 31, 2026, 8:15 PM', '3 items', '$45.20', 'Unfulfilled'],
-    ['e2e_buyer2', 'Oct 31, 2026, 9:02 PM', '1 item', '$14.89', 'Unfulfilled'],
-    ['e2e_buyer3', 'Nov 1, 2026, 12:40 AM', '2 items', '$30.00', 'Shipped'],
+    ['e2e_buyer1', 'Oct 31', '2', '$32.00', 'Ready to Ship', [['CHOOSE ANY PRODUCT YOU WANT #73', '9001', '$17.00'], ['CHOOSE ANY PRODUCT YOU WANT #79', '9002', '$15.00']]],
+    ['e2e_buyer2', 'Oct 31', '1', '$14.89', 'Ready to Ship', [['Quick Hit 2', '9003', '$14.89']]],
+    ['e2e_buyer3', 'Oct 31', '1', '$30.00', 'Shipped', [['Ultra 9', '9004', '$30.00']]],
   ]
+  const detail = (lots) => `<tr><td colspan="11"><div><section><strong>Items (Bundled)</strong></section><table>
+    <thead><tr><th><div>Listing</div></th><th><div>Qty</div></th><th><div>Price</div></th><th><div>Weight</div></th><th><div>Shipping</div></th><th><div>Hazmat</div></th><th><div>Sale Type</div></th><th><div></div></th></tr></thead>
+    <tbody>${lots.map(([t, o, p]) => `<tr><td><div><div><img alt=""></div><div><strong>${t}</strong><a href="#o"><strong>Order #${o}</strong></a></div></div></td><td><section>1</section></td><td>${p}</td><td>10 oz</td><td>$0.00</td><td><span>Hazmat</span></td><td>Auction</td><td><section><span role="button"><button><span>Video Receipt</span></button></span></section></td></tr>`).join('')}</tbody></table></div></td></tr>`
   const SIZE = 2
   let page = 0
   function render() {
     const rows = ALL.slice(page * SIZE, page * SIZE + SIZE)
     document.getElementById('rows').innerHTML = rows.map(([u, d, i, v, s]) =>
-      `<tr><td><button role="checkbox"></button></td><td><div>${u}</div><div>Test Person</div><div>1 Test St</div></td><td>${d}</td><td>${i}</td><td>${v}</td><td>1 lb</td><td>10x8x4</td><td></td><td><span>${s}</span></td><td></td><td><button>Print label</button></td></tr>`).join('')
+      `<tr data-user="${u}"><td><button role="checkbox"></button></td><td><div>${u}</div><div>Test Person</div><div>1 Test St</div><button type="button" class="toggle"><span>Expand</span></button></td><td>${d}</td><td>${i}</td><td>${v}</td><td>1 lb</td><td>10x8x4</td><td></td><td><span>${s}</span></td><td></td><td><button>Print label</button></td></tr>`).join('')
     const from = page * SIZE + 1, to = page * SIZE + rows.length
     document.getElementById('showing').textContent = `Showing ${from}-${to} of ${ALL.length}`
     document.getElementById('prev').disabled = page === 0
     document.getElementById('next').disabled = to >= ALL.length
   }
+  // Expand shows the lots a moment later; Collapse takes them away.
+  document.getElementById('rows').addEventListener('click', (e) => {
+    const b = e.target.closest('button.toggle')
+    if (!b) return
+    const tr = b.closest('tr')
+    const lots = ALL.find((r) => r[0] === tr.dataset.user)[5]
+    if (b.textContent === 'Expand') {
+      b.querySelector('span').textContent = 'Collapse'
+      setTimeout(() => tr.insertAdjacentHTML('afterend', detail(lots)), 100)
+    } else {
+      b.querySelector('span').textContent = 'Expand'
+      tr.nextElementSibling.remove()
+    }
+  })
   // Like a real app: the next page arrives a moment after the click.
   document.getElementById('next').addEventListener('click', () => setTimeout(() => { page += 1; render() }, 150))
   document.getElementById('prev').addEventListener('click', () => setTimeout(() => { page -= 1; render() }, 150))

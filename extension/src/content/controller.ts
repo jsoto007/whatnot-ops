@@ -663,22 +663,28 @@ export class Controller {
       const got = await collectAll(document, (n, info) =>
         p.setShipStatus(`Reading page ${n}${info ? ` (${info.to} of ${info.total})` : ''}…`, 'info'),
       )
+      if (got.show && 'all' in got.show) {
+        p.setShipStatus("Pick this show in Whatnot's show filter first (it says All Shows), then send again.", 'bad')
+        return
+      }
       if (!got.rows.length) {
         p.setShipStatus(got.stoppedEarly ?? "No shipments on this page. Check Whatnot's show and status filters.", 'bad')
         return
       }
       p.setShipStatus(`Sending ${got.rows.length} shipments…`, 'info')
-      const reply = await send<ShipmentsReply | { error: string }>({ cmd: 'shipments', rows: got.rows })
+      const reply = await send<ShipmentsReply | { error: string }>({ cmd: 'shipments', rows: got.rows, show: got.show?.label ?? '' })
       if (!reply || 'error' in reply) {
         p.setShipStatus(reply?.error ?? 'Could not send.', 'bad')
         return
       }
-      const parts = [`Sent ${reply.stored} shipment${reply.stored === 1 ? '' : 's'}`]
-      if (reply.unmatched) parts.push(`${reply.unmatched} had no show on their date`)
+      const parts = [`Sent ${reply.stored} shipment${reply.stored === 1 ? '' : 's'} (${reply.lots} lot${reply.lots === 1 ? '' : 's'})`]
+      if (reply.show) parts.push(`filed under the ${reply.show.date} show`)
+      if (reply.unmatched) parts.push(`${reply.unmatched} matched no show in Sales Ops`)
+      if (got.noLots) parts.push(`${got.noLots} would not open, sent without their lots`)
       if (got.total !== null && got.rows.length < got.total) parts.push(`read ${got.rows.length} of ${got.total}`)
       if (got.stoppedEarly) parts.push(got.stoppedEarly)
-      p.setShipStatus(parts.join(' · ') + '.', got.stoppedEarly || reply.unmatched ? 'info' : 'good')
-      p.el('shipNote').textContent = "Open the show's Order slips in the web app: it shows where Whatnot and the app disagree."
+      p.setShipStatus(parts.join(' · ') + '.', got.stoppedEarly || reply.unmatched || got.noLots ? 'info' : 'good')
+      p.el('shipNote').textContent = "Open the show's Order slips in the web app: it is now the pick list, one row per Whatnot lot with the product the winner chose in chat."
     } catch {
       p.setShipStatus('The extension was reloaded. Refresh this page.', 'bad')
     } finally {

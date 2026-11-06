@@ -29,6 +29,10 @@ const row = (over: Partial<SlipRow>): SlipRow => ({
   giftCount: 0,
   priceCents: 1489,
   continued: false,
+  whatnotOrder: null,
+  inApp: true,
+  onWhatnot: true,
+  said: [],
   ...over,
 })
 
@@ -131,7 +135,7 @@ test('differences with Whatnot are spelled out', async () => {
   mount(['orders.view'], {
     ...doc,
     slips: [{ ...jess!, whatnot: { items: 4, statuses: ['Unfulfilled'] } }, { ...tina!, whatnot: { items: 1, statuses: ['Shipped'] } }],
-    whatnot: { readAt: '2026-11-01T02:00:00Z', shipments: 3, missingHere: ['nolan_k'], notOnWhatnot: [] },
+    whatnot: { readAt: '2026-11-01T02:00:00Z', shipments: 3, lots: 0, lotsNotInApp: 0, salesNotOnWhatnot: 0, missingHere: ['nolan_k'], notOnWhatnot: [] },
   })
   const check = await screen.findByTestId('whatnot-check')
   expect(check.closest('.no-print')).not.toBeNull() // never printed
@@ -139,4 +143,32 @@ test('differences with Whatnot are spelled out', async () => {
   expect(within(check).getByTestId('count-differs')).toHaveTextContent('Jessica88aguirre (here 3, Whatnot 4)')
   expect(within(screen.getByTestId('slip-Jessica88aguirre')).getByTestId('slip-whatnot')).toHaveTextContent('Whatnot: 4 items (Unfulfilled) differs')
   expect(within(screen.getByTestId('slip-Tinalou13699')).getByTestId('slip-whatnot')).toHaveTextContent('Whatnot: 1 item (Shipped)')
+})
+
+test("with Whatnot's lots read, each row shows its order number, its flags and what the winner said", async () => {
+  const [jess] = doc.slips
+  mount(['orders.view'], {
+    ...doc,
+    slips: [
+      {
+        ...jess!,
+        rows: [
+          row({ saleId: 1, auction: 'Listing 73', product: 'No Pick', matched: false, priceCents: 1700, whatnotOrder: '1462657228', said: ['can I get the Fitness Ball'] }),
+          row({ saleId: null, auction: 'Listing 79', product: 'No Pick', matched: false, priceCents: 1500, whatnotOrder: '1462660717', inApp: false }),
+          row({ saleId: 2, auction: 'Quick Hit 3', priceCents: 800, onWhatnot: false }),
+        ],
+      },
+    ],
+    whatnot: { readAt: '2026-11-01T02:00:00Z', shipments: 2, lots: 2, lotsNotInApp: 1, salesNotOnWhatnot: 1, missingHere: [], notOnWhatnot: [] },
+  })
+  const check = await screen.findByTestId('whatnot-check')
+  expect(check).toHaveTextContent('Pick list from Whatnot · 2 lots in 2 shipments')
+  expect(within(check).getByTestId('lots-not-in-app')).toHaveTextContent('1 lot on Whatnot with no win in the app')
+  expect(within(check).getByTestId('sales-not-on-whatnot')).toHaveTextContent('1 win in the app that Whatnot does not list')
+  const [first, second, third] = within(screen.getByTestId('slip-Jessica88aguirre')).getAllByTestId('slip-row')
+  expect(first).toHaveTextContent('Order #1462657228')
+  expect(within(first!).getByTestId('slip-said')).toHaveTextContent('Chat: “can I get the Fitness Ball”')
+  expect(second).toHaveTextContent('not in app')
+  expect(within(second!).queryByRole('combobox')).toBeNull() // no sale: no gift to set
+  expect(third).toHaveTextContent('not on Whatnot')
 })

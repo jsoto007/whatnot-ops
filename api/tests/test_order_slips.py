@@ -20,6 +20,7 @@ from tests.test_pipeline import run
         ("Red bundle #752", "Red 752", True),
         ("Flash Yomi Drone", "Flash", False),
         ("Fitness Ball", "Listing", False),
+        ("CHOOSE ANY PRODUCT YOU WANT #73", "Listing 73", True),  # the winner picks in chat
         ("", "Listing", False),
     ],
 )

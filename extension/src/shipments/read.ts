@@ -2,16 +2,36 @@
  * Whatnot's Seller Hub Shipments page (/dashboard/shipments), read after a show so the web
  * app can check its order slips against what Whatnot will ship.
  *
- * What is known (seen 2026-11-02 on an account with no shipments): a real <table> whose
- * header cells read "", Recipient, Order Date, Items, Value, Weight, Dimensions,
- * Requirements, Status, Tracking, Actions; under it a pager with Previous / Next buttons, a
- * "Show 50" page size and "Showing 1-50 of 226". What a filled row holds is NOT known yet,
- * so cells are read by their column header and kept as plain text; the server reads counts
- * and dates loosely. Nothing outside the Recipient's username is taken from that cell, so no
- * address leaves the page.
+ * Seen filled on the shop's account (2026-11-05):
+ * - A real <table> whose header cells read "", Recipient, Order Date, Items, Value, Weight,
+ *   Dimensions, Requirements, Status, Tracking, Actions; a pager with Previous / Next
+ *   buttons, "Show 50" and "Showing 1-50 of 226". Rows are grey placeholders while loading.
+ * - One row per shipment (a buyer may have several). Recipient holds the username, maybe a
+ *   "New" badge and an Expand / Collapse button. Order Date is "Oct 22": no year, no time.
+ * - Expand adds one single-cell row holding a nested table, one line per lot: Listing
+ *   ("CHOOSE ANY PRODUCT YOU WANT #73" and "Order #1462657228" in two <strong>s), Qty,
+ *   Price, Weight, Shipping, Hazmat, Sale Type, and a Video Receipt button. The listing never
+ *   names the product: the winner picks it in chat.
+ * - The show filter is a button reading "<show title> Oct 22•1:44 AM EDT" once a show is
+ *   picked, "All Shows & Marketplace" (or "Shows • Marketplace" while loading) otherwise.
+ * Cells are read by their column header. Nothing outside the Recipient's username is taken
+ * from that cell, so no address leaves the page.
  *
  * DOM-only (no chrome.* calls), so it runs in jsdom.
  */
+
+/** One lot (one Whatnot order) inside a shipment, from its expanded row. */
+export interface ShipmentLot {
+  /** The listing title, e.g. "CHOOSE ANY PRODUCT YOU WANT #73". */
+  title: string
+  /** Whatnot's order number for this lot ("1462657228"); '' when not shown. */
+  orderId: string
+  quantity: string
+  price: string
+  shipping: string
+  /** "Auction", or another sale type (giveaways, Buy It Now) as Whatnot names it. */
+  saleType: string
+}
 
 export interface ShipmentRow {
   recipient: string
@@ -23,6 +43,8 @@ export interface ShipmentRow {
   value: string
   status: string
   tracking: string
+  /** Its lots, when the row was expanded. */
+  lots: ShipmentLot[]
 }
 
 export interface PageInfo {
@@ -43,6 +65,7 @@ type Column = keyof typeof COLUMNS
 
 const MAX_CELL = 1000
 const MAX_LINES = 60
+const MAX_LOTS = 200
 const USERNAME = /^@?[A-Za-z0-9._-]{2,80}$/
 const COUNT_ONLY = /^\d{1,4}(\s*items?)?$/i
 
@@ -94,7 +117,10 @@ export function readRows(table: HTMLTableElement): ShipmentRow[] {
       const cells = tr.cells
       if (cells.length !== headers.length) {
         const last = out[out.length - 1]
-        if (last) last.itemLines.push(...leaves(tr).slice(0, MAX_LINES - last.itemLines.length))
+        if (!last) continue
+        const lots = readLots(tr)
+        if (lots) last.lots.push(...lots.slice(0, MAX_LOTS - last.lots.length))
+        else last.itemLines.push(...leaves(tr).slice(0, MAX_LINES - last.itemLines.length))
         continue
       }
       const cell = (c: Column) => (at[c] >= 0 ? cells[at[c]] : undefined)
@@ -113,10 +139,82 @@ export function readRows(table: HTMLTableElement): ShipmentRow[] {
         value: text('value'),
         status: text('status'),
         tracking: text('tracking'),
+        lots: [],
       })
     }
   }
   return out.filter((r) => r.recipient)
+}
+
+const LOT_COLUMNS = { quantity: 'qty', price: 'price', shipping: 'shipping', saleType: 'sale type' } as const
+const ORDER_NO = /^Order\s*#\s*(\d{1,20})$/i
+
+/** The lots in an expanded row's nested table (Listing, Qty, Price, …); null when it has none. */
+export function readLots(detail: Element): ShipmentLot[] | null {
+  const t = detail.querySelector('table')
+  if (!t?.tHead?.rows[0]) return null
+  const heads = [...t.tHead.rows[0].cells].map((c) => leaves(c).join(' ').toLowerCase())
+  const listing = heads.indexOf('listing')
+  if (listing < 0) return null
+  const at = (k: keyof typeof LOT_COLUMNS) => heads.indexOf(LOT_COLUMNS[k])
+  const out: ShipmentLot[] = []
+  for (const body of t.tBodies) {
+    for (const row of body.rows) {
+      const cell = (i: number) => (i >= 0 && row.cells[i] ? leaves(row.cells[i]!).join(' ').slice(0, 80) : '')
+      const parts = row.cells[listing] ? leaves(row.cells[listing]!) : []
+      const order = parts.map((p) => ORDER_NO.exec(p)).find((m) => m)
+      const title = parts.find((p) => !ORDER_NO.test(p)) ?? ''
+      if (!title && !order) continue
+      out.push({
+        title: title.slice(0, 240),
+        orderId: order ? order[1]! : '',
+        quantity: cell(at('quantity')),
+        price: cell(at('price')),
+        shipping: cell(at('shipping')),
+        saleType: cell(at('saleType')),
+      })
+    }
+  }
+  return out
+}
+
+/** The Expand / Collapse toggle in a shipment row. */
+export function toggleButton(tr: HTMLTableRowElement, word: 'Expand' | 'Collapse'): HTMLButtonElement | null {
+  for (const b of tr.querySelectorAll('button')) if (norm(b.textContent) === word) return b
+  return null
+}
+
+/** The shipment rows of a table (not the expanded detail rows, not loading placeholders). */
+export function shipmentRows(table: HTMLTableElement): HTMLTableRowElement[] {
+  const n = headerTexts(table).length
+  return [...table.tBodies].flatMap((b) => [...b.rows]).filter((tr) => tr.cells.length === n && !!toggleButton(tr, 'Expand') !== !!toggleButton(tr, 'Collapse'))
+}
+
+/** Is this shipment row's expanded detail (with its lots table) on the page? */
+export const isExpanded = (tr: HTMLTableRowElement): boolean => {
+  const next = tr.nextElementSibling
+  return next instanceof HTMLTableRowElement && next.cells.length === 1 && !!next.querySelector('table tbody tr')
+}
+
+export type ShowFilter = { label: string } | { all: true }
+
+const MONTHS = '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\\.?'
+const SHOW_WHEN = new RegExp(`\\b${MONTHS}\\s+\\d{1,2}(?:,?\\s+\\d{4})?\\s*[•·,-]?\\s*\\d{1,2}:\\d{2}\\s*[AaPp][Mm]`)
+
+/**
+ * Whatnot's show filter: the picked show's label ("…Gift Cards Oct 22•1:44 AM EDT"), or
+ * { all: true } while no single show is picked. null when the filter is not on the page.
+ */
+export function readShowFilter(doc: Document = document, table: Element | null = findShipmentsTable(doc)): ShowFilter | null {
+  let all = false
+  for (const b of doc.querySelectorAll('button, [role="button"], [role="combobox"]')) {
+    if (table?.contains(b)) continue
+    const t = norm(b.textContent)
+    if (!t || t.length > 300) continue
+    if (SHOW_WHEN.test(t)) return { label: t }
+    if (/^(all\s+)?shows\b/i.test(t)) all = true
+  }
+  return all ? { all: true } : null
 }
 
 const SHOWING = /^Showing (\d+)\s*[-–]\s*(\d+) of (\d+)$/i
