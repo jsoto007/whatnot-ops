@@ -24,3 +24,7 @@ extension/playwright-report/
 web/*.tsbuildinfo
 
 extension/chat-scraper-*.zip
+
+# cloudflare
+cloudflare/.wrangler/
+cloudflare/.dev.vars

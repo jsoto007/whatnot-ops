@@ -20,7 +20,8 @@ api/         Flask + SQLAlchemy + Alembic (REST API, jobs, exports)
 web/         React 19 + Vite + TypeScript SPA
 extension/   Chrome MV3 extension (Chat Scraper)
 shared/      JSON Schema contract between extension and API
-docs/        plan, runbook
+cloudflare/  Worker + container config for the separate Cloudflare deployment
+docs/        plan, runbook, CLOUDFLARE.md
 ```
 
 ## Run locally
@@ -36,6 +37,7 @@ make check                      # lint + typecheck + unit tests, both sides
 make e2e                        # production build served by Flask + Playwright
 make ext-e2e                    # extension: build, then Playwright against the fixture chat + the real API
 make smoke BASE_URL=https://…   # health, SPA, fallback and 404 checks against a deployed instance
+make cf-image                   # build the Cloudflare container image (Docker)
 ```
 
 ## Accounts
@@ -228,3 +230,9 @@ enables Reload once the new files are on disk and confirms the new version
 came back. Developer mode must stay on, because Chrome disables a reloaded
 unpacked extension without it. Laptops on 1.4.x and older need one manual
 update (↻ in `chrome://extensions`) before the button works.
+
+## Deploy
+
+Production runs on Render (`render.yaml`, `docs/RUNBOOK.md`). A separate
+deployment with its own database runs on Cloudflare Containers
+(`cloudflare/`, `Dockerfile`, `docs/CLOUDFLARE.md`); it deploys only by hand.

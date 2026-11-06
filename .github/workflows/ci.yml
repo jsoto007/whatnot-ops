@@ -51,6 +51,22 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  cloudflare:
+    # The Worker in front of the Cloudflare deployment (docs/CLOUDFLARE.md),
+    # plus a build of the container image it deploys. Nothing is deployed here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .node-version, cache: npm, cache-dependency-path: cloudflare/package-lock.json }
+      - run: npm ci
+        working-directory: cloudflare
+      - run: npm run typecheck
+        working-directory: cloudflare
+      - run: npm test
+        working-directory: cloudflare
+      - run: docker build --platform linux/amd64 -t sales-ops:ci .
+
   extension:
     # Pinned: ubuntu-latest became 26.04, which has no prebuilt Python 3.13.5
     # (.python-version, the same version Render runs).
