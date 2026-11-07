@@ -67,7 +67,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     poll = float(os.environ.get("WORKER_POLL_SECONDS", "2"))
-    last_sweep = 0.0
+    last_sweep = float("-inf")  # sweep at startup, however long the machine has been up
     with app.app_context():
         log.info("worker started")
         waited = False
