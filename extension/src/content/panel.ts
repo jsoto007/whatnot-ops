@@ -184,6 +184,10 @@ export class Panel {
   private readonly root: ShadowRoot
   private alertTimer: ReturnType<typeof setTimeout> | null = null
   private layout: PanelLayout | null = null
+  /** The window `mount` listens on for resizes; `unmount` lets go of it. */
+  private mountedOn: Window | null = null
+  /** One reference, so `unmount` can remove it: an anonymous listener kept the whole panel (and the show it holds) alive. */
+  private readonly onResize = (): void => this.apply()
   /** Told when the host finishes a move or resize (null after a reset), so it can be remembered. */
   onLayout: ((l: PanelLayout | null) => void) | null = null
 
@@ -206,7 +210,22 @@ export class Panel {
 
   mount(doc: Document = document): void {
     doc.documentElement.appendChild(this.host)
-    doc.defaultView?.addEventListener('resize', () => this.apply())
+    this.mountedOn?.removeEventListener('resize', this.onResize)
+    this.mountedOn = doc.defaultView
+    this.mountedOn?.addEventListener('resize', this.onResize)
+  }
+
+  /**
+   * Off the page for good (a newer copy of the content script took over). Nothing the page
+   * keeps may still point here: the buttons' handlers hold the Controller and its whole show.
+   */
+  unmount(): void {
+    this.mountedOn?.removeEventListener('resize', this.onResize)
+    this.mountedOn = null
+    if (this.alertTimer) clearTimeout(this.alertTimer)
+    this.alertTimer = null
+    this.onLayout = null
+    this.host.remove()
   }
 
   getLayout(): PanelLayout | null {

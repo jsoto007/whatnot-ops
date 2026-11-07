@@ -325,3 +325,75 @@ def test_a_filter_naming_no_show_here_files_nothing(client, app, shop, monkeypat
     assert r.get_json()["show"] is None and r.get_json()["unmatched"] == 1
     with app.app_context():
         assert db.session.scalar(select(WhatnotLot.show_id)) is None
+
+
+@pytest.mark.parametrize(
+    "text,today,expected",
+    [
+        # Year end (architecture review 2026-11-07, #9): a year-less date just after New
+        # Year read on Dec 31 is next year's; one just before it read on Jan 1 is last year's.
+        ("Jan 2", date(2026, 12, 31), (date(2027, 1, 2), False)),
+        ("Jan 1", date(2026, 12, 31), (date(2027, 1, 1), False)),
+        ("Dec 30", date(2027, 1, 1), (date(2026, 12, 30), False)),
+        ("Mar 3", date(2026, 12, 31), (date(2026, 3, 3), False)),
+        ("Feb 29", date(2026, 11, 5), (None, False)),
+    ],
+)
+def test_order_dates_without_a_year_cross_new_year(text, today, expected):
+    assert shipments.ordered_on(text, today) == expected
+
+
+def test_a_late_new_years_eve_show_label_read_on_dec_31_names_that_show():
+    # 12:30 AM Eastern on Jan 1 is 11:30 PM Central on Dec 31: that night's show.
+    assert shipments.show_on("Countdown Jan 1•12:30 AM EST", date(2026, 12, 31)) == date(
+        2026, 12, 31
+    )
+
+
+def test_a_read_again_that_cannot_place_its_rows_keeps_where_they_were_filed(
+    client, app, shop, monkeypatch
+):
+    """Reading Shipments again after "Start fresh" made a second show that day must not
+    un-file what the first read filed (architecture review 2026-11-07, #3)."""
+    monkeypatch.setattr(shipments, "_today", lambda: TODAY)
+    read = {
+        "show": LABEL,
+        "rows": [
+            row("jess88", order_date="Oct 31") | {"lots": [lot("Quick Hit 1", "9001", "$5")]},
+            row("amy", order_date="Oct 31") | {"lots": [lot("Quick Hit 2", "9002", "$6")]},
+        ],
+    }
+    first = client.post("/api/ingest/shipments", json=read, headers=shop["auth"]).get_json()
+    assert first["unmatched"] == 0 and first["show"]["id"] == shop["show"]
+    with app.app_context():
+        show = db.session.get(Show, shop["show"])
+        db.session.add(
+            Show(
+                organization_id=show.organization_id,
+                show_key="started-fresh",
+                started_at=show.started_at,
+                show_date=show.show_date,
+            )
+        )
+        db.session.commit()
+    again = client.post("/api/ingest/shipments", json=read, headers=shop["auth"]).get_json()
+    assert again["unmatched"] == 0 and again["shows"] == {str(shop["show"]): 2}
+    with app.app_context():
+        assert set(db.session.scalars(select(WhatnotLot.show_id))) == {shop["show"]}
+        assert set(db.session.scalars(select(WhatnotShipment.show_id))) == {shop["show"]}
+        assert order_slips.build(db.session.get(Show, shop["show"]))["whatnot"] is not None
+
+
+def test_a_misread_quantity_prints_a_bounded_slip_and_asks_a_person(client, app, shop, monkeypatch):
+    """Qty "999" is a misread column: at most MAX_UNIT_ROWS lines, and the buyer is flagged
+    (architecture review 2026-11-07, #16)."""
+    monkeypatch.setattr(shipments, "_today", lambda: TODAY)
+    read = {
+        "show": LABEL,
+        "rows": [row("jess88") | {"lots": [lot("Quick Hit 1", "9101", "$5", qty="999")]}],
+    }
+    assert client.post("/api/ingest/shipments", json=read, headers=shop["auth"]).status_code == 200
+    with app.app_context():
+        doc = order_slips.build(db.session.get(Show, shop["show"]))
+    [slip] = [b for b in doc["slips"] if b["username"] == "jess88"]
+    assert len(slip["rows"]) == order_slips.MAX_UNIT_ROWS and slip["needsReview"]

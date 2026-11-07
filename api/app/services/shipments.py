@@ -127,13 +127,21 @@ def _today() -> date:
 
 
 def _with_year(month: int, day: int, year: str | None, today: date) -> date | None:
-    try:
-        if year:
+    """The date in the year that makes it the latest one not past today + _AHEAD: "Jan 2"
+    read on Dec 31 is next year's, "Dec 30" read on Jan 1 is last year's."""
+    if year:
+        try:
             return date(int(year), month, day)
-        d = date(today.year, month, day)
-        return d if d <= today + _AHEAD else date(today.year - 1, month, day)
-    except ValueError:
-        return None
+        except ValueError:
+            return None
+    for y in (today.year + 1, today.year, today.year - 1):
+        try:
+            d = date(y, month, day)
+        except ValueError:  # Feb 29 outside a leap year
+            continue
+        if d <= today + _AHEAD:
+            return d
+    return None
 
 
 def _when(text: str, today: date, *, last: bool = False) -> tuple[date | None, bool]:
@@ -261,13 +269,12 @@ def ingest(device: Device, payload) -> dict:
             "show_label": label,
         }
         stmt = insert(WhatnotShipment).values(**values)
-        shipment_id = db.session.scalar(
+        shipment_id, show_id = db.session.execute(
             stmt.on_conflict_do_update(
                 constraint="uq_whatnot_shipments_org_key",
                 set_={
                     k: stmt.excluded[k]
                     for k in (
-                        "show_id",
                         "device_id",
                         "item_count",
                         "item_lines",
@@ -276,9 +283,13 @@ def ingest(device: Device, payload) -> dict:
                         "show_label",
                     )
                 }
+                # A read that cannot place the row (its date now has two shows, say, after
+                # "Start fresh") keeps where an earlier read filed it; never un-files it. A
+                # wrong earlier filing is corrected only by a read that names another show.
+                | {"show_id": func.coalesce(stmt.excluded.show_id, WhatnotShipment.show_id)}
                 | {"updated_at": datetime.now(UTC)},
-            ).returning(WhatnotShipment.id)
-        )
+            ).returning(WhatnotShipment.id, WhatnotShipment.show_id)
+        ).one()
         for lot in r["lots"]:
             lots += _store_lot(org_id, show_id, shipment_id, r["recipient"], lot)
         stored += 1
@@ -313,7 +324,6 @@ def _store_lot(org_id: int, show_id: int | None, shipment_id: int, recipient: st
             set_={
                 k: stmt.excluded[k]
                 for k in (
-                    "show_id",
                     "shipment_id",
                     "recipient",
                     "title",
@@ -324,6 +334,7 @@ def _store_lot(org_id: int, show_id: int | None, shipment_id: int, recipient: st
                     "sale_type",
                 )
             }
+            | {"show_id": func.coalesce(stmt.excluded.show_id, WhatnotLot.show_id)}
             | {"updated_at": datetime.now(UTC)},
         )
     )

@@ -11,7 +11,7 @@ import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, text
+from sqlalchemy import case, select, text
 
 from ..db import db
 from ..models import Job, JobStatus
@@ -65,12 +65,14 @@ def enqueue(
 
 
 def claim(worker: str) -> Job | None:
-    """Take the next due job, or None. Runs in its own short transaction."""
+    """Take the next due job, or None. Runs in its own short transaction. Parsing goes
+    first: it keeps a live show's numbers current, and one lane must not leave it queued
+    behind AI checks that each wait on a vendor."""
     now = datetime.now(UTC)
     job = db.session.scalar(
         select(Job)
         .where(Job.status == JobStatus.queued, Job.run_at <= now)
-        .order_by(Job.id)
+        .order_by(case((Job.kind == "parse_show", 0), else_=1), Job.id)
         .limit(1)
         .with_for_update(skip_locked=True)
     )
@@ -134,8 +136,25 @@ def run_once(worker: str | None = None) -> Job | None:
 
 
 def requeue_stale(older_than_minutes: int = 15) -> int:
-    """A worker that died mid-job leaves it 'running'; give it back after a while."""
+    """A worker that died mid-job leaves it 'running'; give it back after a while. A job
+    whose last allowed attempt never finished is failed instead: one that kills its worker
+    (out of memory, say) would otherwise crash it every 15 minutes forever."""
     cutoff = datetime.now(UTC) - timedelta(minutes=older_than_minutes)
+    gave_up = db.session.execute(
+        text(
+            "UPDATE jobs SET status = 'failed', locked_by = NULL, finished_at = now(), "
+            "error = :why WHERE status = 'running' AND locked_at < :cutoff "
+            "AND attempts >= max_attempts RETURNING id, kind, attempts, max_attempts"
+        ),
+        {
+            "cutoff": cutoff,
+            "why": "gave up after its last attempt never finished: the worker stopped "
+            "during it (a crash, out of memory, or a deploy); not retried again",
+        },
+    ).all()
+    for job_id, kind, attempts, most in gave_up:
+        log.error("job %s %s failed for good: worker stopped during attempt %s of %s",
+                  job_id, kind, attempts, most)  # fmt: skip
     r = db.session.execute(
         text(
             "UPDATE jobs SET status = 'queued', locked_by = NULL "

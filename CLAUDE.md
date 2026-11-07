@@ -101,11 +101,18 @@ commands.
   (pure, tested against `tests/fixtures/chat_corpus.jsonl`, which is
   synthetic — say so whenever quoting its numbers). State changes to sales
   go through `pipeline.set_sale_status()`; review decisions through
-  `pipeline.resolve()`. Both are idempotent on replay.
+  `pipeline.resolve()`. Both are idempotent on replay. One parse per show at
+  a time: `process_show` takes a per-show advisory try-lock and raises
+  `ParseBusy` (the route answers 409, the job re-queues itself). Shop-wide
+  buyer lookups go through `lower(buyer_username)`, which
+  `ix_sales_org_lower_buyer` covers; keep new ones on that shape.
 - **Jobs.** `api/app/services/jobs.py` is the queue (`SELECT … FOR UPDATE
   SKIP LOCKED`); handlers register with `@handler("kind")`. `JOBS_INLINE=1`
   runs them synchronously (dev, e2e, CI); production runs `python -m
-  app.worker`.
+  app.worker`. `parse_show` is claimed before other kinds; `requeue_stale`
+  fails a stale `running` job whose last allowed attempt never finished
+  (instead of re-queueing a job that kills its worker forever). The worker
+  survives a database outage (backs off) and never exits on one.
 - **Migrations.** `flask db migrate` prints the generated path — rename
   *that* file (never `ls -t`), and when a downgrade drops tables that use
   Postgres enums, drop the enum types too (see 0004).

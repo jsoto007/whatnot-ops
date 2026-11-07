@@ -1,8 +1,12 @@
 // Chat Search — reads shows saved by Chat Scraper (IndexedDB) or a downloaded .txt file.
+// Chat lines are whatever viewers typed: they reach the page only as text (textContent, text nodes).
 import type { CapturedRow, ShowMeta } from '../capture/types'
 import type { Broadcast } from '../shared/messages'
 import { isExtensionPage, showOpenedAsFile } from '../shared/openedAsFile'
-import { deleteShow, getRows, getShow, listShows } from '../storage/db'
+import { deleteShow, getRows, getShow, listShows, rowsAfter } from '../storage/db'
+
+/** Matches drawn at a time; "Show more" draws the next lot. One letter typed used to draw the whole show. */
+const PAGE = 500
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -16,14 +20,42 @@ interface Current {
   lines: Line[]
   updatedAt?: number
   meta?: ShowMeta
+  /** Highest seq read (saved shows; -1 for none): a live update reads only the rows after it. */
+  lastSeq: number
+}
+
+/** One card of results: matches close together share one, with the lines around them. */
+interface Block {
+  div: HTMLDivElement
+  head: HTMLSpanElement
+  /** First line in the card, and the last one drawn so far. */
+  a: number
+  b: number
+  /** Matches in it, and the first one's time (the card's title). */
+  n: number
+  time: string
+}
+
+/** The results on screen, kept so more matches and live lines are added instead of redrawing everything. */
+interface View {
+  q: string
+  ctx: number
+  lines: Line[]
+  /** Every matching line, in order. The first `shown` are drawn, never more than `limit`. */
+  hits: number[]
+  shown: number
+  limit: number
+  /** The newest card: a match close enough to it joins it. */
+  last: Block | null
 }
 
 let index: ShowMeta[] = []
 let current: Current | null = null
 let fileShow: Current | null = null
+let view: View | null = null
 
 const timeOf = (iso: string) => (iso ? new Date(iso).toLocaleTimeString() : '')
-const toLines = (rows: CapturedRow[]): Line[] => rows.map((r) => ({ time: timeOf(r.capturedAt), text: r.rawText }))
+const toLine = (r: CapturedRow): Line => ({ time: timeOf(r.capturedAt), text: r.rawText })
 
 function prettyDate(iso: string): string {
   const [y, m, d] = iso.split('-').map(Number)
@@ -60,80 +92,191 @@ async function openShow(id: string): Promise<void> {
     return
   }
   const meta = await getShow(id)
-  current = meta ? { id, label: id, lines: toLines(await getRows(id)), updatedAt: meta.updatedAt, meta } : null
+  const rows = meta ? await getRows(id) : []
+  current = meta
+    ? { id, label: id, lines: rows.map(toLine), updatedAt: meta.updatedAt, meta, lastSeq: rows[rows.length - 1]?.seq ?? -1 }
+    : null
   run()
 }
 
 const isLive = () => !!current && current.id !== 'file' && !!current.updatedAt && Date.now() - current.updatedAt < 60_000
 
-const esc = (s: string) =>
-  s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string)
+const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] =>
+  Object.assign(document.createElement(tag), { className, textContent: text })
 
-function highlight(text: string, q: string): string {
-  if (!q) return esc(text)
-  const i = text.toLowerCase().indexOf(q)
-  if (i < 0) return esc(text)
-  return esc(text.slice(0, i)) + '<mark>' + esc(text.slice(i, i + q.length)) + '</mark>' + highlight(text.slice(i + q.length), q)
+/** `text` into `into`, each occurrence of `q` (lower case) in a <mark>. */
+function highlight(into: HTMLElement, text: string, q: string): void {
+  const low = text.toLowerCase()
+  let at = 0
+  for (let i = low.indexOf(q); i >= 0 && q; i = low.indexOf(q, at)) {
+    if (i > at) into.append(text.slice(at, i))
+    into.append(el('mark', '', text.slice(i, i + q.length)))
+    at = i + q.length
+  }
+  if (at < text.length) into.append(text.slice(at))
 }
 
+/** Search the whole show again (a new query, show or context size). */
 function run(): void {
   $('live').classList.toggle('on', isLive())
   const res = $('results')
-  const sum = $('summary')
-  res.innerHTML = ''
+  view = null
+  res.replaceChildren()
   if (!current) {
-    sum.textContent = ''
-    res.innerHTML = '<div class="empty">No shows saved yet. Start Chat Scraper on a Whatnot show, or load a .txt file.</div>'
-    return
+    res.append(el('div', 'empty', 'No shows saved yet. Start Chat Scraper on a Whatnot show, or load a .txt file.'))
+  } else {
+    const q = $<HTMLInputElement>('q').value.trim().toLowerCase()
+    if (q) {
+      const lines = current.lines
+      const hits: number[] = []
+      for (let i = 0; i < lines.length; i++) if (lines[i]!.text.toLowerCase().includes(q)) hits.push(i)
+      view = { q, ctx: +$<HTMLSelectElement>('ctx').value, lines, hits, shown: 0, limit: PAGE, last: null }
+      if (hits.length) draw()
+      else res.append(el('div', 'empty', 'No matches. Try part of the name.'))
+    }
   }
-  const lines = current.lines
-  const q = $<HTMLInputElement>('q').value.trim().toLowerCase()
-  if (!q) {
-    sum.innerHTML = `<b>${lines.length}</b> messages in this show. Type a buyer name or word to search.`
-    return
+  summarize()
+}
+
+/** How many match, and "Show more" while some are not drawn. */
+function summarize(): void {
+  const sum = $('summary')
+  const more = $('more')
+  more.hidden = true
+  if (!current) return sum.replaceChildren()
+  const total = current.lines.length
+  if (!view) return sum.replaceChildren(el('b', '', String(total)), ' messages in this show. Type a buyer name or word to search.')
+  const { hits, shown, q } = view
+  const n = hits.length
+  sum.replaceChildren(
+    el('b', '', String(n)),
+    ` message${n === 1 ? '' : 's'} matching "${q}" out of ${total}.` + (shown < n ? ` Showing the first ${shown}.` : ''),
+  )
+  if (shown < n) {
+    more.hidden = false
+    $('moreBtn').textContent = `Show ${Math.min(PAGE, n - shown)} more`
   }
-  const ctx = +$<HTMLSelectElement>('ctx').value
-  const hits: number[] = []
-  lines.forEach((r, i) => {
-    if (r.text.toLowerCase().includes(q)) hits.push(i)
-  })
-  sum.innerHTML = `<b>${hits.length}</b> message${hits.length === 1 ? '' : 's'} matching "${esc(q)}" out of ${lines.length}.`
-  if (!hits.length) {
-    res.innerHTML = '<div class="empty">No matches. Try part of the name.</div>'
-    return
+}
+
+const title = (bl: Block) => bl.time + (bl.n > 1 ? ` · ${bl.n} matches` : '')
+
+/** A new card that starts at line `a`, for the match on line `h`. */
+function card(v: View, a: number, h: number): Block {
+  const div = el('div', 'hit')
+  const headRow = el('div', 'hit-head')
+  const head = el('span')
+  const copy = el('button', '', 'Copy')
+  headRow.append(head, copy)
+  div.append(headRow)
+  const bl: Block = { div, head, a, b: a - 1, n: 1, time: v.lines[h]!.time }
+  head.textContent = title(bl)
+  copy.onclick = () => {
+    const txt: string[] = []
+    for (let i = bl.a; i <= bl.b; i++) txt.push(v.lines[i]!.time + '  ' + v.lines[i]!.text)
+    void navigator.clipboard.writeText(txt.join('\n')).then(() => toast())
   }
-  // Merge matches that sit close together so context isn't repeated.
-  const blocks: { a: number; b: number; hits: number[] }[] = []
-  for (const i of hits) {
-    const a = Math.max(0, i - ctx)
-    const b = Math.min(lines.length - 1, i + ctx)
-    const last = blocks[blocks.length - 1]
-    if (last && a <= last.b + 1) {
-      last.b = b
-      last.hits.push(i)
-    } else blocks.push({ a, b, hits: [i] })
-  }
+  return bl
+}
+
+function addLine(v: View, bl: Block, i: number, hit: boolean): void {
+  const ln = v.lines[i]!
+  const row = el('div', hit ? 'line m' : 'line')
+  const text = el('span')
+  if (hit) highlight(text, ln.text, v.q)
+  else text.textContent = ln.text
+  row.append(el('span', 't', ln.time), text)
+  bl.div.append(row)
+  bl.b = i
+}
+
+/** Context lines after what the card has drawn, up to line `to`. */
+function addLines(v: View, bl: Block, to: number): void {
+  for (let i = bl.b + 1; i <= to; i++) addLine(v, bl, i, false)
+}
+
+/** The lines after match `k` (drawn last), up to `ctx`, stopping before the next match: it is drawn in its turn. */
+function trail(v: View, k: number): void {
+  const next = v.hits[k + 1] ?? Infinity
+  addLines(v, v.last!, Math.min(v.hits[k]! + v.ctx, next - 1, v.lines.length - 1))
+}
+
+/** Draw matches up to the limit, carrying on from the last one drawn. */
+function draw(): void {
+  const v = view!
+  const res = $('results')
+  const end = Math.min(v.hits.length, v.limit)
+  if (v.shown >= end) return
+  res.querySelector(':scope > .empty')?.remove()
   const frag = document.createDocumentFragment()
-  for (const bl of blocks) {
-    const div = document.createElement('div')
-    div.className = 'hit'
-    const n = bl.hits.length
-    div.innerHTML = `<div class="hit-head"><span>${esc(lines[bl.hits[0]!]!.time)}${n > 1 ? ' · ' + n + ' matches' : ''}</span><button>Copy</button></div>`
-    for (let i = bl.a; i <= bl.b; i++) {
-      const m = bl.hits.includes(i)
-      const line = document.createElement('div')
-      line.className = 'line' + (m ? ' m' : '')
-      line.innerHTML = `<span class="t">${esc(lines[i]!.time)}</span><span>${m ? highlight(lines[i]!.text, q) : esc(lines[i]!.text)}</span>`
-      div.appendChild(line)
+  for (; v.shown < end; v.shown++) {
+    const h = v.hits[v.shown]!
+    let bl = v.last
+    if (bl && h - v.ctx <= bl.b + 1) {
+      bl.n++
+      bl.head.textContent = title(bl)
+    } else {
+      bl = card(v, Math.max(h - v.ctx, (bl?.b ?? -1) + 1), h)
+      frag.append(bl.div)
+      v.last = bl
     }
-    div.querySelector('button')!.onclick = () => {
-      const txt: string[] = []
-      for (let i = bl.a; i <= bl.b; i++) txt.push(lines[i]!.time + '  ' + lines[i]!.text)
-      navigator.clipboard.writeText(txt.join('\n')).then(() => toast())
-    }
-    frag.appendChild(div)
+    addLines(v, bl, h - 1)
+    addLine(v, bl, h, true)
+    trail(v, v.shown)
   }
-  res.appendChild(frag)
+  res.append(frag)
+}
+
+/** New lines of the open show (live): searched and drawn on their own, the rest stays as it is. */
+function append(cur: Current, rows: CapturedRow[]): void {
+  const from = cur.lines.length
+  for (const r of rows) cur.lines.push(toLine(r))
+  cur.lastSeq = rows[rows.length - 1]?.seq ?? cur.lastSeq
+  const v = view
+  if (v && v.lines === cur.lines) {
+    const caughtUp = v.shown === v.hits.length
+    for (let i = from; i < cur.lines.length; i++) if (cur.lines[i]!.text.toLowerCase().includes(v.q)) v.hits.push(i)
+    // The newest match drawn was near the end of the show: it may be owed lines after it.
+    if (caughtUp && v.shown) trail(v, v.shown - 1)
+    draw()
+  }
+  summarize()
+}
+
+/** One live refresh at a time; broadcasts that arrive meanwhile fold into one more. */
+let refreshing: Promise<void> | null = null
+let refreshAgain = false
+function liveUpdate(): void {
+  if (refreshing) {
+    refreshAgain = true
+    return
+  }
+  refreshing = refresh()
+    .catch(() => {})
+    .finally(() => {
+      refreshing = null
+      if (refreshAgain) {
+        refreshAgain = false
+        liveUpdate()
+      }
+    })
+}
+
+async function refresh(): Promise<void> {
+  index = await listShows()
+  fillShows($<HTMLSelectElement>('show').value)
+  const cur = current
+  if (!cur || cur.id === 'file') return
+  const { meta, rows } = await rowsAfter(cur.id, cur.lastSeq)
+  if (cur !== current) return // another show was opened meanwhile
+  if (!meta || cur.lines.length + rows.length !== meta.count) {
+    // Deleted, or lines that did not arrive in seq order: read the show again.
+    await openShow(cur.id)
+    return
+  }
+  cur.updatedAt = meta.updatedAt
+  cur.meta = meta
+  if (rows.length) append(cur, rows)
+  $('live').classList.toggle('on', isLive())
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined
@@ -162,7 +305,7 @@ $<HTMLInputElement>('file').onchange = (e) => {
   const f = input.files?.[0]
   if (!f) return
   f.text().then((body) => {
-    fileShow = { id: 'file', label: f.name, lines: parseTxt(body) }
+    fileShow = { id: 'file', label: f.name, lines: parseTxt(body), lastSeq: -1 }
     fillShows('file')
     void openShow('file')
   })
@@ -172,10 +315,13 @@ $<HTMLInputElement>('file').onchange = (e) => {
 $('dl').onclick = () => {
   if (!current) return
   const body = current.lines.map((r) => r.time + '\t' + r.text).join('\n')
+  const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }))
   const a = document.createElement('a')
-  a.href = URL.createObjectURL(new Blob([body], { type: 'text/plain' }))
+  a.href = url
   a.download = current.meta ? `Whatnot_${current.meta.date}_show.txt` : current.label
   a.click()
+  // The download has its own copy by then; otherwise the whole show stays in memory until the tab closes.
+  setTimeout(() => URL.revokeObjectURL(url), 5000)
 }
 
 $('del').onclick = async () => {
@@ -194,6 +340,12 @@ $('del').onclick = async () => {
 
 $<HTMLSelectElement>('show').onchange = (e) => void openShow((e.target as HTMLSelectElement).value)
 $('go').onclick = run
+$('moreBtn').onclick = () => {
+  if (!view) return
+  view.limit += PAGE
+  draw()
+  summarize()
+}
 // The toolbar icon opens this page off Whatnot, so Settings (pairing) has to be reachable from here.
 $('settings').onclick = () => void chrome.runtime.openOptionsPage()
 let typing: ReturnType<typeof setTimeout> | undefined
@@ -206,13 +358,7 @@ $('ctx').onchange = run
 if (isExtensionPage()) {
   // Live updates while the show is still recording.
   chrome.runtime.onMessage.addListener((msg: Broadcast) => {
-    if (msg.cmd !== 'showUpdated') return
-    void (async () => {
-      index = await listShows()
-      const keep = $<HTMLSelectElement>('show').value
-      fillShows(keep)
-      if (current && current.id === msg.showId) await openShow(msg.showId)
-    })()
+    if (msg.cmd === 'showUpdated') liveUpdate()
   })
   setInterval(() => $('live').classList.toggle('on', isLive()), 15_000)
 

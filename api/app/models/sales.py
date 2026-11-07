@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -83,6 +84,13 @@ class Sale(db.Model):
     __table_args__ = (
         Index("ix_sales_show_buyer", "show_id", "buyer_username"),
         Index("ix_sales_org_status", "organization_id", "status"),
+        # The parser's shop-wide "same win?" lookups (migration 0017).
+        Index(
+            "ix_sales_org_lower_buyer",
+            "organization_id",
+            text("lower(buyer_username)"),
+            "price_cents",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

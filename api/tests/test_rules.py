@@ -2,7 +2,10 @@ import json
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 from app.models import EventKind
+from app.services import rules
 from app.services.rules import classify
 
 CORPUS = Path(__file__).parent / "fixtures" / "chat_corpus.jsonl"
@@ -85,3 +88,26 @@ def test_split_winner_lines_are_recognised_but_never_trusted():
         assert classify("cardguy", body, "", host=HOST).kind is EventKind.chatter, body
     # the host's own name never becomes the buyer
     assert classify(HOST, "won the auction!", "", host=HOST).kind is EventKind.chatter
+
+
+@pytest.mark.parametrize(
+    "title,choice",
+    [
+        ("CHOOSE ANY PRODUCT YOU WANT #73", True),
+        ("CHOOSE ANY PRODUCT YOU WANT #73 🔥", True),
+        ("pick your item #4", True),
+        ("Pick 1 from the wall #12", True),
+        ("YOUR CHOICE #5", True),
+        ("Buyer's choice #9", True),
+        ("Pick-Up Sticks #3", False),
+        ("Choose Your Own Adventure #12", False),
+        ("Pick n Mix candy #2", False),
+        ("Pick 6 scratch card #3", False),
+        ("Red bundle #752", False),
+        ("Quick Hit 3", False),
+        ("", False),
+    ],
+)
+def test_pick_your_own_titles(title, choice):
+    """Only titles that say the winner chooses skip the paid AI product check (#17)."""
+    assert rules.is_choice_title(title) is choice

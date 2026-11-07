@@ -618,3 +618,118 @@ def test_two_shows_parsed_at_the_same_moment_still_make_one_sale(app, world, mon
     assert len(sale_rows(app, world["show"]) + sale_rows(app, other)) == 1
     assert reasons(app) == ["possible_duplicate"]
     assert level(app, world["red"]) == (2, 0)
+
+
+# ---- one parse per show at a time (architecture review 2026-11-07, #4) ----
+
+
+NOW = datetime(2026, 11, 7, 2, 0, tzinfo=UTC)
+
+
+def _hold_parse(app, show_id, started, release):
+    """Parse the show in its own transaction and keep it open until `release` is set."""
+    with app.app_context():
+        try:
+            pipeline.process_show(show_id)
+            started.set()
+            release.wait(10)
+            db.session.commit()
+        finally:
+            started.set()
+            db.session.remove()
+
+
+def test_parse_now_during_another_parse_answers_409_at_once(app, client, world):
+    from tests.test_order_slips import signed_in
+
+    _add(app, world["show"], 1, "bob won the auction for Red bundle #1 for $25.00", at=NOW)
+    h = signed_in(app, client, world["org"])
+    started, release = threading.Event(), threading.Event()
+    holder = threading.Thread(target=_hold_parse, args=(app, world["show"], started, release))
+    holder.start()
+    try:
+        assert started.wait(10)
+        t = time.perf_counter()
+        r = client.post(f"/api/shows/{world['show']}/parse", json={}, headers=h)
+        assert r.status_code == 409 and "being parsed" in r.get_json()["error"]
+        assert time.perf_counter() - t < 2  # not waiting for the other transaction
+    finally:
+        release.set()
+        holder.join()
+    # One sale, and its stock moved once: RED had 3; one paid win commits one.
+    assert len(sale_rows(app, world["show"])) == 1
+    assert level(app, world["red"]) == (2, 0)
+    r = client.post(f"/api/shows/{world['show']}/parse", json={}, headers=h)
+    assert r.status_code == 200
+    assert len(sale_rows(app, world["show"])) == 1 and level(app, world["red"]) == (2, 0)
+
+
+def test_a_parse_job_that_finds_the_show_busy_comes_back_without_spending_an_attempt(
+    app, world, monkeypatch
+):
+    from app.models import Job, JobStatus
+    from app.services import jobs
+
+    monkeypatch.delenv("JOBS_INLINE", raising=False)
+    _add(app, world["show"], 1, "bob won the auction for Red bundle #1 for $25.00", at=NOW)
+    with app.app_context():
+        job = pipeline.schedule_parse(db.session.get(Show, world["show"]), delay_s=0)
+        db.session.commit()
+        job_id = job.id
+    started, release = threading.Event(), threading.Event()
+    holder = threading.Thread(target=_hold_parse, args=(app, world["show"], started, release))
+    holder.start()
+    try:
+        assert started.wait(10)
+        with app.app_context():
+            done = jobs.run_once("test-worker")
+            assert done.id == job_id and done.status is JobStatus.done and done.attempts == 1
+            again = db.session.scalars(
+                select(Job).where(Job.kind == "parse_show", Job.id != job_id)
+            ).all()
+            assert [(j.status, j.attempts, j.payload["show_id"]) for j in again] == [
+                (JobStatus.queued, 0, world["show"])
+            ]
+            assert again[0].run_at > datetime.now(UTC)
+    finally:
+        release.set()
+        holder.join()
+    assert len(sale_rows(app, world["show"])) == 1
+    assert level(app, world["red"]) == (2, 0)
+    with app.app_context():
+        assert jobs.run_once("test-worker") is None  # not due yet: comes back in 5 s
+        again[0].run_at = datetime.now(UTC)
+        db.session.merge(again[0])
+        db.session.commit()
+        done = jobs.run_once("test-worker")
+        assert done.status is JobStatus.done
+    assert len(sale_rows(app, world["show"])) == 1 and level(app, world["red"]) == (2, 0)
+
+
+def test_an_inline_parse_waits_for_the_show_instead_of_skipping_it(app, world, monkeypatch):
+    """Dev/e2e (JOBS_INLINE): no queue to come back through, so a busy show is waited for."""
+    monkeypatch.setenv("JOBS_INLINE", "1")
+    _add(app, world["show"], 1, "bob won the auction for Red bundle #1 for $25.00", at=NOW)
+    started, release = threading.Event(), threading.Event()
+    holder = threading.Thread(target=_hold_parse, args=(app, world["show"], started, release))
+    holder.start()
+    try:
+        assert started.wait(10)
+        _add(app, world["show"], 2, "amy won the auction for Red bundle #2 for $25.00", at=NOW)
+        threading.Timer(0.5, release.set).start()
+        with app.app_context():
+            pipeline.schedule_parse(db.session.get(Show, world["show"]), delay_s=0)
+            db.session.commit()
+    finally:
+        release.set()
+        holder.join()
+    with app.app_context():
+        unparsed = db.session.scalar(
+            select(db.func.count())
+            .select_from(ChatMessage)
+            .where(
+                ChatMessage.show_id == world["show"],
+                ChatMessage.id.not_in(select(ParsedEvent.message_id)),
+            )
+        )
+    assert unparsed == 0 and len(sale_rows(app, world["show"])) == 2

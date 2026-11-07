@@ -18,12 +18,19 @@ const TAKEOVER = 'chat-scraper:takeover'
 if (!window.__csAlive?.()) {
   document.dispatchEvent(new CustomEvent(TAKEOVER))
   window.__csAlive = () => !!chrome.runtime?.id
-  const controller = new Controller()
-  // A page script can send this event too, so only a copy that really is cut off obeys it.
-  document.addEventListener(TAKEOVER, () => {
-    if (!chrome.runtime?.id) controller.destroy()
-  })
+  // Null once retired. The listeners below (and __csAlive, which shares this scope) outlive
+  // this copy; holding the Controller would keep the old show's whole log in memory.
+  let controller: Controller | null = new Controller()
+  const retire = () => {
+    // A page script can send this event too, so only a copy that really is cut off obeys it.
+    if (chrome.runtime?.id || !controller) return
+    controller.destroy()
+    controller = null
+    document.removeEventListener(TAKEOVER, retire)
+  }
+  document.addEventListener(TAKEOVER, retire)
   chrome.runtime.onMessage.addListener((msg: Broadcast, _sender, sendResponse) => {
+    if (!controller) return
     if (msg.cmd === 'toggle') controller.toggle()
     else if (msg.cmd === 'ping') sendResponse({ recording: controller.capturing } satisfies PingReply)
     else if (msg.cmd === 'released') controller.release(msg.showId)

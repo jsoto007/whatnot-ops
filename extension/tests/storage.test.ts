@@ -2,8 +2,10 @@ import { IDBFactory } from 'fake-indexeddb'
 import {
   KV_SESSION,
   deleteShow,
+  getDb,
   getRows,
   getShow,
+  hasPending,
   kvGet,
   listShows,
   markParked,
@@ -45,6 +47,48 @@ describe('db', () => {
     expect(meta.date).toBe('2026-10-19')
     expect(meta.url).toBe('/live/x')
     expect((await getRows(show.id)).map((r) => r.seq)).toEqual([1, 2, 3])
+  })
+
+  it('keeps the count by adding the rows that were new, never recounting the show', async () => {
+    await putRows(show, [row(show.id, 1), row(show.id, 2)]) // a new show: counted once
+    const count = vi.spyOn(IDBIndex.prototype, 'count')
+    try {
+      // 2 re-sent, 3 twice in one batch.
+      expect((await putRows(show, [row(show.id, 2), row(show.id, 3), row(show.id, 3)])).count).toBe(3)
+      expect((await putRows(show, [row(show.id, 1), row(show.id, 2), row(show.id, 3)])).count).toBe(3)
+      expect((await putRows(show, [])).count).toBe(3)
+      expect((await putRows(show, [row(show.id, 4)])).count).toBe(4)
+      expect(count).not.toHaveBeenCalled()
+    } finally {
+      count.mockRestore()
+    }
+    expect((await getShow(show.id))!.count).toBe((await getRows(show.id)).length)
+  })
+
+  it('counts a show saved by an older build once, then keeps its count', async () => {
+    const db = await getDb()
+    // As an older build left it: rows stored and a count, but no flag (99 here, to see it replaced).
+    for (let s = 1; s <= 5; s++) await db.put('rows', { ...row(show.id, s), uploaded: 1 })
+    await db.put('shows', { id: show.id, startedAt: show.id, updatedAt: 1, count: 99, date: '2026-10-19' })
+    const count = vi.spyOn(IDBIndex.prototype, 'count')
+    try {
+      expect((await putRows(show, [row(show.id, 5), row(show.id, 6)])).count).toBe(6)
+      expect(count).toHaveBeenCalledTimes(1)
+      expect((await putRows(show, [row(show.id, 6), row(show.id, 7)])).count).toBe(7)
+      expect(count).toHaveBeenCalledTimes(1)
+    } finally {
+      count.mockRestore()
+    }
+    expect((await getRows(show.id)).length).toBe(7)
+  })
+
+  it("a row filed under another show keeps that show's count right", async () => {
+    const other = { id: '2026-10-18T20:00:00.000Z', startedAt: '2026-10-18T20:00:00.000Z' }
+    await putRows(other, [row(other.id, 1)])
+    await putRows(show, [row(show.id, 1), row(other.id, 2)])
+    expect((await getShow(show.id))!.count).toBe(1)
+    expect((await getShow(other.id))!.count).toBe(2)
+    expect((await getRows(other.id)).length).toBe(2)
   })
 
   it('returns rows in seq order even when inserted out of order', async () => {
@@ -91,6 +135,27 @@ describe('db', () => {
     await markUploaded([`${old.id}-2`])
     expect(await pruneShows()).toEqual([old.id])
     expect(await getShow(old.id)).toBeUndefined()
+  })
+
+  it('tells whether a show still has rows to send, looking up only the first', async () => {
+    const other = { id: '2026-10-18T20:00:00.000Z', startedAt: '2026-10-18T20:00:00.000Z' }
+    await putRows(show, [row(show.id, 1), row(show.id, 2)])
+    await putRows(other, [row(other.id, 1)])
+    await markUploaded([`${other.id}-1`])
+    const count = vi.spyOn(IDBIndex.prototype, 'count')
+    try {
+      expect(await hasPending(show.id)).toBe(true)
+      expect(await hasPending(other.id)).toBe(false)
+      expect(await hasPending('2026-01-01T00:00:00.000Z')).toBe(false)
+      await markUploaded([`${show.id}-1`])
+      expect(await hasPending(show.id)).toBe(true)
+      await markParked([`${show.id}-2`])
+      expect(await hasPending(show.id)).toBe(false)
+      expect(await pruneShows(1)).toEqual([other.id])
+      expect(count).not.toHaveBeenCalled()
+    } finally {
+      count.mockRestore()
+    }
   })
 
   it('prunes a show whose waiting rows were set aside', async () => {

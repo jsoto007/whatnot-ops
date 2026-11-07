@@ -43,6 +43,8 @@ from . import rules, sale_chat, shipments
 from .orders import STANDING
 
 NO_PICK = "No Pick"
+# One printed line per unit of a lot, up to this many; past it the buyer is flagged.
+MAX_UNIT_ROWS = 50
 
 
 def product_label(sale: Sale) -> str:
@@ -193,10 +195,13 @@ def build(show: Show) -> dict:
         product = lot_product(s, lot)
         if gift and product == NO_PICK:
             product = "Gift"
-        b["needsReview"] |= (product == NO_PICK) or (
-            s is not None and s.status is SaleStatus.detected
+        b["needsReview"] |= (
+            (product == NO_PICK)
+            or (s is not None and s.status is SaleStatus.detected)
+            # More units than a box holds is a misread Qty column, not 999 lines to print.
+            or lot.quantity > MAX_UNIT_ROWS
         )
-        for unit in range(max(1, lot.quantity)):
+        for unit in range(min(max(1, lot.quantity), MAX_UNIT_ROWS)):
             first = unit == 0
             b["rows"].append(
                 {
@@ -223,10 +228,10 @@ def build(show: Show) -> dict:
         if s.id in used:
             continue
         b = buyer(s.buyer_username)
-        b["needsReview"] |= s.status is SaleStatus.detected
+        b["needsReview"] |= s.status is SaleStatus.detected or s.quantity > MAX_UNIT_ROWS
         auction = rules.lot_label(s.item_text, s.auction_type)
         product = product_label(s)
-        for unit in range(max(1, s.quantity)):
+        for unit in range(min(max(1, s.quantity), MAX_UNIT_ROWS)):
             first = unit == 0
             b["rows"].append(
                 {

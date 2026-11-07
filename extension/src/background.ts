@@ -25,6 +25,7 @@ import { migrateLegacyStorage } from './storage/migrate'
 import { type Tabs, claimRecording, endRecording, forgetRecording, resumeFor } from './storage/recording'
 import { clampRow, clampUrl } from './upload/limits'
 import { configured, loadSettings } from './upload/settings'
+import { UploadTimer } from './upload/schedule'
 import { UploadError, type UploadOutcome, backoffSeconds, uploadOnce } from './upload/uploader'
 
 const SEARCH_URL = () => chrome.runtime.getURL('search.html')
@@ -92,23 +93,30 @@ function notifyPages(showId: string): void {
 // ---------- upload queue ----------
 // Rows wait in IndexedDB with uploaded=0. A flush runs shortly after new rows
 // arrive, on a retry alarm after a failure (exponential backoff), every minute
-// as a safety net, and whenever the options page asks.
+// as a safety net, and whenever the options page asks. After a failure, new rows
+// wait for the backoff too (upload/schedule.ts): no try every 2 s during an outage.
 const ALARM_RETRY = 'cs_upload_retry'
 const ALARM_SWEEP = 'cs_upload_sweep'
+const SWEEP_MINUTES = 1
 let failures = 0
 let lastError: string | undefined
 let lastSentAt: number | undefined
 let flushing: Promise<UploadOutcome> | null = null
-let debounce: ReturnType<typeof setTimeout> | null = null
+const uploads = new UploadTimer(() => void flush())
 
-chrome.alarms.create(ALARM_SWEEP, { periodInMinutes: 1 })
+chrome.alarms.create(ALARM_SWEEP, { periodInMinutes: SWEEP_MINUTES })
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === ALARM_RETRY || a.name === ALARM_SWEEP) void flush()
 })
 
 function scheduleFlush(delayMs = 2000): void {
-  if (debounce) clearTimeout(debounce)
-  debounce = setTimeout(() => void flush(), delayMs)
+  uploads.soon(delayMs)
+}
+
+/** The connection changed (or a save went through): new rows upload shortly again. */
+function uploadsWork(): void {
+  failures = 0
+  uploads.reset()
 }
 
 async function flush(): Promise<UploadOutcome> {
@@ -121,7 +129,7 @@ async function flush(): Promise<UploadOutcome> {
         settings,
       )
       if (outcome.status === 'sent') {
-        failures = 0
+        uploadsWork()
         lastError = outcome.parked ? `${outcome.parked} lines set aside (the server refused them): ${outcome.detail ?? ''}` : undefined
         lastSentAt = Date.now()
         if (outcome.remaining > 0) scheduleFlush(250)
@@ -132,11 +140,16 @@ async function flush(): Promise<UploadOutcome> {
       lastError = e.message
       if (e.kind === 'offline') {
         failures++
+        uploads.backOff(backoffSeconds(failures) * 1000)
         chrome.alarms.create(ALARM_RETRY, { delayInMinutes: backoffSeconds(failures) / 60 })
         return { status: 'offline', detail: e.message }
       }
-      // auth: keep the rows, stop retrying until the connection changes or a sweep.
-      return e.kind === 'auth' ? { status: 'auth' } : { status: 'rejected', detail: e.message }
+      if (e.kind === 'auth') {
+        // Keep the rows, stop retrying until the connection changes or a sweep: new rows wait too.
+        uploads.backOff(SWEEP_MINUTES * 60_000)
+        return { status: 'auth' }
+      }
+      return { status: 'rejected', detail: e.message }
     } finally {
       flushing = null
       counts = null // what is pending changed
@@ -173,7 +186,7 @@ async function uploadStatus(full = false): Promise<UploadStatus> {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes['cs_server_url']) {
-    failures = 0
+    uploadsWork()
     scheduleFlush(100)
   }
 })
@@ -209,7 +222,7 @@ function cleanRecording(msg: Extract<Request, { cmd: 'recording' }>): Extract<Re
 async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promise<unknown> {
   switch (msg.cmd) {
     case 'settingsChanged':
-      failures = 0
+      uploadsWork()
       lastError = undefined
       scheduleFlush(100)
       return { ok: true }

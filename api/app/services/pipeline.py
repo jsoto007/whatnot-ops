@@ -29,7 +29,7 @@ from ..models import (
 )
 from . import catalog, inventory, rules
 from .inventory import Actor
-from .jobs import enqueue, handler
+from .jobs import enqueue, handler, inline
 
 log = logging.getLogger(__name__)
 RULE_ACTOR = Actor("rule", None, "rules")
@@ -568,10 +568,45 @@ def _round(sale: Sale) -> str:
 # ---------- the pass over a show ----------
 
 
-def process_show(show_id: int, *, reparse: bool = False, host: str | None = None) -> Stats:
+class ParseBusy(Exception):
+    """Another transaction is parsing this show right now (the worker, a person's "Parse
+    now", or a second worker while a deploy overlaps the old one)."""
+
+
+# The class half of the (class, show id) advisory lock: the two-int key space never meets
+# `_lock_buyer`'s single 64-bit keys.
+PARSE_LOCK = 0x5061_7273  # "Pars"
+
+
+def _lock_show(show_id: int, *, wait: bool = False) -> bool:
+    """Take this show's parse lock for the transaction; without `wait`, only if it is free.
+    Two parses of one show at once would both read the same unparsed lines; the second then
+    waited for the first's whole transaction and died on uq_parsed_events_message (a 500 for
+    "Parse now")."""
+    if wait:
+        db.session.execute(
+            text("SELECT pg_advisory_xact_lock(:cls, :show)"), {"cls": PARSE_LOCK, "show": show_id}
+        )
+        return True
+    return bool(
+        db.session.scalar(
+            text("SELECT pg_try_advisory_xact_lock(:cls, :show)"),
+            {"cls": PARSE_LOCK, "show": show_id},
+        )
+    )
+
+
+def process_show(
+    show_id: int, *, reparse: bool = False, host: str | None = None, wait: bool = False
+) -> Stats:
+    """Parse the show's unparsed lines in the caller's transaction. When another transaction
+    is parsing the same show: raises ParseBusy having changed nothing, or with `wait` waits
+    for it to finish (inline jobs, which have no queue to come back through)."""
     show = db.session.get(Show, show_id)
     if show is None:
         raise ValueError(f"show {show_id} not found")
+    if not _lock_show(show.id, wait=wait):
+        raise ParseBusy(f"show {show_id} is being parsed")
     stats = Stats()
     host = host or show.organization.host_username
     if reparse:
@@ -978,7 +1013,20 @@ def _flag_chat_sale_for_the_same_win(show: Show, sale: Sale, m: ChatMessage) -> 
 
 @handler("parse_show")
 def _parse_show_job(payload: dict) -> None:
-    process_show(int(payload["show_id"]), reparse=bool(payload.get("reparse")))
+    show_id, reparse = int(payload["show_id"]), bool(payload.get("reparse"))
+    try:
+        # Inline (dev, e2e) there is no queue to come back through: wait for the holder.
+        process_show(show_id, reparse=reparse, wait=inline())
+    except ParseBusy:
+        # Someone else holds the show: come back shortly rather than spend an attempt. The
+        # holder may not see lines committed after it started, so this run is still needed.
+        db.session.rollback()
+        show = db.session.get(Show, show_id)
+        if show is not None:
+            schedule_parse(show, reparse=reparse, delay_s=BUSY_RETRY_S)
+
+
+BUSY_RETRY_S = 5
 
 
 def schedule_parse(show: Show, *, reparse: bool = False, delay_s: int = 3):
