@@ -117,6 +117,16 @@ def lot_number(item: str) -> int | None:
     return int(m["n"] or m["h"]) if m else None
 
 
+# A lot named anywhere in a chat line: "#72 red please", "red one for #72", "quick hit 2".
+# A bare number ("for 72") is not enough: it may be a price or a quantity.
+_LOT_REF = re.compile(rf"\b{_LOT_WORDS}\s*#?\s*(\d{{1,6}})\b|#\s?(\d{{1,6}})\b", re.I)
+
+
+def lot_refs(text: str) -> set[int]:
+    """The lot numbers a chat line names, so a pick can go to the lot it is about."""
+    return {int(m[1] or m[2]) for m in _LOT_REF.finditer(text or "")}
+
+
 # ---- platform / host confirmation lines (a sale) ----
 SALE_PATTERNS = [
     # "X won the auction!" (no item named; the pipeline fills it from the last listing)

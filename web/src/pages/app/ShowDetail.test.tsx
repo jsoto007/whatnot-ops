@@ -69,8 +69,8 @@ test('a sale shows when it was won, in Central time, and opens what the winner s
   mount([
     sale({
       chat: [
-        { seq: 30, username: 'jess_pulls', body: 'can I get the Mega bundle instead? $60', capturedAt: '2026-10-25T01:38:35Z', role: 'buyer' },
-        { seq: 31, username: 'host_shop', body: 'jess_pulls sure, swapping you to Mega', capturedAt: '2026-10-25T01:39:05Z', role: 'host' },
+        { seq: 30, username: 'jess_pulls', body: 'can I get the Mega bundle instead? $60', capturedAt: '2026-10-25T01:38:35Z', role: 'buyer', after: true, namesLot: false },
+        { seq: 31, username: 'host_shop', body: 'jess_pulls sure, swapping you to Mega', capturedAt: '2026-10-25T01:39:05Z', role: 'host', after: true, namesLot: false },
       ],
     }),
     sale({ id: 2, buyer: 'kat.c', seq: 40, wonAt: null, chat: [] }),

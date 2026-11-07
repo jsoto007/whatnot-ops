@@ -10,9 +10,8 @@ import pytest
 from sqlalchemy import func, select
 
 from app.db import db
-from app.models import Organization, Sale, Show, WhatnotLot, WhatnotShipment
+from app.models import Sale, Show, WhatnotLot, WhatnotShipment
 from app.services import order_slips, shipments
-from app.services.devices import create_device
 from tests.test_pipeline import run
 
 
@@ -86,18 +85,6 @@ def test_the_show_filter_label_names_the_show_date(label, expected):
 )
 def test_items_cell_reads_as_a_count(text, lines, expected):
     assert shipments.item_count(text, lines) == expected
-
-
-@pytest.fixture
-def shop(app, world):
-    """The world's shop (a show today) with a paired laptop; returns ids and the key header."""
-    with app.app_context():
-        org = db.session.get(Organization, world["org"])
-        show = db.session.get(Show, world["show"])
-        show.show_date = date(2026, 10, 31)
-        _, key = create_device(org, "packing laptop")
-        db.session.commit()
-    return {**world, "auth": {"Authorization": "Bearer " + key}}
 
 
 def row(recipient, items="1", order_date="Oct 31, 2026", value="$14.89", status="Unfulfilled"):

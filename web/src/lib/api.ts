@@ -256,6 +256,10 @@ export interface SaleChatLine {
   body: string
   capturedAt: string
   role: 'buyer' | 'host' | 'platform' | 'other'
+  /** Said after the win (else in the two minutes before it). */
+  after: boolean
+  /** Names the lot by its number ("#73"), which is how it was tied to this win. */
+  namesLot: boolean
 }
 export interface ReviewItem {
   id: number
@@ -332,8 +336,13 @@ export interface SlipRow {
   inApp: boolean
   /** False for an app sale Whatnot's Shipments read does not list. */
   onWhatnot: boolean
-  /** For a "No Pick" row: what the winner (or the host, about them) said in chat around the win. */
+  /**
+   * For a "No Pick" row: what the winner (or the host, about them) said in chat after the win,
+   * oldest first. With `saidMore` > 0 it is the first line, then the last ones: that many were
+   * left out after the first.
+   */
   said: string[]
+  saidMore: number
 }
 export interface BuyerSlip {
   username: string

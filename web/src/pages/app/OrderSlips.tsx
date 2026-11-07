@@ -81,7 +81,7 @@ function WhatnotCheck({ doc }: { doc: Doc }) {
     return (
       <div className={`card small ${clean ? '' : 'warn-card'}`} data-testid="whatnot-check">
         <b>Pick list from Whatnot</b> · {count(w.lots, 'lot')} in {read}
-        <div>One row per Whatnot lot. The product is the one in the app, or "No Pick" with what the winner said in chat, for you to pick.</div>
+        <div>One row per Whatnot lot. The product is the one in the app, or "No Pick" with what the winner said in chat after the win (their latest word last), for you to pick.</div>
         {clean && <div>Every lot matches a win in the app.</div>}
         {w.lotsNotInApp > 0 && (
           <div data-testid="lots-not-in-app">
@@ -196,6 +196,14 @@ function Slip({ b, date, showId, canEdit }: { b: BuyerSlip; date: string; showId
   )
 }
 
+/** The winner's lines, oldest first; with more than fit, the first one, how many were left out, then the last (a changed mind comes last). */
+function saidText(r: SlipRow): string {
+  const quoted = r.said.map((t) => `“${t}”`)
+  if (!r.saidMore) return quoted.join(' · ')
+  const [first, ...rest] = quoted
+  return [first, `… ${r.saidMore} more …`, ...rest].join(' · ')
+}
+
 function Row({ r, date, buyer, showId, canEdit }: { r: SlipRow; date: string; buyer: string; showId: string; canEdit: boolean }) {
   const qc = useQueryClient()
   const gifts = useMutation({
@@ -219,7 +227,7 @@ function Row({ r, date, buyer, showId, canEdit }: { r: SlipRow; date: string; bu
         {r.product} <span className="tick" />
         {r.said.length > 0 && (
           <div className="slip-said small" data-testid="slip-said">
-            Chat: {r.said.map((t) => `“${t}”`).join(' · ')}
+            Chat: {saidText(r)}
           </div>
         )}
       </td>
