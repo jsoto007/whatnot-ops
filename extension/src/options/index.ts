@@ -86,9 +86,13 @@ async function connectWith(origin: string, apiKey: string, organization?: string
   return note
 }
 
+// Set once someone types an address: the stored one, read a moment later, must not replace it.
+let urlTyped = false
+url.addEventListener('input', () => (urlTyped = true))
+
 async function init(): Promise<void> {
   const s = await loadSettings()
-  url.value = s.serverUrl
+  if (!urlTyped) url.value = s.serverUrl
   key.value = ''
   showConnected(!!s.apiKey)
   if (s.apiKey && s.serverUrl) {
