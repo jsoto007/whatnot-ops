@@ -327,3 +327,34 @@ def test_ai_status_and_audit_routes(client, app, world, fake_ai):
     )
     status = client.get("/api/review/ai-status").get_json()
     assert status["callsToday"] >= 1 and status["provider"] == "fake"
+
+
+def test_a_pick_your_own_win_asks_no_ai_which_product(app, world, monkeypatch):
+    """ "CHOOSE ANY PRODUCT YOU WANT #73" names no product; the winner picks in chat, which
+    the AI is not shown: no paid call (architecture review 2026-11-07, #17)."""
+    from app.models import Job
+
+    monkeypatch.setenv("AI_PROVIDER", "fake")
+    monkeypatch.delenv("JOBS_INLINE", raising=False)
+    world["say"](
+        app,
+        [
+            ("", "jess88 won the auction for CHOOSE ANY PRODUCT YOU WANT #73 for $17.00", "player"),
+            ("", "amy won the auction for Quick Hit 3 for $8.00", "player"),
+            ("", "kat won the auction for Mystery widget deluxe for $9.00", "player"),
+        ],
+    )
+    run(app, world["show"])
+    with app.app_context():
+        asked = db.session.scalars(select(Job).where(Job.kind == "ai_review_item")).all()
+        items = {
+            i.id: i.summary
+            for i in db.session.scalars(
+                select(ReviewItem).where(ReviewItem.reason == "unmatched_item")
+            )
+        }
+    assert len(items) == 3
+    # Only the pick-your-own lot is skipped: "Quick Hit 3" may still name a product here.
+    assert sorted(items[j.payload["item_id"]] for j in asked) == sorted(
+        s for s in items.values() if "CHOOSE ANY" not in s
+    )

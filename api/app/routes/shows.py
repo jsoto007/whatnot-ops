@@ -62,6 +62,7 @@ def _stats(show: Show) -> dict:
         select(Job)
         .where(Job.kind == "parse_show", Job.payload["show_id"].as_integer() == show.id)
         .order_by(Job.id.desc())
+        .limit(1)  # a long show leaves one job per upload batch
     )
     return {
         "parsed": sum(events.values()),
@@ -92,7 +93,13 @@ def parse_now(show_id: int):
     # A full parse of a long show is heavy: a shop gets a few a minute.
     ratelimit.per_org("parse", g.u.organization_id, 20, 60)
     reparse = bool((request.get_json(silent=True) or {}).get("reparse"))
-    stats = pipeline.process_show(show.id, reparse=reparse)
+    try:
+        stats = pipeline.process_show(show.id, reparse=reparse)
+    except pipeline.ParseBusy:
+        db.session.rollback()
+        return jsonify(
+            {"error": "This show is being parsed right now. Try again in a few seconds."}
+        ), 409
     audit.record(
         g.u.organization_id,
         "show.parsed",

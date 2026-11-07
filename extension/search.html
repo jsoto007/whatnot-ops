@@ -39,6 +39,8 @@
   .line.m { color: #fff; background: var(--navy3); border-left: 3px solid var(--green); }
   mark { background: var(--green); color: var(--navy); border-radius: 3px; padding: 0 2px; }
   .empty { text-align: center; color: var(--grey); padding: 50px 10px; }
+  .more { text-align: center; margin: 4px 0 10px; }
+  .more[hidden] { display: none; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--green); color: var(--navy); font-weight: 600; padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.on { opacity: 1; }
   input[type=file] { display: none; }
@@ -69,6 +71,7 @@
   </div>
   <div class="summary" id="summary"></div>
   <div id="results"></div>
+  <div class="more" id="more" hidden><button id="moreBtn">Show more</button></div>
 </main>
 <div class="toast" id="toast">Copied</div>
 <script src="search.js"></script>

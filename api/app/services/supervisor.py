@@ -18,6 +18,7 @@ from ..models import (
     AuditLog,
     ChatMessage,
     EventKind,
+    ParsedEvent,
     ReviewItem,
     ReviewStatus,
     Sale,
@@ -562,6 +563,12 @@ def _ai_audit_show_job(payload: dict) -> None:
 def schedule_review(item: ReviewItem) -> None:
     if provider_name() in ("", "none", "off"):
         return
+    if item.reason == "unmatched_item" and item.event_id is not None:
+        ev = db.session.get(ParsedEvent, item.event_id)
+        if ev is not None and rules.is_choice_title(ev.item_text):
+            # "CHOOSE ANY PRODUCT YOU WANT #73": the winner picks in chat, which the AI is
+            # not shown, so a call could only cost. ("Red bundle 3" may still be a product.)
+            return
     enqueue(
         "ai_review_item",
         {"item_id": item.id},

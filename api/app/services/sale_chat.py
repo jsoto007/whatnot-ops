@@ -53,22 +53,69 @@ def _handle(name: str) -> str:
     return name.strip().lstrip("@").lower()
 
 
-def _names(text: str, buyer: str, *, bare: bool) -> bool:
-    """`text` names `buyer` as a whole handle: "@buyer" always, the bare handle when `bare`."""
+def _pattern(buyer: str, *, bare: bool) -> str:
     at = "@" if not bare else "@?"
     # Handles may hold "." and "-", so "@bob." ends at "bob" but "@bob.x" is someone else.
     end = r"(?!\w|[.-][\w.-])"
-    return re.search(rf"(?<![\w.@-]){at}{re.escape(buyer)}{end}", text, re.I) is not None
+    return rf"(?<![\w.@-]){at}{re.escape(buyer)}{end}"
 
 
-def _role(m: ChatMessage, buyer: str, host: str) -> str | None:
+def _names(text: str, buyer: str, *, bare: bool) -> bool:
+    """`text` names `buyer` as a whole handle: "@buyer" always, the bare handle when `bare`.
+    The reference definition; `_Named` answers the same question for many buyers at once."""
+    return re.search(_pattern(buyer, bare=bare), text, re.I) is not None
+
+
+# A handle as `_pattern` sees it: a run of handle characters that starts the text or follows
+# a character that cannot be in a handle, optionally right after such an "@".
+_RUN = re.compile(r"(?<![\w.@-])(@?)([\w.-]+)")
+# Buyers checked through `_RUN` (lower-case ASCII, as Whatnot handles are); anything else
+# keeps its own regex. Same answer as `_names`, except that look-alike letters `re.I` folds
+# into ASCII ("ſ", "ı", "İ") no longer name a buyer: stricter, the safe way for chat text.
+_PLAIN = re.compile(r"[a-z0-9_.-]+")
+
+
+class _Named:
+    """Which of a show's buyers a line names, in one pass over the line. Asking `_names`
+    per buyer cost (lines x buyers) regex searches, and past 256 buyers Python's regex cache
+    (512 patterns, two per buyer) recompiled every one: ~30 s for a 300-buyer show."""
+
+    def __init__(self, buyers):
+        self.plain = {b for b in buyers if _PLAIN.fullmatch(b)}
+        self.other = {
+            b: (re.compile(_pattern(b, bare=True), re.I), re.compile(_pattern(b, bare=False), re.I))
+            for b in buyers
+            if b not in self.plain
+        }
+
+    def __call__(self, text: str, *, bare: bool) -> set[str]:
+        found: set[str] = set()
+        for at, run in _RUN.findall(text):
+            if not (bare or at):
+                continue
+            run = run.lower()
+            if run in self.plain:
+                found.add(run)
+            # One trailing "." or "-" ends the handle ("@bob." is bob); two do not.
+            if len(run) > 1 and run[-1] in ".-" and run[:-1] in self.plain:
+                found.add(run[:-1])
+        for b, (with_or_without_at, with_at) in self.other.items():
+            if (with_or_without_at if bare else with_at).search(text):
+                found.add(b)
+        return found
+
+
+def _roles(m: ChatMessage, named: _Named, buyers: dict, host: str) -> list[tuple[str, str]]:
+    """(buyer, role) for each buyer in `buyers` the line is about, in `buyers` order: the
+    buyer's own line, else one naming them ("@buyer"; the bare handle from the host or the
+    platform)."""
     user = _handle(m.username)
-    if user == buyer:
-        return "buyer"
     is_host = bool(host) and user == host
-    if not _names(m.raw_text, buyer, bare=not user or is_host):
-        return None
-    return "platform" if not user else "host" if is_host else "other"
+    role = "platform" if not user else "host" if is_host else "other"
+    about = dict.fromkeys(named(m.raw_text or "", bare=not user or is_host), role)
+    if user in buyers:
+        about[user] = "buyer"
+    return [(b, about[b]) for b in buyers if b in about] if len(about) > 1 else list(about.items())
 
 
 def _line(m: ChatMessage, role: str, *, after: bool, names_lot: bool) -> dict:
@@ -128,15 +175,13 @@ def _fill(show: Show, sales: list[Sale], out: dict[int, list[dict]]) -> None:
     # No product and no word from the buyer since the win: their next line may be its pick.
     waiting = {s.id for s in sales if s.sku_id is None}
     since = min(won_at(s) for s in sales) - BEFORE
+    names = _Named(wins)
     for m in _lines(show, list(wins), host, since):
         if m.id in own:
             continue
         named = rules.lot_refs(m.body)
-        for buyer, w in wins.items():
-            role = _role(m, buyer, host)
-            if role is None:
-                continue
-            for sale, after, by_lot in _owners(w, m.captured_at, named, lots, waiting):
+        for buyer, role in _roles(m, names, wins, host):
+            for sale, after, by_lot in _owners(wins[buyer], m.captured_at, named, lots, waiting):
                 if role == "buyer":
                     waiting.discard(sale.id)
                 out[sale.id].append(_line(m, role, after=after, names_lot=by_lot))
@@ -178,15 +223,13 @@ def about_lots(show: Show, lots: list[WhatnotLot]) -> dict[int, list[dict]]:
     if not want:
         return out
     host = _handle(show.organization.host_username or "")
+    names = _Named(want)
     for m in _lines(show, list(want), host):
         named = rules.lot_refs(m.body)
         if not named:
             continue
-        for buyer, mine in want.items():
-            role = _role(m, buyer, host)
-            if role is None:
-                continue
-            for lot in mine:
+        for buyer, role in _roles(m, names, want, host):
+            for lot in want[buyer]:
                 if lot.lot_number in named:
                     out[lot.id].append(_line(m, role, after=True, names_lot=True))
     return out

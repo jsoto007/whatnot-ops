@@ -105,6 +105,21 @@ def lot_label(item: str, auction_type_: str = "") -> str:
 _CHOICE = re.compile(r"^(?:choose|pick)\b.{0,60}#\s?\d{1,6}[\s!.]*$", re.I)
 
 
+# Stricter than _CHOICE, for skipping paid AI checks: the title must say the winner chooses
+# ("CHOOSE ANY…", "pick your…", "YOUR CHOICE #5", "buyer's choice"), so a product named
+# "Pick-Up Sticks #3" or "Pick 6 scratch card #3" is not taken for one.
+_PICK_YOUR_OWN = re.compile(
+    r"^(?:(?:choose|pick)\s+(?:any|your|ur|one|1)\b(?!\s+own\s+adventure)"
+    r"|(?:your|buyer'?s|buyers|winner'?s|winners)\s+choice\b)",
+    re.I,
+)
+
+
+def is_choice_title(item: str) -> bool:
+    """A pick-your-own listing: the title itself says the winner chooses the product."""
+    return bool(_PICK_YOUR_OWN.match((item or "").strip()))
+
+
 def is_lot_title(item: str) -> bool:
     """True when the text is only a lot's title, so nobody has said which product it is."""
     t = (item or "").strip()

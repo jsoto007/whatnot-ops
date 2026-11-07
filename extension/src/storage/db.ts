@@ -13,8 +13,14 @@ export const MAX_SHOWS = 30
  */
 export type StoredRow = CapturedRow & { uploaded: 0 | 1 | 2 }
 
+/**
+ * A show as stored. `counted`: `count` is kept by adding each save's new rows. A show
+ * saved by an older build has no flag; its rows are counted once, on its next save.
+ */
+type StoredShow = ShowMeta & { counted?: true }
+
 interface CsDB extends DBSchema {
-  shows: { key: string; value: ShowMeta; indexes: { 'by-started': string } }
+  shows: { key: string; value: StoredShow; indexes: { 'by-started': string } }
   rows: {
     key: string
     value: StoredRow
@@ -57,26 +63,43 @@ export function resetDbForTests(): void {
 }
 
 const showRange = (showId: string) => IDBKeyRange.bound([showId, 0], [showId, Number.MAX_SAFE_INTEGER])
+/** Whether a row with this seq is in `showRange` (so in the show's count and in getRows). */
+const seqInRange = (seq: number) => seq >= 0 && seq <= Number.MAX_SAFE_INTEGER
 
-/** Add rows (idempotent by id) and refresh the show's metadata. Returns the new metadata. */
+/**
+ * Add rows (idempotent by id) and refresh the show's metadata. Returns the new metadata.
+ * The count goes up by the rows that were new: counting the show's index range walks
+ * every row it has, inside this write, so it is done once per show and then kept.
+ */
 export async function putRows(show: ShowRef, rows: CapturedRow[]): Promise<ShowMeta> {
   const db = await getDb()
   const tx = db.transaction(['rows', 'shows'], 'readwrite')
   const rowStore = tx.objectStore('rows')
+  const shows = tx.objectStore('shows')
+  // New rows per show; a re-sent row is already stored and adds nothing.
+  const added = new Map<string, number>()
   for (const r of rows) {
-    if ((await rowStore.getKey(r.id)) === undefined) await rowStore.add({ ...r, uploaded: 0 })
+    if ((await rowStore.getKey(r.id)) !== undefined) continue
+    await rowStore.add({ ...r, uploaded: 0 })
+    if (seqInRange(r.seq)) added.set(r.showId, (added.get(r.showId) ?? 0) + 1)
   }
-  const count = await rowStore.index('by-show-seq').count(showRange(show.id))
-  const prev = await tx.objectStore('shows').get(show.id)
-  const meta: ShowMeta = {
+  const prev = await shows.get(show.id)
+  const count = prev?.counted ? prev.count + (added.get(show.id) ?? 0) : await rowStore.index('by-show-seq').count(showRange(show.id))
+  const meta: StoredShow = {
     id: show.id,
     startedAt: show.startedAt,
     updatedAt: Date.now(),
     count,
     date: showDate(show.startedAt),
     url: show.url ?? prev?.url,
+    counted: true,
   }
-  await tx.objectStore('shows').put(meta)
+  await shows.put(meta)
+  // A row filed under another show still keeps that show's count right.
+  for (const [id, n] of added) {
+    const other = id === show.id ? undefined : await shows.get(id)
+    if (other?.counted) await shows.put({ ...other, count: other.count + n })
+  }
   await tx.done
   return meta
 }
@@ -85,6 +108,19 @@ export async function getRows(showId: string): Promise<CapturedRow[]> {
   const db = await getDb()
   const stored = await db.getAllFromIndex('rows', 'by-show-seq', showRange(showId))
   return stored.map(({ uploaded: _u, ...row }) => row)
+}
+
+/**
+ * The show's metadata and its rows with a seq above `afterSeq`, read together: Chat Search's
+ * live view adds what is new instead of reading the whole show again on every save.
+ */
+export async function rowsAfter(showId: string, afterSeq: number): Promise<{ meta: ShowMeta | undefined; rows: CapturedRow[] }> {
+  const db = await getDb()
+  const tx = db.transaction(['rows', 'shows'], 'readonly')
+  const range = IDBKeyRange.bound([showId, afterSeq], [showId, Number.MAX_SAFE_INTEGER], true, false)
+  const [meta, stored] = await Promise.all([tx.objectStore('shows').get(showId), tx.objectStore('rows').index('by-show-seq').getAll(range)])
+  await tx.done
+  return { meta, rows: stored.map(({ uploaded: _u, ...row }) => row) }
 }
 
 // ---------- upload outbox ----------
@@ -175,10 +211,13 @@ export async function deleteShow(showId: string): Promise<void> {
   await tx.done
 }
 
-/** True when some of the show's rows have not reached the server yet. */
-async function hasPending(showId: string): Promise<boolean> {
+/**
+ * True when some of the show's rows have not reached the server yet. Looks up the first
+ * one only: pruneShows runs on every save, and counting walked every waiting row.
+ */
+export async function hasPending(showId: string): Promise<boolean> {
   const range = IDBKeyRange.bound([0, showId, 0], [0, showId, Number.MAX_SAFE_INTEGER])
-  return (await (await getDb()).countFromIndex('rows', 'by-uploaded', range)) > 0
+  return (await (await getDb()).getKeyFromIndex('rows', 'by-uploaded', range)) !== undefined
 }
 
 /**

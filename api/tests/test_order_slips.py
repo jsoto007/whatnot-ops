@@ -165,3 +165,15 @@ def test_order_slip_routes_permissions_and_audit(client, app, world):
     assert (
         viewer.patch(f"/api/orders/sales/{sale_id}/gifts", json={"giftCount": 0}, headers=hv)
     ).status_code == 403
+
+
+def test_an_app_sale_with_a_huge_quantity_prints_a_bounded_slip(app, world):
+    """A chat claim of 999 units prints at most MAX_UNIT_ROWS lines and asks a person, as a
+    Whatnot lot does (architecture review 2026-11-07, #16)."""
+    world["say"](app, [("", "big_buyer won Red bundle x999")])
+    run(app, world["show"])
+    with app.app_context():
+        assert db.session.scalar(select(Sale.quantity)) == 999
+        doc = order_slips.build(db.session.get(Show, world["show"]))
+    [slip] = [b for b in doc["slips"] if b["username"] == "big_buyer"]
+    assert len(slip["rows"]) == order_slips.MAX_UNIT_ROWS and slip["needsReview"]

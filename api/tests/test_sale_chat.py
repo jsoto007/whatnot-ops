@@ -199,3 +199,121 @@ def test_the_workbook_has_won_at_in_central_time_and_the_buyer_chat(app, world):
     assert row[-2].value == "2026-10-19 20:30:00"
     assert row[-1].value == '#2 bob: =HYPERLINK("http://x") blue instead?'
     assert row[-1].data_type == "s"
+
+
+# ---- naming many buyers at once (architecture review 2026-11-07, finding #1) ----
+
+
+def test_named_agrees_with_names_on_tricky_handles():
+    """`_Named` answers what `_names` answers, buyer by buyer, for every text: handles with
+    "." and "-", a trailing dot, "@" glued to a word, case, non-ASCII neighbours. Only
+    look-alike letters that re.I folds into ASCII differ (stricter), as asserted last."""
+    import random
+
+    rnd = random.Random(7)
+    alphabet = "bobBOkat.-_@ é1!,:"
+    buyers = ["bob", "bob.", "bob-x", "kat.c", "k", "b_o", "ok", "bob.b", "é", "bob smith", ""]
+    named = sale_chat._Named(buyers)
+    for _ in range(4000):
+        text = "".join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 14)))
+        for bare in (True, False):
+            want = {b for b in buyers if sale_chat._names(text, b, bare=bare)}
+            assert named(text, bare=bare) == want, (text, bare)
+    # The one deliberate difference: re.I folds look-alikes ("ſ" -> "s"); the lookup does not.
+    assert sale_chat._names("@boſs", "boss", bare=True)
+    assert sale_chat._Named(["boss"])("@boſs", bare=True) == set()
+
+
+def _reference_around(sales):
+    """The pre-2026-11-07 algorithm (one regex per line x buyer), kept to check the new one."""
+    from collections import defaultdict
+
+    from app.services.sale_chat import BEFORE, _handle, _line, _lines, _names, _owners, lot_of
+
+    out = {s.id: [] for s in sales}
+    sales = [s for s in sales if sale_chat.won_at(s) is not None and s.buyer_username]
+    show = sales[0].show
+    host = _handle(show.organization.host_username or "")
+    wins = defaultdict(list)
+    for s in sales:
+        wins[_handle(s.buyer_username)].append((sale_chat.won_at(s), s))
+    for w in wins.values():
+        w.sort(key=lambda x: (x[0], x[1].id))
+    lots = {s.id: lot_of(s) for s in sales}
+    own = {s.event.message_id for s in sales}
+    waiting = {s.id for s in sales if s.sku_id is None}
+    since = min(sale_chat.won_at(s) for s in sales) - BEFORE
+    for m in _lines(show, list(wins), host, since):
+        if m.id in own:
+            continue
+        named = sale_chat.rules.lot_refs(m.body)
+        for buyer, w in wins.items():
+            user = _handle(m.username)
+            is_host = bool(host) and user == host
+            if user == buyer:
+                role = "buyer"
+            elif _names(m.raw_text, buyer, bare=not user or is_host):
+                role = "platform" if not user else "host" if is_host else "other"
+            else:
+                continue
+            for sale, after, by_lot in _owners(w, m.captured_at, named, lots, waiting):
+                if role == "buyer":
+                    waiting.discard(sale.id)
+                out[sale.id].append(_line(m, role, after=after, names_lot=by_lot))
+    return out
+
+
+def test_around_matches_the_reference_on_a_busy_show(app, world):
+    """40 buyers, back-to-back wins, @-mentions, host and platform lines, lot numbers."""
+    import random
+
+    rnd = random.Random(11)
+    buyers = [f"buyer{i}" for i in range(40)] + ["kat.c", "bob-x", "Mixed.Case"]
+    lines, minute = [], 0.0
+    for lot in range(1, 121):
+        minute += rnd.uniform(0.2, 2.0)
+        b = rnd.choice(buyers)
+        lines.append((minute, "", win(b, f"CHOOSE ANY PRODUCT YOU WANT #{lot}", "5.00"), "player"))
+        for _ in range(rnd.randint(0, 6)):
+            minute += rnd.uniform(0.01, 0.5)
+            who = rnd.choice([*buyers, "host_shop", "viewer1", "", "bob-x"])
+            other = rnd.choice(buyers)
+            body = rnd.choice(
+                [
+                    f"the red one for #{lot}",
+                    f"@{other} congrats",
+                    f"{other} you got it",
+                    f"#{rnd.randint(1, lot)} blue please",
+                    "gl everyone",
+                    f"@{other}. nice",
+                    f"{other.upper()} pick one",
+                ]
+            )
+            lines.append((minute, who, body))
+    say_at(app, world["show"], lines)
+    run(app, world["show"])
+    with app.app_context():
+        rows = db.session.scalars(
+            select(Sale).where(Sale.show_id == world["show"]).order_by(Sale.id)
+        ).all()
+        assert len(rows) > 100
+        got = sale_chat.around(rows, limit=None)
+        assert got == _reference_around(rows)
+        assert sum(map(len, got.values())) > 200
+
+
+def test_naming_scales_past_the_regex_cache():
+    """600 buyers x 5,000 lines: one pass per line, not a regex per buyer (the old way spent
+    ~30 us per check above 256 buyers, minutes for this)."""
+    import time
+
+    buyers = [f"buyer{i:04d}" for i in range(600)]
+    named = sale_chat._Named(buyers)
+    texts = [f"@buyer{i % 700:04d} what do you want? buyer{(i * 7) % 600:04d}" for i in range(5000)]
+    t = time.perf_counter()
+    hits = sum(len(named(x, bare=True)) for x in texts)
+    assert time.perf_counter() - t < 2.0
+    every = set(buyers)
+    assert hits == sum(
+        len({f"buyer{i % 700:04d}", f"buyer{(i * 7) % 600:04d}"} & every) for i in range(5000)
+    )

@@ -37,6 +37,8 @@ const PAGE_SCAN_MS = 1000
 const STOCK_POLL_MS = 8000
 /** How often a recording checks the tab is still on the show's page. */
 const PAGE_POLL_MS = 1000
+/** Find buyer refreshes at most this often while new lines arrive. */
+export const FIND_MS = 300
 
 type State = 'idle' | 'picking' | 'recording' | 'stopped'
 
@@ -220,10 +222,13 @@ export class Controller {
   destroy(): void {
     this.spot = null
     this.endCapture()
-    for (const t of [this.uploadTimer, this.flushTimer, this.findTimer]) if (t) clearTimeout(t)
+    if (this.uploadTimer) clearInterval(this.uploadTimer)
+    for (const t of [this.flushTimer, this.findTimer]) if (t) clearTimeout(t)
+    this.uploadTimer = this.flushTimer = this.findTimer = null
     document.removeEventListener('click', this.onPickBound, true)
     window.removeEventListener('beforeunload', this.onUnload)
-    this.panel.host.remove()
+    // Also drops the panel's window listener: it reached this Controller (and the show's log) through the buttons.
+    this.panel.unmount()
   }
 
   /** Cut off with no newer copy injected (it failed, or Chrome blocked it): say what to do. */
@@ -643,9 +648,15 @@ export class Controller {
     }
   }
 
+  /**
+   * At most one refresh per FIND_MS while lines arrive. A throttle, not a debounce: resetting
+   * the timer on every line meant a busy chat never let the results refresh at all.
+   */
   private queueFind(): void {
-    if (this.findTimer) clearTimeout(this.findTimer)
-    this.findTimer = setTimeout(() => this.renderFind(), 300)
+    this.findTimer ??= setTimeout(() => {
+      this.findTimer = null
+      this.renderFind()
+    }, FIND_MS)
   }
 
   // ---------- Whatnot's Shipments page (after the show) ----------

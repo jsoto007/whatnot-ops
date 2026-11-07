@@ -1,9 +1,10 @@
 import { Fragment, useMemo, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleStatus, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway } from '../../lib/api'
 import { fmtLongDate, fmtShopTime } from '../../lib/format'
+import { useDebounced } from '../../lib/useDebounced'
 import { Kpis, Tally, TopLists } from './Dashboard'
 import { Reconcile } from './Reconcile'
 
@@ -66,6 +67,12 @@ export function ShowDetail() {
               <button className="btn ghost" onClick={() => parse.mutate()} disabled={parse.isPending} data-testid="parse-now">
                 {parse.isPending ? 'Parsing…' : 'Parse now'}
               </button>
+              {/* 409 while the worker is parsing this show: "try again in a few seconds" */}
+              {parse.isError && (
+                <span className="form-error small" data-testid="parse-error">
+                  {(parse.error as Error).message}
+                </span>
+              )}
               <button className="btn ghost" onClick={() => aiAudit.mutate()} disabled={aiAudit.isPending} data-testid="ai-audit" title="Ask the AI supervisor to check this show">
                 {aiAudit.isPending ? 'Auditing…' : 'Run AI audit'}
               </button>
@@ -412,9 +419,20 @@ function EventsTab({ showId }: { showId: string }) {
   )
 }
 
+/** How long the search box waits for typing to pause before it asks the server. */
+export const CHAT_SEARCH_MS = 300
+
 function MessagesTab({ showId }: { showId: string }) {
   const [q, setQ] = useState('')
-  const msgs = useQuery({ queryKey: ['messages', showId, q], queryFn: () => apiGet<{ total: number; messages: ChatMessage[] }>(`/api/shows/${showId}/messages?limit=500&q=${encodeURIComponent(q)}`) })
+  // One request per pause in typing, not per keystroke (each is a search of the whole show and
+  // counts against the chat-search rate limit); the last results stay up meanwhile.
+  const term = useDebounced(q, CHAT_SEARCH_MS)
+  const msgs = useQuery({
+    queryKey: ['messages', showId, term],
+    queryFn: () => apiGet<{ total: number; messages: ChatMessage[] }>(`/api/shows/${showId}/messages?limit=500&q=${encodeURIComponent(term)}`),
+    // Keep the last results while a new search loads, but never another show's lines.
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === showId ? keepPreviousData(prev) : undefined),
+  })
   return (
     <>
       <div className="toolbar">

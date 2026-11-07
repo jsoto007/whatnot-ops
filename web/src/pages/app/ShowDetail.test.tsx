@@ -1,9 +1,9 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { AuthContext, type AuthState } from '../../auth/context'
-import type { Sale } from '../../lib/api'
-import { ShowDetail } from './ShowDetail'
+import type { ChatMessage, Sale } from '../../lib/api'
+import { CHAT_SEARCH_MS, ShowDetail } from './ShowDetail'
 
 const auth: AuthState = {
   me: {
@@ -91,4 +91,88 @@ test('a sale shows when it was won, in Central time, and opens what the winner s
 
   fireEvent.click(toggle)
   expect(screen.queryByTestId('sale-chat-1')).toBeNull()
+})
+
+test('Chat search asks the server once per pause in typing, and keeps the last results up meanwhile', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    const line = (id: number, body: string): ChatMessage => ({ id, seq: id, username: 'u', body, rawText: 'u ' + body, capturedAt: '2026-10-25T01:38:05Z' })
+    const reply = (messages: ChatMessage[]) => new Response(JSON.stringify({ total: messages.length, messages }), { status: 200 })
+    const asked: string[] = []
+    let answer: (r: Response) => void = () => {}
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (!url.includes('/messages')) return Promise.resolve(new Response('{}', { status: 404 }))
+        const q = new URL(url, 'http://ops.test').searchParams.get('q') ?? ''
+        asked.push(q)
+        if (!q) return Promise.resolve(reply([line(1, 'hello from the show')]))
+        return new Promise<Response>((r) => (answer = r)) // held until the test answers
+      }),
+    )
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <AuthContext.Provider value={auth}>
+          <MemoryRouter initialEntries={['/app/shows/3?tab=messages']}>
+            <Routes>
+              <Route path="/app/shows/:id" element={<ShowDetail />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+    await act(() => vi.advanceTimersByTimeAsync(10))
+    expect(screen.getByText('hello from the show')).toBeInTheDocument()
+    expect(asked).toEqual([''])
+
+    // Nine keystrokes, faster than the pause: nothing sent yet.
+    const box = screen.getByLabelText('Search messages')
+    let typed = ''
+    for (const ch of 'jsmith_88') {
+      typed += ch
+      fireEvent.change(box, { target: { value: typed } })
+      await act(() => vi.advanceTimersByTimeAsync(100))
+    }
+    expect(asked).toEqual([''])
+    await act(() => vi.advanceTimersByTimeAsync(CHAT_SEARCH_MS))
+    expect(asked).toEqual(['', 'jsmith_88'])
+    expect(qc.getQueryCache().findAll({ queryKey: ['messages'] })).toHaveLength(2)
+    // While the answer is on its way the last results stay up, not an empty list.
+    expect(screen.getByText('hello from the show')).toBeInTheDocument()
+
+    answer(reply([line(2, 'jsmith_88 I will take it')]))
+    await act(() => vi.advanceTimersByTimeAsync(10))
+    expect(screen.getByText('jsmith_88 I will take it')).toBeInTheDocument()
+    expect(screen.queryByText('hello from the show')).toBeNull()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('Parse now says so when the show is already being parsed (409)', async () => {
+  const busy = 'This show is being parsed right now. Try again in a few seconds.'
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/parse') && init?.method === 'POST') return new Response(JSON.stringify({ error: busy }), { status: 409 })
+      if (url.endsWith('/sales')) return new Response(JSON.stringify({ sales: [] }), { status: 200 })
+      return new Response('{}', { status: url.endsWith('/csrf') ? 200 : 404 })
+    }),
+  )
+  const manager: AuthState = { ...auth, can: (p) => p === 'shows.view' || p === 'review.act' }
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={qc}>
+      <AuthContext.Provider value={manager}>
+        <MemoryRouter initialEntries={['/app/shows/3']}>
+          <Routes>
+            <Route path="/app/shows/:id" element={<ShowDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+  fireEvent.click(await screen.findByTestId('parse-now'))
+  expect(await screen.findByTestId('parse-error')).toHaveTextContent(busy)
 })
