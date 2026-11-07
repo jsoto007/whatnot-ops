@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from flask_migrate import upgrade
@@ -9,6 +9,7 @@ from app.config import Config
 from app.db import db
 from app.models import ChatMessage, MovementKind, Organization, Show
 from app.services import catalog, inventory
+from app.services.devices import create_device
 
 SHOW = "2026-10-19T20:00:00.000Z"
 
@@ -116,3 +117,15 @@ def world(app):  # shared by the pipeline and AI tests
 
     ids["say"] = say
     return ids
+
+
+@pytest.fixture
+def shop(app, world):
+    """The world's shop (a show today) with a paired laptop; returns ids and the key header."""
+    with app.app_context():
+        org = db.session.get(Organization, world["org"])
+        show = db.session.get(Show, world["show"])
+        show.show_date = date(2026, 10, 31)
+        _, key = create_device(org, "packing laptop")
+        db.session.commit()
+    return {**world, "auth": {"Authorization": "Bearer " + key}}

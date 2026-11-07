@@ -33,6 +33,7 @@ const row = (over: Partial<SlipRow>): SlipRow => ({
   inApp: true,
   onWhatnot: true,
   said: [],
+  saidMore: 0,
   ...over,
 })
 
@@ -171,4 +172,17 @@ test("with Whatnot's lots read, each row shows its order number, its flags and w
   expect(second).toHaveTextContent('not in app')
   expect(within(second!).queryByRole('combobox')).toBeNull() // no sale: no gift to set
   expect(third).toHaveTextContent('not on Whatnot')
+})
+
+test('a long chat shows its first line, how many were left out, and the last ones', async () => {
+  const [jess] = doc.slips
+  const said = ['congrats! what do you want?', 'the Fitness Ball please', 'lol', 'gl all']
+  mount(['orders.view'], {
+    ...doc,
+    slips: [{ ...jess!, rows: [row({ product: 'No Pick', matched: false, said, saidMore: 2 })] }],
+  })
+  const [first] = await within(await screen.findByTestId('slip-Jessica88aguirre')).findAllByTestId('slip-row')
+  expect(within(first!).getByTestId('slip-said')).toHaveTextContent(
+    'Chat: “congrats! what do you want?” · … 2 more … · “the Fitness Ball please” · “lol” · “gl all”',
+  )
 })

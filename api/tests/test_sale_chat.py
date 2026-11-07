@@ -68,7 +68,7 @@ def test_the_winners_lines_around_the_win_are_kept_with_the_sale(app, world):
             (4, "kat.c", "bob is lucky"),  # a viewer naming him bare: not his
             (5, "bobby", "I'm not bob's line"),
             (6, "carol", "unrelated"),
-            (11, "bob", "past the window"),
+            (45, "bob", "sorry, was away: the green one"),  # a slow pick is still his
         ],
     )
     run(app, world["show"])
@@ -79,6 +79,7 @@ def test_the_winners_lines_around_the_win_are_kept_with_the_sale(app, world):
         ("can I get the blue one instead?", "buyer"),
         ("ok bob, swapped you to blue for $30", "host"),
         ("@bob congrats", "other"),
+        ("sorry, was away: the green one", "buyer"),
     ]
 
 

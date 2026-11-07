@@ -14,11 +14,12 @@ with Auction Date, Auction Number, Username, Product Checklist, Gift and Notes (
 - Once the scraper has read Whatnot's Shipments table for the show with its lots
   (services/shipments.py), the slips are the final pick list: one row per Whatnot lot (its
   title, order number and price), with the product from the matching sale: its SKU, else
-  "No Pick" plus what the winner said in chat around the win, for the packer to pick. A lot
-  the app never recorded is still a row (flagged); a sale Whatnot does not list stays too,
+  "No Pick" plus what the winner said in chat after the win, for the packer to pick (see
+  `_said` and services/sale_chat.py). A lot the app never recorded is still a row
+  (flagged), with the lines that name its number; a sale Whatnot does not list stays too,
   flagged "not on Whatnot". Matching never changes a sale: it is read-only.
 - Without a lot read (or from an older scraper) the slips come from the app's sales, as
-  before, with Whatnot's per-buyer counts beside them.
+  before, with Whatnot's per-buyer counts beside them, and the same chat on "No Pick" rows.
 """
 
 import re
@@ -61,7 +62,7 @@ def _won_at(sale: Sale):
 
 
 _SPACES = re.compile(r"\s+")
-SAID_LINES = 3
+SAID_LINES = 4
 
 
 def _same_title(a: str, b: str) -> bool:
@@ -80,13 +81,6 @@ def lot_product(sale: Sale | None, lot: WhatnotLot) -> str:
     return product_label(sale)
 
 
-def _sale_lot_number(sale: Sale) -> int | None:
-    lot = (sale.event.details or {}).get("lot") if sale.event else None
-    if isinstance(lot, str) and lot.isdigit():
-        return int(lot)
-    return rules.lot_number(sale.item_text)
-
-
 def match_lots(lots: list[WhatnotLot], sales: list[Sale]) -> dict[int, Sale]:
     """Whatnot lot id → the app's sale for it, each sale used once. Tried in order: Whatnot's
     order number on the sale (from the payment file), then the same buyer and lot number
@@ -98,7 +92,7 @@ def match_lots(lots: list[WhatnotLot], sales: list[Sale]) -> dict[int, Sale]:
         s = by_order.get(lot.whatnot_order_id)
         if s is not None and s.id in free:
             out[lot.id] = free.pop(s.id)
-    numbered = [(s, _sale_lot_number(s)) for s in sales]
+    numbered = [(s, sale_chat.lot_of(s)) for s in sales]
 
     def take(lot: WhatnotLot, same_price: bool) -> None:
         for s, n in numbered:
@@ -118,9 +112,18 @@ def match_lots(lots: list[WhatnotLot], sales: list[Sale]) -> dict[int, Sale]:
     return out
 
 
-def _said(lines: list[dict]) -> list[str]:
-    """What the winner (or the host, about them) said around the win: where the pick is."""
-    return [c["body"] for c in lines if c["role"] in ("buyer", "host")][:SAID_LINES]
+def _said(lines: list[dict]) -> tuple[list[str], int]:
+    """Where the pick is: what the winner (or the host, about them) said after the win, and
+    before it only when naming the lot. At most SAID_LINES are printed: with more, the
+    first one (the answer to the win) and the last ones (a changed mind comes last), plus
+    how many were left out between them."""
+    said = [
+        c["body"] for c in lines if c["role"] in ("buyer", "host") and (c["after"] or c["namesLot"])
+    ]
+    if len(said) <= SAID_LINES:
+        return said, 0
+    kept = said[:1] + said[-(SAID_LINES - 1) :]
+    return kept, len(said) - len(kept)
 
 
 _GIVEAWAY = re.compile(r"give\s*-?\s*away|gift", re.I)
@@ -172,7 +175,15 @@ def build(show: Show) -> dict:
     lots = whatnot["lots"] if whatnot else []
     matched = match_lots(lots, list(sales)) if lots else {}
     used = {s.id for s in matched.values()}
-    said = sale_chat.around([s for s in matched.values() if s.sku_id is None]) if lots else {}
+    # Every standing sale: which win a line goes to depends on the buyer's other wins.
+    chat = sale_chat.around(list(sales), limit=None)
+    no_win = [lot for lot in lots if lot.id not in matched]
+    lot_chat = sale_chat.about_lots(show, no_win) if no_win else {}
+
+    def pick_chat(lines: list[dict], product: str, first: bool) -> dict:
+        kept, more = _said(lines) if first and product == NO_PICK else ([], 0)
+        return {"said": kept, "saidMore": more}
+
     whatnot_gifts = False
     for lot in lots:
         s = matched.get(lot.id)
@@ -202,7 +213,9 @@ def build(show: Show) -> dict:
                     "whatnotOrder": lot.whatnot_order_id,
                     "inApp": s is not None,
                     "onWhatnot": True,
-                    "said": _said(said.get(s.id, [])) if s and first and product == NO_PICK else [],
+                    **pick_chat(
+                        chat.get(s.id, []) if s else lot_chat.get(lot.id, []), product, first
+                    ),
                 }
             )
 
@@ -232,7 +245,7 @@ def build(show: Show) -> dict:
                     "inApp": True,
                     # With a lot read, a sale Whatnot does not list is flagged on the slip.
                     "onWhatnot": not lots,
-                    "said": [],
+                    **pick_chat(chat.get(s.id, []), product, first),
                 }
             )
     # Whatnot's own giveaway lots replace the ones read from chat, when it lists any.
@@ -251,6 +264,7 @@ def build(show: Show) -> dict:
                 "inApp": True,
                 "onWhatnot": not lots,
                 "said": [],
+                "saidMore": 0,
             }
         )
 
