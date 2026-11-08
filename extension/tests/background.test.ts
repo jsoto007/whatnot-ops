@@ -108,6 +108,24 @@ describe('background uploads', () => {
     expect(posts.map((t) => (t - t0) / 1000)).toEqual([2, 7, 17, 37, 77, 79])
   })
 
+  it('a 429 waits as long as the server asks (Retry-After), not only the 5 s backoff', async () => {
+    vi.stubGlobal('fetch', async () => {
+      posts.push(Date.now())
+      return new Response('{"error":"too many attempts"}', { status: 429, headers: { 'Retry-After': '50' } })
+    })
+    const t0 = Date.now()
+    await save()
+    await pass(2500)
+    expect(posts.map((t) => (t - t0) / 1000)).toEqual([2])
+    expect(alarms.filter((a) => a.name === 'cs_upload_retry').map((a) => a.delayInMinutes! * 60)).toEqual([50])
+    // Lines saved meanwhile wait too: nothing goes out before the 50 s are up.
+    await save()
+    await pass(40_000)
+    expect(posts).toHaveLength(1)
+    await pass(12_000)
+    expect(posts.map((t) => (t - t0) / 1000)).toEqual([2, 52])
+  })
+
   it('a busy chat (a save every 1.5 s) still uploads every 2 s, not only on the minute sweep', async () => {
     online = true
     const t0 = Date.now()

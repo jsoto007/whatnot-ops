@@ -1040,6 +1040,25 @@ def test_a_signed_in_person_has_a_write_limit(client, monkeypatch):
     assert 429 in codes and 500 not in codes
 
 
+def test_invite_emails_are_rate_limited_per_person(client, monkeypatch):
+    """Every invite sends an email; the general write limit alone allowed 300 a minute."""
+    from app.routes import team as team_mod
+
+    h = owner(client)
+    monkeypatch.setattr(team_mod, "INVITES_PER_HOUR", 3)
+    responses = [
+        client.post(
+            "/api/team/invites", json={"email": f"p{i}@shop.test", "role": "viewer"}, headers=h
+        )
+        for i in range(5)
+    ]
+    assert [r.status_code for r in responses] == [201, 201, 201, 429, 429]
+    assert responses[-1].headers.get("Retry-After", "").isdigit()
+    # The refused calls made no invite (and so sent no mail).
+    team = client.get("/api/team", headers=h).get_json()
+    assert len(team["invites"]) == 3
+
+
 def test_upload_routes_refuse_non_text_bodies(client):
     h = owner(client)
     for bad in ({"csv": ["a"]}, {"csv": {"x": 1}}, {"csv": 5}):
@@ -1332,6 +1351,8 @@ def test_a_planted_csrf_cookie_is_not_enough_and_the_token_survives_sign_in(clie
 
 def _production_config(monkeypatch, **env):
     monkeypatch.setenv("APP_ENV", "production")
+    # A local .env sets JOBS_INLINE=1 (config.py loads it); production refuses that.
+    monkeypatch.delenv("JOBS_INLINE", raising=False)
     monkeypatch.setenv("SECRET_KEY", "x" * 40)
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://localhost:5432/x")
     for k, v in env.items():

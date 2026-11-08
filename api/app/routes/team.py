@@ -6,11 +6,15 @@ from ..auth import require
 from ..config import is_dev
 from ..db import db
 from ..models import Invite, Role, User
-from ..services import accounts, mail, text
+from ..services import accounts, mail, ratelimit, text
 from ..services.accounts import AccountError
 from ..services.permissions import invitable_roles
 
 bp = Blueprint("team", __name__)
+# Invites one person may send per hour. Each call mails a link (Mailgun cost, and the
+# shop's name on the sender line), so a stolen session must not turn into a spam run;
+# the general write limit (300/min) alone would allow thousands an hour.
+INVITES_PER_HOUR = 20
 
 
 @bp.errorhandler(AccountError)
@@ -47,6 +51,7 @@ def list_team():
 @bp.post("/invites")
 @require("team.invite")
 def create_invite():
+    ratelimit.per_user("invite", g.u.id, INVITES_PER_HOUR, 3600)
     d = request.get_json(silent=True) or {}
     invite, token = accounts.create_invite(g.u, d.get("email", ""), _role(d.get("role", "")))
     body = {"invite": serializers.invite(invite), "emailSent": mail.configured()}

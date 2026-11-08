@@ -37,9 +37,26 @@ export class UploadError extends Error {
   constructor(
     readonly kind: 'auth' | 'rejected' | 'offline',
     message: string,
+    /** Set for a 429: how long the server asked us to wait (its Retry-After header). */
+    readonly retryAfterMs?: number,
   ) {
     super(message)
   }
+}
+
+/** Longest wait a server may ask for; also the wait when its 429 names none. */
+const SLOW_DOWN_MAX_S = 600
+const SLOW_DOWN_DEFAULT_S = 60
+
+/**
+ * A 429 (the server's rate limit: 600 calls a minute per laptop) is a wait, not a
+ * refusal: the rows stay queued and the next try honours Retry-After, instead of the
+ * 5 s backoff a dead server gets.
+ */
+export function slowDown(res: Response): UploadError {
+  const header = Number(res.headers.get('Retry-After'))
+  const seconds = Number.isFinite(header) && header > 0 ? Math.min(SLOW_DOWN_MAX_S, Math.ceil(header)) : SLOW_DOWN_DEFAULT_S
+  return new UploadError('offline', `server asked to slow down; next try in ${seconds} s`, seconds * 1000)
 }
 
 /** Sends one batch per show. Pure: fetch and store are injected, so it runs in Vitest. */
@@ -95,6 +112,7 @@ export async function postBatch(settings: Settings, batch: ChatEventBatch, fetch
   }
   if (res.ok) return
   if (res.status === 401) throw new UploadError('auth', 'server rejected the API key')
+  if (res.status === 429) throw slowDown(res)
   if (res.status === 400 || res.status === 413 || res.status === 422) {
     let detail = `${res.status}`
     try {
@@ -124,6 +142,7 @@ export async function ping(settings: Settings, fetchFn: typeof fetch = fetch): P
     throw new UploadError('offline', (err as Error).message || 'network error')
   }
   if (res.status === 401) throw new UploadError('auth', 'server rejected the API key')
+  if (res.status === 429) throw slowDown(res)
   if (!res.ok) throw new UploadError('offline', `server returned ${res.status}`)
   return (await res.json()) as PingReply
 }
