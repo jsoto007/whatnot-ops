@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApiError, api, money, type ReconcileRow } from '../../lib/api'
+import { reconcileActionLabel, summaryWords } from '../../lib/labels'
 
 interface Plan {
   rows: ReconcileRow[]
@@ -70,9 +71,7 @@ export function Reconcile({ showId }: { showId: string }) {
       {plan && (
         <>
           <p className="small" data-testid="reconcile-summary">
-            {Object.entries(plan.summary)
-              .map(([k, v]) => `${v} ${k.replace('_', ' ')}`)
-              .join(' · ')}
+            {summaryWords(plan.summary, reconcileActionLabel)}
           </p>
           <table className="table small">
             <thead>
@@ -94,7 +93,7 @@ export function Reconcile({ showId }: { showId: string }) {
                   <td>{money(r.priceCents)}</td>
                   <td>{r.status}</td>
                   <td>
-                    {r.action.replace('_', ' ')}
+                    {reconcileActionLabel(r.action)}
                     {r.note ? <span className="muted"> ({r.note})</span> : null}
                   </td>
                 </tr>

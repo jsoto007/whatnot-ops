@@ -64,7 +64,8 @@ test('owner signs up, creates a device key, invites fulfillment who gets a limit
   await page.reload()
   await expect(page.locator('table').first()).toContainText('Pat Packer')
   await page.getByRole('link', { name: 'Settings' }).click()
-  await expect(page.getByText('invite.accepted')).toBeVisible()
+  await expect(page.getByText('Joined the shop as Fulfillment')).toBeVisible()
+  await expect(page.getByText('invite.accepted')).toHaveCount(0) // words, never action codes
 
   // Sign out and back in.
   await page.getByRole('button', { name: 'Sign out' }).click()

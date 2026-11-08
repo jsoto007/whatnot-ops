@@ -14,6 +14,7 @@ from ..services.orders import OrderError
 from ..services.reconcile import ReconcileError
 
 bp = Blueprint("orders", __name__)
+BUYER_HISTORY_LIMIT = 200  # newest orders; a regular buyer's full history is not one page
 
 
 @bp.errorhandler(OrderError)
@@ -39,7 +40,7 @@ def _order_or_404(order_id: int) -> Order | None:
 
 
 @bp.get("")
-@require("orders.view")
+@require("orders.view", heavy=True)
 def list_orders():
     q = _loaded().where(Order.organization_id == g.u.organization_id)
     status = request.args.get("status")
@@ -132,7 +133,7 @@ def update_order(order_id: int):
 
 
 @bp.get("/buyers/<path:username>")
-@require("orders.view")
+@require("orders.view", heavy=True)
 def buyer_history(username: str):
     rows = db.session.scalars(
         _loaded()
@@ -141,12 +142,13 @@ def buyer_history(username: str):
             func.lower(Order.buyer_username) == username.lower(),
         )
         .order_by(Order.id.desc())
+        .limit(BUYER_HISTORY_LIMIT)
     ).all()
     return jsonify({"buyer": username, "orders": [serializers.order(o) for o in rows]})
 
 
 @bp.get("/shows/<int:show_id>/pick-list")
-@require("orders.view")
+@require("orders.view", heavy=True)
 def pick_list(show_id: int):
     show = db.session.get(Show, show_id)
     if show is None or show.organization_id != g.u.organization_id:
@@ -155,7 +157,7 @@ def pick_list(show_id: int):
 
 
 @bp.get("/shows/<int:show_id>/order-slips")
-@require("orders.view")
+@require("orders.view", heavy=True)
 def show_order_slips(show_id: int):
     show = db.session.get(Show, show_id)
     if show is None or show.organization_id != g.u.organization_id:

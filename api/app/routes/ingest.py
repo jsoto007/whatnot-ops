@@ -2,7 +2,7 @@ from flask import Blueprint, g, jsonify, request
 
 from ..db import db
 from ..models import Show
-from ..services import ratelimit, shipments, stock
+from ..services import ratelimit, shipments, stock, text
 from ..services.devices import device_for_key, touch
 from ..services.ingest import BatchInvalid, ingest, message_count
 from ..services.pipeline import schedule_parse
@@ -133,7 +133,7 @@ def running_low():
     after a batch is parsed."""
     db.session.commit()  # persists last_seen_at
     show_key = request.args.get("show")
-    if show_key is not None and not 0 < len(show_key) <= 64:
+    if show_key is not None and (not 0 < len(show_key) <= 64 or text.has_hidden(show_key)):
         return jsonify({"error": "bad show key"}), 400
     return jsonify(
         {
@@ -146,6 +146,8 @@ def running_low():
 @bp.get("/ingest/shows/<path:show_key>")
 def show_status(show_key: str):
     db.session.commit()
+    if len(show_key) > 64 or text.has_hidden(show_key):
+        return jsonify({"error": "unknown show"}), 404
     show = (
         db.session.query(Show)
         .filter_by(organization_id=g.device.organization_id, show_key=show_key)

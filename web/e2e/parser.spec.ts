@@ -94,8 +94,9 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
 
   // The AI's action is in the activity log and the Settings page shows the provider.
   await page.getByRole('link', { name: 'Settings' }).click()
-  await expect(page.getByTestId('ai-status')).toContainText('Provider fake')
-  await expect(page.locator('.table.small')).toContainText('ai supervisor')
+  await expect(page.getByTestId('ai-status')).toContainText('Provider Test provider')
+  await expect(page.locator('.table.small tr', { hasText: 'Applied a suggestion' }).first()).toContainText('AI')
+  await expect(page.locator('.table.small')).not.toContainText('ai supervisor')
 
   // Review: teach the app that "mystery box" is a red bundle.
   await page.getByRole('link', { name: /^Review/ }).click()

@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import traceback
 
 from flask import Flask, jsonify, request
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -8,6 +9,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from .cli import register_cli
 from .config import Config, db_host
 from .db import db, migrate
+from .logsafe import error_line
 from .routes.audit import bp as audit_bp
 from .routes.auth import bp as auth_bp
 from .routes.catalog import bp as catalog_bp
@@ -95,8 +97,47 @@ def _security_headers(app: Flask) -> None:
         if isinstance(e, RecursionError):  # most likely a JSON body nested thousands deep
             log.warning("RecursionError on %s %s", request.method, request.path, exc_info=e)
             return jsonify({"error": "request body is nested too deeply"}), 400
-        log.exception("unhandled error on %s %s", request.method, request.path)
+        from sqlalchemy.exc import DBAPIError
+
+        if isinstance(e, DBAPIError):
+            # Postgres quotes the failing row in its DETAIL (password hashes, emails), and
+            # the exception's text carries it: log the stack and the primary message only.
+            log.error(
+                "unhandled database error on %s %s: %s\n%s",
+                request.method,
+                request.path,
+                error_line(e),
+                "".join(traceback.format_tb(e.__traceback__)),
+            )
+        else:
+            log.exception("unhandled error on %s %s", request.method, request.path)
         return jsonify({"error": "something went wrong on our side"}), 500
+
+
+def _log_first_client_address(app: Flask) -> None:
+    """One WARNING line per process (the web process configures no logging, so INFO never
+    shows), on the first request that is not Render's health check: the address the rate
+    limits will use, next to the one Cloudflare reports. "match" means PROXY_HOPS is right."""
+    seen = []
+
+    @app.before_request
+    def log_client_address():
+        if seen or request.path == "/api/health":
+            return
+        seen.append(True)
+        entries = len(
+            [p for p in request.headers.get("X-Forwarded-For", "").split(",") if p.strip()]
+        )
+        cloudflare = request.headers.get("CF-Connecting-IP", "")
+        log.warning(
+            "client address check: using %s, Cloudflare saw %s (%s; %d X-Forwarded-For "
+            "entries, PROXY_HOPS=%s)",
+            request.remote_addr,
+            cloudflare or "-",
+            "match" if cloudflare == request.remote_addr else "MISMATCH",
+            entries,
+            app.config.get("PROXY_HOPS"),
+        )
 
 
 def create_app(config: Config | None = None) -> Flask:
@@ -104,9 +145,14 @@ def create_app(config: Config | None = None) -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config.from_object(config)
     if config.APP_ENV == "production":
-        # Render terminates TLS in front of gunicorn: trust exactly one proxy hop for the
-        # client address and scheme (rate limits, Secure cookies, request.is_secure).
-        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+        # Cloudflare sits in front of Render (`server: cloudflare`, seen 2026-10-25), so a
+        # request arrives with X-Forwarded-For "<client>, <cloudflare edge>": Cloudflare
+        # appends the address it saw, Render appends Cloudflare's, and whatever a client
+        # sent itself stays further left. The client is therefore the second entry from
+        # the right (PROXY_HOPS). With one hop every visitor behind the same edge shared
+        # one per-address rate-limit bucket. The scheme comes from the last hop.
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=config.PROXY_HOPS, x_proto=1)
+        _log_first_client_address(app)
     _security_headers(app)
 
     db.init_app(app)

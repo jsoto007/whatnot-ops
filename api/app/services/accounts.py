@@ -14,8 +14,9 @@ from sqlalchemy import func, select, update
 from ..config import is_dev
 from ..db import db
 from ..models import Invite, Organization, PasswordReset, Role, User
-from . import audit, mail, mail_templates
+from . import audit, mail, mail_templates, text
 from .admin import admin_email, is_admin, is_protected
+from .jobs import handler
 
 # OWASP's argon2id minimum (19 MiB, t=2, p=1): the 64 MiB library default let a
 # handful of concurrent logins exhaust a 512 MB instance. Older hashes are
@@ -157,20 +158,21 @@ def signup(
         and isinstance(setup_code, str)
         and secrets.compare_digest(setup_code.strip().encode(), expected.encode())
     ):
-        raise AccountError("enter the setup code from the server's SETUP_TOKEN setting", 403)
+        raise AccountError("enter the setup code you were given", 403)
     email = normalise_email(email)
     check_password_strength(password)
-    if not (org_name or "").strip() or not (name or "").strip():
+    org_name, name = text.typed(org_name, 120), text.typed(name, 120)
+    if not org_name or not name:
         raise AccountError("shop name and your name are required")
     if db.session.scalar(select(User.id).where(User.email == email)) is not None:
         raise AccountError("an account with that email already exists", 409)
-    org = Organization(name=org_name.strip(), slug=slugify(org_name))
+    org = Organization(name=org_name, slug=slugify(org_name))
     db.session.add(org)
     db.session.flush()
     user = User(
         organization=org,
         email=email,
-        name=name.strip(),
+        name=name,
         password_hash=hash_password(password),
         role=Role.owner,
         session_token=secrets.token_hex(16),
@@ -304,12 +306,15 @@ def _expire_resets(user: User) -> None:
 
 
 def create_invite(inviter: User, email: str, role: Role) -> tuple[Invite, str]:
-    from .permissions import invitable_roles
+    from .permissions import invitable_roles, role_label
 
     email = normalise_email(email)
     allowed = invitable_roles(inviter.role)
     if role not in allowed:
-        raise AccountError(f"a {inviter.role.value} cannot invite a {role.value}", 403)
+        raise AccountError(
+            f"your role ({role_label(inviter.role)}) cannot invite someone as {role_label(role)}",
+            403,
+        )
     # Only this shop's members are revealed; an account in another shop surfaces at accept.
     if (
         db.session.scalar(
@@ -376,14 +381,15 @@ def invite_by_token(token: str) -> Invite:
 def accept_invite(token: str, name: str, password: str) -> User:
     invite = invite_by_token(token)
     check_password_strength(password)
-    if not (name or "").strip():
+    name = text.typed(name, 120)
+    if not name:
         raise AccountError("your name is required")
     if db.session.scalar(select(User.id).where(User.email == invite.email)) is not None:
         raise AccountError("that email already has an account", 409)
     user = User(
         organization_id=invite.organization_id,
         email=invite.email,
-        name=name.strip(),
+        name=name,
         password_hash=hash_password(password),
         role=invite.role,
         session_token=secrets.token_hex(16),
@@ -410,10 +416,14 @@ def revoke_invite(actor: User, invite_id: int) -> None:
     invite = db.session.get(Invite, invite_id)
     if invite is None or invite.organization_id != actor.organization_id:
         raise AccountError("invite not found", 404)
-    from .permissions import invitable_roles
+    from .permissions import invitable_roles, role_label
 
     if invite.role not in invitable_roles(actor.role):
-        raise AccountError(f"a {actor.role.value} cannot revoke a {invite.role.value} invite", 403)
+        raise AccountError(
+            f"your role ({role_label(actor.role)}) cannot withdraw an invite for "
+            f"{role_label(invite.role)}",
+            403,
+        )
     invite.expires_at = now()
     audit.record(
         actor.organization_id,
@@ -437,8 +447,7 @@ def update_user(
     changes: dict = {}
     if is_protected(user.email) and ((role is not None and role != Role.owner) or disabled):
         raise AccountError(
-            "this account is kept by the server (ADMIN_EMAIL or IT_SUPPORT); "
-            "change that setting to hand it over",
+            "this account is the shop's protected owner and cannot be changed here",
             409,
         )
     if (role is not None and role != user.role) or disabled:
@@ -542,20 +551,44 @@ def _owner_count(org_id: int) -> int:
 # ---------- password reset ----------
 
 
-def request_password_reset(email: str) -> str | None:
-    """Always succeeds from the caller's point of view. Returns the token only for tests/dev."""
+def request_password_reset(email: str, *, return_token: bool = False) -> str | None:
+    """Always succeeds from the caller's point of view, and costs the same whether or not
+    the address has an account: one rate-limit count and one queued job. The account
+    lookup, the token and the email happen in the `reset_mail` job, so neither the
+    response time nor a Mailgun failure (a 500 used to come back only for real accounts)
+    tells a stranger which addresses exist.
+
+    `return_token` (development without Mailgun, and tests) does the work in the request
+    and returns the token, so the page can show the link."""
     try:
         email = normalise_email(email)
     except AccountError:
         return None
-    user = db.session.scalar(select(User).where(User.email == email, User.disabled.is_(False)))
-    if user is None:
-        return None
-    from . import ratelimit
+    from . import jobs, ratelimit
 
     try:  # at most 3 reset emails per address per hour (inbox flooding, Mailgun cost)
         ratelimit.hit(f"reset-mail:{email}", 3, 3600)
     except ratelimit.RateLimited:
+        return None
+    if return_token:
+        token = _issue_reset(email)
+        db.session.commit()
+        return token
+    # The link's address is decided here: Render tells only web services their public URL
+    # (RENDER_EXTERNAL_URL), so the worker would otherwise send a localhost link.
+    job = jobs.enqueue("reset_mail", {"email": email, "link": app_url("/reset/")})
+    # One attempt: a Mailgun timeout after it accepted the mail must not send a second
+    # link. A person whose email did not arrive asks again.
+    job.max_attempts = 1
+    db.session.commit()
+    return None
+
+
+def _issue_reset(email: str, link: str | None = None) -> str | None:
+    """Make a reset link for an enabled account and email it; None when there is none.
+    `link` is the address the token is appended to (default: this process's app_url)."""
+    user = db.session.scalar(select(User).where(User.email == email, User.disabled.is_(False)))
+    if user is None:
         return None
     token = secrets.token_urlsafe(32)
     db.session.add(
@@ -567,10 +600,20 @@ def request_password_reset(email: str) -> str | None:
         user.organization_id, "password.reset_requested", target_type="user", target_id=user.id
     )
     mail.send(
-        mail_templates.password_reset(to=email, url=app_url("/reset/" + token), hours=RESET_HOURS)
+        mail_templates.password_reset(
+            to=email, url=(link or app_url("/reset/")) + token, hours=RESET_HOURS
+        )
     )
-    db.session.commit()
     return token
+
+
+@handler("reset_mail")
+def _reset_mail_job(payload: dict) -> None:
+    """Runs on the worker, which needs MAILGUN_* too. Without them production fails the
+    job loudly (worker log, jobs table) instead of finishing "done" with no email sent."""
+    if not mail.configured() and not is_dev(current_app.config.get("APP_ENV")):
+        raise mail.MailError("reset email not sent: MAILGUN_API_KEY / MAILGUN_DOMAIN unset here")
+    _issue_reset(payload["email"], payload.get("link"))  # the job runner commits
 
 
 def reset_password(token: str, password: str) -> User:

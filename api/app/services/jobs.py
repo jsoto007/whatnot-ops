@@ -7,17 +7,20 @@ enqueue time instead of leaving it for `python -m app.worker`.
 import logging
 import os
 import socket
-import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import case, select, text
 
 from ..db import db
+from ..logsafe import error_line
 from ..models import Job, JobStatus
 
 log = logging.getLogger(__name__)
 HANDLERS: dict[str, Callable[[dict], object]] = {}
+# Claimed ahead of the rest: a live show's parse, and a reset email someone is waiting
+# for (both quick), never behind AI checks that each wait on a vendor.
+FIRST = ("parse_show", "reset_mail")
 
 
 def handler(kind: str):
@@ -72,7 +75,7 @@ def claim(worker: str) -> Job | None:
     job = db.session.scalar(
         select(Job)
         .where(Job.status == JobStatus.queued, Job.run_at <= now)
-        .order_by(case((Job.kind == "parse_show", 0), else_=1), Job.id)
+        .order_by(case((Job.kind.in_(FIRST), 0), else_=1), Job.id)
         .limit(1)
         .with_for_update(skip_locked=True)
     )
@@ -110,7 +113,7 @@ def run_job(job_id: int, worker: str = "inline") -> Job:
     except Exception as e:  # noqa: BLE001 - any failure is recorded on the job
         db.session.rollback()
         job = db.session.get(Job, job_id)
-        job.error = "".join(traceback.format_exception_only(type(e), e)).strip()[:2000]
+        job.error = error_line(e)[:2000]  # no row values from a database error's DETAIL
         if job.attempts >= job.max_attempts:
             job.status = JobStatus.failed
             job.finished_at = datetime.now(UTC)

@@ -20,8 +20,12 @@ class CatalogError(ValueError):
         self.status = status
 
 
+def typed(value, limit: int) -> str:
+    return text_safe.typed(value, limit)
+
+
 def norm_alias(text: str) -> str:
-    return re.sub(r"\s+", " ", (text if isinstance(text, str) else "").strip().lower())[:160]
+    return re.sub(r"\s+", " ", typed(text, 1000).lower())[:160]
 
 
 def code_from_name(name: str) -> str:
@@ -45,7 +49,7 @@ def get_sku(org_id: int, sku_id: int) -> Sku:
 def create_product(
     org_id: int, name: str, *, notes: str | None = None, skus: list[dict] | None = None
 ) -> Product:
-    name = (name if isinstance(name, str) else "").strip()[:160]
+    name = typed(name, 160)
     if not name:
         raise CatalogError("product name is required")
     if db.session.scalar(
@@ -69,7 +73,7 @@ def create_product(
 def add_sku(
     org_id: int, product: Product, code: str, name: str = "", price_cents: int | None = None
 ) -> Sku:
-    code = (code if isinstance(code, str) else "").strip().upper()[:64]
+    code = typed(code, 64).upper()
     if not code:
         raise CatalogError("SKU code is required")
     if price_cents is not None and (not isinstance(price_cents, int) or price_cents < 0):
@@ -80,7 +84,7 @@ def add_sku(
         organization_id=org_id,
         product=product,
         code=code,
-        name=(name if isinstance(name, str) else "").strip()[:160],
+        name=typed(name, 160),
         price_cents=price_cents,
     )
     db.session.add(sku)
@@ -92,14 +96,16 @@ def add_sku(
 def update_sku(org_id: int, sku_id: int, **fields) -> Sku:
     sku = get_sku(org_id, sku_id)
     if "code" in fields and fields["code"]:
-        code = fields["code"].strip().upper()
+        code = typed(fields["code"], 64).upper()
+        if not code:
+            raise CatalogError("SKU code is required")
         if code != sku.code and db.session.scalar(
             select(Sku.id).where(Sku.organization_id == org_id, Sku.code == code)
         ):
             raise CatalogError(f"SKU code {code} already exists", 409)
         sku.code = code
     if "name" in fields and fields["name"] is not None:
-        sku.name = fields["name"].strip()
+        sku.name = typed(fields["name"], 160)
     if "priceCents" in fields:
         pc = fields["priceCents"]
         if pc is not None and (not isinstance(pc, int) or pc < 0):

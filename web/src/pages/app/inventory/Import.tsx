@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ApiError, api, type ImportRow } from '../../../lib/api'
+import { importActionLabel, summaryWords } from '../../../lib/labels'
 
 /** The team's existing spreadsheet: preview first, nothing changes until Apply. */
 export function Import({ onDone }: { onDone: () => Promise<unknown> }) {
@@ -61,9 +62,7 @@ export function Import({ onDone }: { onDone: () => Promise<unknown> }) {
       {plan && (
         <>
           <p className="small" data-testid="import-summary">
-            {Object.entries(plan.summary)
-              .map(([k, v]) => `${v} ${k}`)
-              .join(' · ')}
+            {summaryWords(plan.summary, importActionLabel)}
           </p>
           <table className="table small">
             <thead>
@@ -81,7 +80,7 @@ export function Import({ onDone }: { onDone: () => Promise<unknown> }) {
                   <td className="num">{r.quantity}</td>
                   <td className="num">{r.before ?? '—'}</td>
                   <td>
-                    {r.action}
+                    {importActionLabel(r.action)}
                     {r.error ? ` (${r.error})` : ''}
                   </td>
                 </tr>

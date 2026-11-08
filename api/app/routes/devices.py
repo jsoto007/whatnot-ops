@@ -7,7 +7,7 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import Device, DevicePairing
-from ..services import audit
+from ..services import audit, text
 from ..services.devices import PairingError, create_device, start_pairing
 
 bp = Blueprint("devices", __name__)
@@ -33,7 +33,7 @@ def list_devices():
 @bp.post("")
 @require("devices.manage")
 def create():
-    name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
+    name = text.typed((request.get_json(silent=True) or {}).get("name"), 120)
     if not name:
         return jsonify({"error": "give the laptop a name"}), 400
     device, key = create_device(g.u.organization, name)

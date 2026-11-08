@@ -1,4 +1,4 @@
-"""Session cookie auth for the SPA + CSRF double-submit + permission decorator."""
+"""Session cookie auth for the SPA + session-bound CSRF token + permission decorator."""
 
 import secrets
 from functools import wraps
@@ -11,8 +11,8 @@ from .models import User
 from .services import ratelimit
 from .services.permissions import allowed
 
-CSRF_COOKIE = "csrf"
 CSRF_HEADER = "X-CSRF-Token"
+CSRF_KEY = "csrf"  # in the signed session cookie
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 #: Signed "this browser has signed in to <email> before" marker. It only lifts the
 #: per-email failed-login cap (services/accounts.login); it grants no access.
@@ -21,13 +21,15 @@ KNOWN_DEVICE_DAYS = 180
 
 
 def csrf_ok() -> bool:
-    """Double-submit check. A header with non-ASCII characters is simply wrong (403),
-    not a TypeError from compare_digest (500)."""
-    cookie = request.cookies.get(CSRF_COOKIE)
+    """The header must match the token kept in this browser's signed session. It used to
+    match a plain `csrf` cookie, which a sibling subdomain (on a custom domain) could set
+    for the whole domain, then send the same value as the header from its own page. A
+    header with non-ASCII characters is simply wrong (403), not a TypeError (500)."""
+    expected = session.get(CSRF_KEY)
     header = request.headers.get(CSRF_HEADER)
-    if not cookie or not header or not (cookie.isascii() and header.isascii()):
+    if not isinstance(expected, str) or not header or not header.isascii():
         return False
-    return secrets.compare_digest(cookie, header)
+    return secrets.compare_digest(expected, header)
 
 
 def _known_signer() -> URLSafeTimedSerializer:
@@ -81,7 +83,7 @@ def current_user() -> User | None:
 
 
 def start_session(user: User) -> None:
-    session.clear()
+    _clear_session_keep_csrf()
     session["uid"] = user.id
     session["tok"] = user.session_token
     session.permanent = True
@@ -89,33 +91,42 @@ def start_session(user: User) -> None:
 
 
 def end_session() -> None:
-    session.clear()
+    _clear_session_keep_csrf()
     g.u = None
 
 
+def _clear_session_keep_csrf() -> None:
+    """Signing in or out keeps the page's CSRF token. Only same-origin script can read it
+    (GET /api/auth/csrf), and the production session cookie is `__Host-`, so no other
+    site or subdomain can plant a session with a token it knows before sign-in."""
+    token = session.get(CSRF_KEY)
+    session.clear()
+    if isinstance(token, str):
+        session[CSRF_KEY] = token
+        session.permanent = True
+
+
 def csrf_token() -> str:
-    tok = request.cookies.get(CSRF_COOKIE)
-    return tok if tok and len(tok) == 43 else secrets.token_urlsafe(32)
-
-
-def set_csrf_cookie(resp, token: str):
-    resp.set_cookie(
-        CSRF_COOKIE,
-        token,
-        samesite="Lax",
-        secure=request.is_secure or current_app.config.get("APP_ENV") == "production",
-        httponly=False,
-        max_age=30 * 86400,
-    )
-    return resp
+    """This browser's token, made on first request and kept in the signed session."""
+    token = session.get(CSRF_KEY)
+    if not (isinstance(token, str) and len(token) == 43):
+        token = secrets.token_urlsafe(32)
+        session[CSRF_KEY] = token
+        session.permanent = True
+    return token
 
 
 # Changes one signed-in person may make per minute (see require).
 WRITES_PER_MIN = 300
+# Loads of the expensive pages (dashboards, order lists, slips, review) per person per
+# minute, all of them together. The pages poll every 30 s; this stops a script with a
+# stolen session from keeping the small instance busy.
+HEAVY_READS_PER_MIN = 120
 
 
-def require(permission: str | None = None):
-    """Route needs a logged-in user (and a permission). Also enforces CSRF on mutating requests."""
+def require(permission: str | None = None, *, heavy: bool = False):
+    """Route needs a logged-in user (and a permission). Also enforces CSRF on mutating
+    requests. `heavy` marks a costly read: it counts toward HEAVY_READS_PER_MIN."""
 
     def deco(fn):
         @wraps(fn)
@@ -128,10 +139,10 @@ def require(permission: str | None = None):
                     return jsonify({"error": "missing or invalid CSRF token"}), 403
                 # Generous for a person clicking; stops a script with a stolen session.
                 ratelimit.per_user("write", user.id, WRITES_PER_MIN, 60)
+            elif heavy:
+                ratelimit.per_user("heavy-read", user.id, HEAVY_READS_PER_MIN, 60)
             if permission and not allowed(user.role, permission):
-                return jsonify(
-                    {"error": "you do not have permission to do that", "permission": permission}
-                ), 403
+                return jsonify({"error": "you do not have permission to do that"}), 403
             return fn(*a, **kw)
 
         return wrapper

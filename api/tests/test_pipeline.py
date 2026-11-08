@@ -320,8 +320,9 @@ def test_review_and_show_routes(client, app, world):
     )
     stats = client.get(f"/api/shows/{world['show']}").get_json()["stats"]
     assert stats["sales"] == {"paid": 2} and stats["openReviews"] == 0
-    actions = [e["action"] for e in client.get("/api/audit").get_json()["entries"]]
-    assert "review.resolved" in actions and "show.parsed" in actions
+    said = [e["summary"] for e in client.get("/api/audit").get_json()["entries"]]
+    assert "Resolved a review item" in said
+    assert any(s.startswith("Re-read a show's chat: ") for s in said)
 
 
 def test_split_winner_line_waits_in_review_instead_of_becoming_a_sale(app, world):

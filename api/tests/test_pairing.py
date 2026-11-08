@@ -57,8 +57,9 @@ def test_a_code_pairs_one_laptop_once(client, app):
         assert db.session.scalar(select(db.func.count()).select_from(Device)) == 1
         stored = db.session.scalar(select(DevicePairing))
         assert p["code"].replace("-", "") not in stored.code_hash  # only the hash is kept
-    actions = [e["action"] for e in client.get("/api/audit").get_json()["entries"]]
-    assert "device.pairing_started" in actions and "device.paired" in actions
+    said = [e["summary"] for e in client.get("/api/audit").get_json()["entries"]]
+    assert "Started pairing laptop “Front laptop”" in said
+    assert "Paired laptop “Front laptop”" in said
 
 
 def test_expired_wrong_and_malformed_codes_are_refused(client, app):

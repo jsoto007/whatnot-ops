@@ -24,6 +24,22 @@ PERMISSIONS: dict[str, frozenset[Role]] = {
 }
 
 
+ROLE_LABELS = {
+    Role.owner: "Owner",
+    Role.manager: "Manager",
+    Role.fulfillment: "Fulfillment",
+    Role.viewer: "Viewer",
+}
+
+
+def role_label(role: Role | str | None) -> str:
+    """A role as the shop reads it ("Owner"), for messages and the activity log."""
+    try:
+        return ROLE_LABELS[Role(role)]
+    except ValueError:
+        return "team member"
+
+
 def allowed(role: Role, permission: str) -> bool:
     return role in PERMISSIONS[permission]
 

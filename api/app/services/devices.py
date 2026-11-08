@@ -7,6 +7,7 @@ from sqlalchemy import func, select, update
 
 from ..db import db
 from ..models import Device, Organization
+from . import text
 
 KEY_PREFIX = "wn_"
 
@@ -81,7 +82,7 @@ def start_pairing(org: Organization, name: str, *, user=None):
     """A new code for one laptop. Returns (pairing, display code); the code is shown once."""
     from ..models import DevicePairing
 
-    name = (name or "").strip()[:120]
+    name = text.typed(name, 120)
     if not name:
         raise PairingError("give the laptop a name")
     now = datetime.now(UTC)

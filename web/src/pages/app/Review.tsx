@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { api, apiGet, type Product, type ReviewItem } from '../../lib/api'
+import { reviewSourceLabel } from '../../lib/labels'
 
 const REASON_LABEL: Record<string, string> = {
   unmatched_item: 'Item not recognised',
@@ -31,6 +32,11 @@ const ACTION_LABEL: Record<string, string> = {
   classify_sale: 'Record it as a sale',
   confirm_sale: 'Record it as a sale',
   dismiss: 'Ignore this line',
+  chatter: 'Ignore this line',
+  gift: 'Record it as a gift',
+  missing_sale: 'Add the missed sale',
+  duplicate_sale: 'Remove the duplicate',
+  other: 'Take a look',
 }
 
 export function Review() {
@@ -61,7 +67,7 @@ export function Review() {
           </button>
           {[...byReason.entries()].map(([r, n]) => (
             <button key={r} className={'chip' + (reason === r ? ' on' : '')} onClick={() => setReason(r)}>
-              {REASON_LABEL[r] ?? r} <span className="chip-n">{n}</span>
+              {REASON_LABEL[r] ?? 'Something to check'} <span className="chip-n">{n}</span>
             </button>
           ))}
         </div>
@@ -91,8 +97,8 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
     <div className="card review" data-testid={`review-${item.id}`}>
       <div className="product-head">
         <h3>
-          {REASON_LABEL[item.reason] ?? item.reason}
-          <span className="muted small"> · {item.source}</span>
+          {REASON_LABEL[item.reason] ?? 'Something to check'}
+          <span className="muted small"> · {reviewSourceLabel(item.source)}</span>
         </h3>
         {item.showId && (
           <Link to={`/app/shows/${item.showId}`} className="small">
@@ -103,7 +109,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
       <p>{item.summary}</p>
       {!!item.proposal?.action && item.proposal.action !== 'none' && (
         <p className="proposal" data-testid="proposal">
-          <b>AI suggests:</b> {ACTION_LABEL[String(item.proposal.action)] ?? String(item.proposal.action)}
+          <b>AI suggests:</b> {ACTION_LABEL[String(item.proposal.action)] ?? 'Take a look'}
           {typeof item.proposal.confidence === 'number' && <span className="muted"> · {Math.round(Number(item.proposal.confidence) * 100)}% sure</span>}
           {item.proposal.reasoning ? <span className="muted small"> — {String(item.proposal.reasoning)}</span> : null}
           {item.proposal.summary ? <span className="muted small"> — {String(item.proposal.summary)}</span> : null}

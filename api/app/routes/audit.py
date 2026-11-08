@@ -4,9 +4,29 @@ from sqlalchemy import select
 from .. import serializers
 from ..auth import require
 from ..db import db
-from ..models import AuditLog
+from ..models import AuditLog, Device, Sku, User
 
 bp = Blueprint("audit", __name__)
+
+# target_type -> (model, the column the sentence names it by); one query per type per page
+TARGET_NAMES = {"user": (User, User.email), "sku": (Sku, Sku.code), "device": (Device, Device.name)}
+
+
+def _target_names(org_id: int, rows: list[AuditLog]) -> dict[tuple[str, str], str]:
+    names: dict[tuple[str, str], str] = {}
+    for kind, (model, column) in TARGET_NAMES.items():
+        ids = {
+            int(a.target_id)
+            for a in rows
+            if a.target_type == kind and (a.target_id or "").isdigit()
+        }
+        if not ids:
+            continue
+        found = db.session.execute(
+            select(model.id, column).where(model.id.in_(ids), model.organization_id == org_id)
+        ).all()
+        names.update({(kind, str(i)): name for i, name in found})
+    return names
 
 
 @bp.get("")
@@ -18,4 +38,12 @@ def list_audit():
     if before:
         q = q.where(AuditLog.id < before)
     rows = db.session.scalars(q.order_by(AuditLog.id.desc()).limit(limit)).all()
-    return jsonify({"entries": [serializers.audit_entry(a) for a in rows]})
+    names = _target_names(g.u.organization_id, rows)
+    return jsonify(
+        {
+            "entries": [
+                serializers.audit_entry(a, names.get((a.target_type or "", a.target_id or ""), ""))
+                for a in rows
+            ]
+        }
+    )

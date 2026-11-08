@@ -4,6 +4,7 @@ import { useNavigate, useParams } from 'react-router'
 import { useAuth } from '../auth/useAuth'
 import { Field, Form } from '../components/Form'
 import { ApiError, api, apiGet, type Me } from '../lib/api'
+import { roleLabel } from '../lib/labels'
 
 export function AcceptInvite() {
   const { token = '' } = useParams()
@@ -24,7 +25,7 @@ export function AcceptInvite() {
     <section className="card auth-card">
       <h2>Join {info.data.organization}</h2>
       <p className="muted">
-        {info.data.email} · role: <b>{info.data.role}</b>
+        {info.data.email} · joining as <b>{roleLabel(info.data.role)}</b>
       </p>
       <Form
         submitLabel="Create account"

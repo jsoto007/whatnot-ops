@@ -326,7 +326,7 @@ def test_ai_status_and_audit_routes(client, app, world, fake_ai):
         == "cancelled"
     )
     status = client.get("/api/review/ai-status").get_json()
-    assert status["callsToday"] >= 1 and status["provider"] == "fake"
+    assert status["callsToday"] >= 1 and status["provider"] == "Test provider"
 
 
 def test_a_pick_your_own_win_asks_no_ai_which_product(app, world, monkeypatch):

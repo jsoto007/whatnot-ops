@@ -116,5 +116,5 @@ test('wins are paid orders at once; a declined card comes off the queue; pick â†
   await page.getByLabel('Tracking number').fill('1Z999')
   await page.getByTestId('advance').click() // shipped
   await expect(page.locator('.status.shipped').first()).toBeVisible()
-  await expect(page.getByTestId('packing-slip')).toContainText('fulfilled')
+  await expect(page.getByTestId('packing-slip')).toContainText('shipped')
 })

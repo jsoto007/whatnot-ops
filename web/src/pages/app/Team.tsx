@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/useAuth'
 import { Field, Form } from '../../components/Form'
 import { api, apiGet, type Invite, type Role, type User } from '../../lib/api'
+import { roleLabel } from '../../lib/labels'
 
 interface TeamData {
   users: User[]
@@ -46,7 +47,7 @@ export function Team() {
               <td>
                 {u.name}
                 {u.isAdmin && (
-                  <span className="badge live" title="Set by ADMIN_EMAIL or IT_SUPPORT on the server; always an owner">
+                  <span className="badge live" title="The shop's protected owner: always an owner, cannot be changed here">
                     admin
                   </span>
                 )}
@@ -56,11 +57,13 @@ export function Team() {
                 {can('team.manage') && u.id !== me?.user.id && !u.isAdmin ? (
                   <select value={u.role} aria-label={`Role for ${u.email}`} onChange={(e) => update.mutate({ id: u.id, role: e.target.value as Role })}>
                     {(['owner', 'manager', 'fulfillment', 'viewer'] as Role[]).map((r) => (
-                      <option key={r}>{r}</option>
+                      <option key={r} value={r}>
+                        {roleLabel(r)}
+                      </option>
                     ))}
                   </select>
                 ) : (
-                  u.role
+                  roleLabel(u.role)
                 )}
               </td>
               <td>{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : '—'}</td>
@@ -98,7 +101,9 @@ export function Team() {
             <Field label="Role">
               <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
                 {invitableRoles.map((r) => (
-                  <option key={r}>{r}</option>
+                  <option key={r} value={r}>
+                    {roleLabel(r)}
+                  </option>
                 ))}
               </select>
             </Field>
@@ -131,7 +136,7 @@ export function Team() {
                   {invites.map((i) => (
                     <tr key={i.id}>
                       <td>{i.email}</td>
-                      <td>{i.role}</td>
+                      <td>{roleLabel(i.role)}</td>
                       <td>{i.invitedBy ?? '—'}</td>
                       <td>{new Date(i.expiresAt).toLocaleDateString()}</td>
                       <td>

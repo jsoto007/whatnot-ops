@@ -48,7 +48,7 @@ export function Signup() {
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
         </Field>
         {setupCodeRequired && (
-          <Field label="Setup code (SETUP_TOKEN on the server)">
+          <Field label="Setup code">
             <input value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="off" spellCheck={false} required />
           </Field>
         )}

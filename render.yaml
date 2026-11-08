@@ -107,3 +107,6 @@ services:
           property: connectionString
       - key: WORKER_POLL_SECONDS
         value: "2"
+      # Dashboard, same values as the web service (never commit them):
+      #   MAILGUN_API_KEY, MAILGUN_DOMAIN, EMAIL_FROM   password-reset emails go out from here
+      #   AI_PROVIDER + its key                          the AI jobs run here

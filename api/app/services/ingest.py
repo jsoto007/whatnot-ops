@@ -71,6 +71,8 @@ def validate(payload: object) -> dict:
         )
     assert isinstance(payload, dict)
     show_id = payload["show"]["id"]
+    if text.has_hidden(show_id):
+        raise BatchInvalid(["show/id: fails pattern (no control or invisible characters)"])
     bad = [r["seq"] for r in payload["rows"] if r["showId"] != show_id]
     if bad:
         raise BatchInvalid([f"rows with seq {bad[:5]} belong to a different show than the batch"])

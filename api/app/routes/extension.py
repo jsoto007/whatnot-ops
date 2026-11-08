@@ -102,7 +102,9 @@ def download():
         return jsonify({"error": "the extension has not been built on this server"}), 503
     url = server_url()
     if url is None:
-        return jsonify({"error": "set APP_URL so the extension knows where to upload"}), 503
+        return jsonify(
+            {"error": "this server does not know its public address yet; ask your developer"}
+        ), 503
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for f in sorted(dist.rglob("*")):

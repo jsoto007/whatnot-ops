@@ -119,18 +119,19 @@ def test_workbook_sheets_rows_and_currency_cells(app, world):
     assert walked[0] == ("Show", "Buyer", "Outcome", "Item", "Qty", "Line #", "Note")
     assert [w[1:3] for w in walked[1:]] == [("kat.c", "Cancelled")]
     fulfil = list(wb["Fulfilment"].iter_rows(values_only=True))
-    assert fulfil[1][1:6] == ("lani808", "paid", "RED", "Red bundle", 2)
+    assert fulfil[1][1:6] == ("lani808", "ready", "RED", "Red bundle", 2)
     inv = list(wb["Inventory remaining"].iter_rows(values_only=True))[1]
     assert inv[:5] == ("Red bundle", "RED", 1, 0, 1)
     moves = list(wb["Stock movements"].iter_rows(values_only=True))
     # every win is paid at once (reserve + commit); kat.c's cancelled win is restocked
+    # in words, not ledger codes (reserve / commit / restock)
     assert [m[2] for m in moves[1:]] == [
-        "restock",
-        "reserve",
-        "commit",
-        "reserve",
-        "commit",
-        "restock",
+        "restocked",
+        "held for a sale",
+        "paid",
+        "held for a sale",
+        "paid",
+        "restocked",
     ]
 
 

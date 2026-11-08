@@ -1,4 +1,5 @@
 from .models import AuditLog, Device, Invite, Organization, Show, User
+from .services import activity
 from .services.admin import is_protected
 from .services.permissions import permissions_for
 
@@ -51,16 +52,14 @@ def device(d: Device) -> dict:
     }
 
 
-def audit_entry(a: AuditLog) -> dict:
+def audit_entry(a: AuditLog, target: str = "") -> dict:
+    """Only words: the raw action code and details stay in the database
+    (services/activity.py)."""
     return {
         "id": a.id,
         "at": a.created_at.isoformat(),
-        "actorType": a.actor_type,
-        "actor": a.actor_label,
-        "action": a.action,
-        "targetType": a.target_type,
-        "targetId": a.target_id,
-        "details": a.details,
+        "who": activity.who(a.action, a.actor_type, a.actor_label),
+        "summary": activity.describe(a.action, a.details, target),
     }
 
 
@@ -108,7 +107,8 @@ def product(p) -> dict:
     }
 
 
-def movement(m) -> dict:
+def movement(m, names: dict | None = None) -> dict:
+    """`names`: user id -> name for the people in these rows (activity.user_names)."""
     return {
         "id": m.id,
         "kind": m.kind.value,
@@ -116,7 +116,7 @@ def movement(m) -> dict:
         "sourceType": m.source_type,
         "sourceId": m.source_id,
         "reason": m.reason,
-        "actor": m.actor_label or m.actor_type,
+        "actor": activity.movement_actor(m.actor_type, m.actor_id, m.actor_label, names or {}),
         "onHandAfter": m.on_hand_after,
         "reservedAfter": m.reserved_after,
         "at": m.created_at.isoformat(),

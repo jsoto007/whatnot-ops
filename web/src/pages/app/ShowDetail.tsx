@@ -4,6 +4,7 @@ import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleStatus, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway } from '../../lib/api'
 import { fmtLongDate, fmtShopTime } from '../../lib/format'
+import { lotLabel, saleStatusLabel } from '../../lib/labels'
 import { useDebounced } from '../../lib/useDebounced'
 import { Kpis, Tally, TopLists } from './Dashboard'
 import { Reconcile } from './Reconcile'
@@ -252,9 +253,9 @@ function SalesTab({ sales, loading }: { sales: Sale[]; loading: boolean }) {
                 </td>
                 <td className="num">{s.quantity}</td>
                 <td className="num">{money((s.priceCents ?? 0) * s.quantity)}</td>
-                <td className="muted">{s.auctionType}</td>
+                <td className="muted">{lotLabel(s.auctionType)}</td>
                 <td>
-                  <span className={`status ${s.status}`}>{s.status === 'payment_failed' ? 'payment declined' : s.status}</span>
+                  <span className={`status ${s.status}`}>{saleStatusLabel(s.status)}</span>
                   {s.statusReason && <div className="muted small">{s.statusReason}</div>}
                 </td>
                 <td>
@@ -391,7 +392,7 @@ function EventsTab({ showId }: { showId: string }) {
               <th>Item</th>
               <th className="num">Qty</th>
               <th>Price</th>
-              <th>Rule</th>
+              <th>Confidence</th>
               <th>Line</th>
             </tr>
           </thead>
@@ -406,9 +407,7 @@ function EventsTab({ showId }: { showId: string }) {
                 <td>{e.item}</td>
                 <td className="num">{e.quantity}</td>
                 <td>{money(e.priceCents)}</td>
-                <td className="muted">
-                  {e.rule} · {Math.round(e.confidence * 100)}%
-                </td>
+                <td className="muted num">{Math.round(e.confidence * 100)}%</td>
                 <td className="muted">{e.rawText}</td>
               </tr>
             ))}

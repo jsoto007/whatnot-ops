@@ -1,3 +1,4 @@
+from . import clean  # noqa: F401 - registers the free-text cleaners
 from .accounts import AuditLog, Invite, PasswordReset, Role, User
 from .ai import AiCall
 from .core import ChatMessage, Device, DevicePairing, Organization, RateLimit, Show

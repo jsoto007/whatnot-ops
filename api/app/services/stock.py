@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 
 from ..db import db
 from ..models import InventoryMovement, MovementKind, Product, Sale, Show, Sku
+from . import activity as activity_words
 from . import catalog, inventory
 from .dashboard import STANDING  # same definition of "sold" as the dashboard
 from .inventory import Actor, InventoryError
@@ -312,9 +313,17 @@ def activity(org_id: int, *, sku_id: int | None = None, limit: int = 50) -> list
             .where(Sale.id.in_(sale_ids or {0}))
         ).all()
     }
+    names = activity_words.user_names(
+        org_id, {m.actor_id for m, _, _ in rows if m.actor_type == "user"}
+    )
     out = []
     for m, code, pname in rows:
-        d = {**serializers.movement(m), "skuId": m.sku_id, "skuCode": code, "productName": pname}
+        d = {
+            **serializers.movement(m, names),
+            "skuId": m.sku_id,
+            "skuCode": code,
+            "productName": pname,
+        }
         is_sale = m.source_type == "sale" and m.source_id.isdigit()
         sale = sales.get(int(m.source_id)) if is_sale else None
         d["sale"] = (

@@ -32,6 +32,9 @@ from .ai.policy import may_auto_apply
 from .inventory import Actor
 from .jobs import enqueue, handler
 
+# What Settings shows for AI_PROVIDER: the vendor's name, never the setting or its value.
+PROVIDER_LABELS = {"claude": "Claude (Anthropic)", "jev": "Jev", "fake": "Test provider"}
+
 log = logging.getLogger(__name__)
 AI_ACTOR = Actor("ai", None, "ai supervisor")
 AUDIT_DELAY_S = 120
@@ -598,10 +601,12 @@ def status(org_id: int) -> dict:
     ).all()
     ok = sum(n for k, n, _ in rows if k)
     failed = sum(n for k, n, _ in rows if not k)
-    last_error = db.session.scalar(
-        select(AiCall.error)
+    # Only when: the vendor's error text (status codes, setting names) stays in ai_calls.
+    last_failed = db.session.scalar(
+        select(AiCall.created_at)
         .where(AiCall.organization_id == org_id, AiCall.ok.is_(False))
         .order_by(AiCall.id.desc())
+        .limit(1)
     )
     open_ai = (
         db.session.scalar(
@@ -615,11 +620,12 @@ def status(org_id: int) -> dict:
         )
         or 0
     )
+    name = provider_name()
     return {
-        "provider": provider_name(),
-        "enabled": provider_name() not in ("", "none", "off"),
+        "provider": PROVIDER_LABELS.get(name, "AI"),
+        "enabled": name not in ("", "none", "off"),
         "callsToday": ok,
         "failedToday": failed,
-        "lastError": last_error,
+        "lastFailedAt": last_failed.isoformat() if last_failed else None,
         "openProposals": open_ai,
     }

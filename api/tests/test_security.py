@@ -369,7 +369,7 @@ def test_distributed_guessing_cannot_lock_the_owner_out_of_a_known_browser(clien
     # from a lost laptop stops helping), while the browser that did the reset is known.
     before = client.get_cookie("wn_known", path="/api/auth").value
     with app.app_context():
-        token = accounts.request_password_reset("o@shop.test")
+        token = accounts.request_password_reset("o@shop.test", return_token=True)
     new_pw = PW + "-new"
     r = client.post(
         "/api/auth/password/reset", json={"token": token, "password": new_pw}, headers=h
@@ -766,3 +766,306 @@ def test_deeply_nested_json_is_400_not_500(client, auth):
     deep = "[" * 100_000 + "]" * 100_000
     r = client.post("/api/ingest", data=deep, headers={**auth, "Content-Type": "application/json"})
     assert r.status_code == 400
+
+
+# ---------- what the browser is told (2026-11-07: internal names reached the page) ----------
+
+
+def test_the_activity_log_sends_sentences_not_codes_or_json(client):
+    """Settings → Activity printed `invite.created` and `{"email":…,"role":"owner"}`."""
+    h = owner(client)
+    r = client.post(
+        "/api/team/invites", json={"email": "Pat@Shop.test", "role": "owner"}, headers=h
+    )
+    assert r.status_code == 201
+    res = client.get("/api/audit")
+    entries = res.get_json()["entries"]
+    assert all(set(e) == {"id", "at", "who", "summary"} for e in entries)
+    assert entries[0]["who"] == "o@shop.test"
+    assert entries[0]["summary"] == "Invited pat@shop.test as Owner"
+    assert entries[-1]["summary"] == "Created the shop"
+    body = res.get_data(as_text=True)
+    for raw in (
+        "invite.created",
+        "org.created",
+        '\\"role\\"',
+        '"details"',
+        '"action"',
+        "targetType",
+    ):
+        assert raw not in body
+
+
+def test_odd_or_unknown_audit_rows_still_read_as_words():
+    from app.services.activity import actor, describe
+
+    assert describe("something.new", {"x": 1}) == "Made a change"
+    assert describe("invite.created", {"unexpected": True}) == "Sent an invite"
+    assert describe("order.status", {"status": "not-a-status"}) == "Moved an order"
+    assert describe("support.restored", {"password": "reset from IT_SUPPORT_PASSWORD"}) == (
+        "Restored the IT support account"
+    )
+    assert (
+        describe(
+            "user.updated", {"role": ["manager", "owner"], "disabled": [False, True]}, "pat@x.test"
+        )
+        == "Changed pat@x.test's role from Manager to Owner; turned off pat@x.test's access"
+    )
+    assert describe("inventory.imported", {"set": 2, "create": 1, "skip": 0}) == (
+        "Imported the stock sheet: 1 new, 2 updated"
+    )
+    assert actor("system", "flask autopay-reserved") == "Automatic"
+    assert actor("rule", "whatnot autopay") == "Automatic"
+    assert actor("ai", "ai supervisor") == "AI"
+
+
+def test_errors_do_not_name_permissions_settings_or_vendor_errors(app, client, monkeypatch):
+    from app.services import supervisor
+
+    h = owner(client)
+    token = (
+        client.post("/api/team/invites", json={"email": "v@shop.test", "role": "viewer"}, headers=h)
+        .get_json()["acceptUrl"]
+        .rsplit("/", 1)[1]
+    )
+    viewer = app.test_client()
+    viewer.post(
+        "/api/auth/invites/accept",
+        json={"token": token, "name": "V", "password": PW},
+        headers={"X-CSRF-Token": viewer.get("/api/auth/csrf").get_json()["token"]},
+    )
+    assert viewer.get("/api/audit").get_json() == {"error": "you do not have permission to do that"}
+
+    monkeypatch.setenv("AI_PROVIDER", "fake")
+    with app.app_context():
+        from app.models import Organization
+
+        org_id = db.session.scalar(select(Organization.id))
+        supervisor._log_call(
+            org_id, None, "jev", "classify", 0, 0, None, False, "JEV_API_KEY is not set"
+        )
+        db.session.commit()
+    status = client.get("/api/review/ai-status").get_json()
+    assert status["provider"] == "Test provider" and status["lastFailedAt"]
+    assert "lastError" not in status and "JEV_API_KEY" not in json.dumps(status)
+
+
+# ---------- 2026-11-07 security check, part B (claude-reports/Security-Audit/) ----------
+
+
+def test_typed_text_loses_control_characters_and_old_rows_still_export():
+    """B3: a bell in an order note made openpyxl refuse every report with that order."""
+    from openpyxl import Workbook
+
+    from app.models import Order, Product
+
+    o = Order(notes="leave at\x07 door\nring twice", tracking="1Z\t99‮", packed_by="Pat\x00")
+    assert (o.notes, o.tracking, o.packed_by) == ("leave at door\nring twice", "1Z 99", "Pat")
+    assert Product(name="Red\x1b[31m bundle").name == "Red[31m bundle"
+    ws = reports._sheet(Workbook(), "T", ["Notes"], [["saved before the fix\x07"]], first=True)
+    assert ws["A2"].value == "saved before the fix"
+
+
+def test_forgot_password_does_the_same_work_for_unknown_addresses(client, app, monkeypatch):
+    """B4: only real accounts were rate-counted, given a reset row and mailed in the request
+    (slower, and a Mailgun failure was a 500 for them alone)."""
+    from app.models import Job, PasswordReset
+    from app.routes import auth as auth_routes
+    from app.services import jobs, mail
+
+    h = owner(client)
+    client.post("/api/auth/logout", headers=h)
+    monkeypatch.setattr(auth_routes, "_dev_links_allowed", lambda: False)
+    monkeypatch.delenv("JOBS_INLINE", raising=False)
+
+    def boom(_msg, **_kw):
+        raise mail.MailError("Mailgun returned 500")
+
+    monkeypatch.setattr(mail, "send", boom)
+    with app.app_context():
+        before = db.session.scalar(select(db.func.count()).select_from(Job))
+    answers = [
+        client.post("/api/auth/password/forgot", json={"email": e}, headers=h)
+        for e in ("o@shop.test", "nobody@shop.test")
+    ]
+    assert [(r.status_code, r.get_json()) for r in answers] == [(202, {"ok": True})] * 2
+    with app.app_context():
+        queued = db.session.scalars(select(Job).order_by(Job.id).offset(before)).all()
+        assert [j.kind for j in queued] == ["reset_mail", "reset_mail"]
+        # The web process decides the link's address (the worker has no public URL).
+        assert all(j.payload["link"].endswith("/reset/") for j in queued)
+        assert {j.max_attempts for j in queued} == {1}  # never a second email from a retry
+        # The worker: the failing mail stays in the job, never in a response (the unknown
+        # address has nothing to send, so its job is simply done).
+        assert [jobs.run_job(j.id).status.value for j in queued] == ["failed", "done"]
+        assert db.session.scalar(select(db.func.count()).select_from(PasswordReset)) == 0
+        monkeypatch.setattr(mail, "send", lambda _msg, **_kw: True)
+        for j in queued:
+            jobs.run_job(j.id)
+        assert db.session.scalar(select(db.func.count()).select_from(PasswordReset)) == 1
+
+
+def test_reset_mail_fails_loudly_on_a_worker_without_mailgun(app, monkeypatch):
+    """Peer review (HIGH): MAILGUN_* lived only on the web service; the worker's job
+    finished "done" having only logged the email."""
+    from app.services import accounts, mail
+
+    monkeypatch.delenv("MAILGUN_API_KEY", raising=False)
+    with app.app_context():
+        monkeypatch.setitem(app.config, "APP_ENV", "production")
+        with pytest.raises(mail.MailError):
+            accounts._reset_mail_job({"email": "o@shop.test", "link": "https://x/reset/"})
+
+
+def test_logged_database_errors_carry_no_row_values(app):
+    """Peer review: hide_parameters hides the statement's values, but Postgres quotes the
+    failing row in its DETAIL, which the exception's text carries."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.logsafe import error_line
+    from app.models import Organization
+
+    with app.app_context():
+        db.session.add(Organization(name="A", slug="secret-slug-1"))
+        db.session.commit()
+        db.session.add(Organization(name="B", slug="secret-slug-1"))
+        with pytest.raises(IntegrityError) as caught:
+            db.session.commit()
+        db.session.rollback()
+    assert "secret-slug-1" in str(caught.value)  # what log.exception used to write
+    line = error_line(caught.value)
+    assert line.startswith("UniqueViolation: duplicate key") and "secret-slug-1" not in line
+
+
+def test_names_of_only_invisible_marks_are_refused(client):
+    h = {"X-CSRF-Token": client.get("/api/auth/csrf").get_json()["token"]}
+    r = client.post(
+        "/api/auth/signup",
+        json={"organization": "\u200b", "name": "O", "email": "o@shop.test", "password": PW},
+        headers=h,
+    )
+    assert r.status_code == 400
+
+
+def test_a_planted_csrf_cookie_is_not_enough_and_the_token_survives_sign_in(client):
+    """B5: the token lives in the signed session; a cookie a sibling subdomain plants is
+    ignored, and signing in or out keeps the page's token."""
+    client.set_cookie("csrf", "a" * 43)
+    r = client.post(
+        "/api/auth/login",
+        json={"email": "o@shop.test", "password": PW},
+        headers={"X-CSRF-Token": "a" * 43},
+    )
+    assert r.status_code == 403
+    h = owner(client)
+    assert client.post("/api/auth/logout", headers=h).status_code == 204
+    r = client.post("/api/auth/login", json={"email": "o@shop.test", "password": PW}, headers=h)
+    assert r.status_code == 200
+    r = client.patch("/api/team/organization", json={"hostUsername": "x"}, headers=h)
+    assert r.status_code == 200
+
+
+def _production_config(monkeypatch, **env):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SECRET_KEY", "x" * 40)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://localhost:5432/x")
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    return Config()
+
+
+def test_production_cookies_and_logs_resist_tossing_and_leaks(monkeypatch):
+    """B5: `__Host-` session cookie. B7: no SQL parameters in logged errors."""
+    c = _production_config(monkeypatch)
+    assert c.SESSION_COOKIE_NAME == "__Host-wn_session" and c.SESSION_COOKIE_SECURE
+    assert c.SQLALCHEMY_ENGINE_OPTIONS["hide_parameters"] is True
+    for bad in ("0", "9", "two"):
+        with pytest.raises(ConfigError):
+            _production_config(monkeypatch, PROXY_HOPS=bad)
+
+
+def test_the_client_address_is_the_one_cloudflare_saw(monkeypatch, caplog):
+    """B2: X-Forwarded-For arrives as "<client>, <cloudflare edge>" (anything the client
+    sent is further left). One hop gave every visitor the edge's address."""
+    import logging
+
+    from app import create_app
+
+    # The test DB's migrations ran Alembic's fileConfig, which disables loggers made
+    # before it (production migrates in its own process, before gunicorn starts).
+    monkeypatch.setattr(logging.getLogger("app"), "disabled", False)
+    prod = create_app(_production_config(monkeypatch))
+    prod.add_url_rule("/_ip", "ip", lambda: request_ip())
+    c = prod.test_client()
+    c.get("/api/health")  # Render's health check is not the visitor the check line needs
+    seen = c.get(
+        "/_ip",
+        headers={
+            "X-Forwarded-For": "6.6.6.6, 203.0.113.9, 172.68.1.1",
+            "CF-Connecting-IP": "203.0.113.9",
+        },
+    )
+    assert seen.get_data(as_text=True) == "203.0.113.9"
+    checks = [r for r in caplog.records if "client address check" in r.getMessage()]
+    assert len(checks) == 1 and checks[0].levelname == "WARNING"
+    assert "using 203.0.113.9, Cloudflare saw 203.0.113.9 (match" in checks[0].getMessage()
+
+
+def request_ip() -> str:
+    from flask import request
+
+    return request.remote_addr or ""
+
+
+def test_heavy_pages_are_rate_limited_per_person(client, monkeypatch):
+    """B6: dashboards and order lists had no limit; a stolen session could loop them."""
+    from app import auth as auth_mod
+
+    owner(client)
+    monkeypatch.setattr(auth_mod, "HEAVY_READS_PER_MIN", 2)
+    codes = [client.get("/api/dashboard").status_code for _ in range(3)]
+    assert codes == [200, 200, 429]
+    assert client.get("/api/inventory").status_code == 200  # light reads are not counted
+
+
+def test_show_keys_with_hidden_characters_are_refused_not_a_500(client, auth):
+    """B7: a NUL in the show key reached Postgres (500)."""
+    from app.services.ingest import BatchInvalid, validate
+
+    payload = batch([], show="2026-10-19T20:00:00\x00Z")
+    with pytest.raises(BatchInvalid):
+        validate(payload)
+    assert client.get("/api/ingest/stock?show=a%00b", headers=auth).status_code == 400
+    assert client.get("/api/ingest/shows/a%00b", headers=auth).status_code == 404
+
+
+def test_a_near_duplicate_name_is_a_409_not_a_500(client):
+    """Peer review: the cleaner runs on assignment, so the duplicate checks must compare
+    the cleaned value too, or "Red\\tbundle" passes the check and fails the unique index."""
+    h = owner(client)
+    assert client.post("/api/products", json={"name": "Red bundle"}, headers=h).status_code == 201
+    for twin in ("Red\tbundle", "Red  bundle", "Red bundle\x07"):
+        r = client.post("/api/products", json={"name": twin}, headers=h)
+        assert r.status_code == 409, (twin, r.status_code)
+    other = client.post("/api/products", json={"name": "Blue"}, headers=h).get_json()["product"]
+    r = client.patch(f"/api/products/{other['id']}", json={"name": "Red​ bundle"}, headers=h)
+    assert r.status_code == 409
+
+
+def test_the_activity_log_names_the_right_actor_and_ledger_source():
+    from app.services.activity import describe, movement_source, who
+
+    assert who("login.failed", "system", "") == "Sign-in page"
+    assert who("device.paired", "system", "") == "Laptop"
+    assert who("sale.autopaid", "system", "flask autopay-reserved") == "Automatic"
+    assert movement_source("sale_repaid", "12") == "sale #12 (paid after a decline)"
+    assert movement_source("manual", "") == "by hand"
+    assert describe("inventory.adjusted", {"delta": 0, "reason": None}, "RED") == (
+        "Checked stock of RED: no change"
+    )
+    assert describe("organization.updated", {"name": ["Old", "New shop"]}) == (
+        "Renamed the shop to “New shop”"
+    )
+    assert describe("inventory.imported", {"unchanged": 40, "set": 1}) == (
+        "Imported the stock sheet: 1 updated, 40 unchanged"
+    )
