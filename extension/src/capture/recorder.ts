@@ -1,6 +1,6 @@
 import { Deduper } from './dedup'
 import { rowId } from './id'
-import { autoDetectRows, chatContainer } from './row'
+import { autoDetectRows, chatContainer, nests } from './row'
 import { leafSegments, rowText, splitRow } from './text'
 import type { CapturedRow } from './types'
 
@@ -176,7 +176,9 @@ export class Recorder {
   private locate(): boolean {
     for (const selector of [this.selector, ...this.fallbacks]) {
       const row = this.findRow(selector)
-      if (!row) continue
+      // A selector that matches boxes inside its own rows (a bare `div` saved by 1.7.0
+      // and older on the seller dashboard) would record every piece of every message.
+      if (!row || nests(chatContainer(row), selector)) continue
       if (selector !== this.selector) {
         this.fallbacks = [this.selector, ...this.fallbacks.filter((s) => s !== selector)]
         this.selector = selector
