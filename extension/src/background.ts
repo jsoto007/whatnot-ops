@@ -19,7 +19,7 @@ import {
   putRows,
   uploadedCount,
 } from './storage/db'
-import { cleanShipments, cleanShowLabel, postShipments } from './shipments/upload'
+import { cleanShipments, cleanShowLabel, MAX_ROWS, postShipments } from './shipments/upload'
 import { fetchStock } from './stock/fetch'
 import { migrateLegacyStorage } from './storage/migrate'
 import { type Tabs, claimRecording, endRecording, forgetRecording, resumeFor } from './storage/recording'
@@ -260,9 +260,15 @@ async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promi
       // The key never reaches the content script; it only gets the stock rows.
       return fetchStock(await loadSettings(), typeof msg.showId === 'string' && msg.showId.length <= 64 ? msg.showId : undefined)
     case 'shipments': {
-      // Only from a content script on Seller Hub's Shipments page; the key never reaches it.
-      const rows = sender.url && new URL(sender.url).pathname.startsWith('/dashboard/shipments') ? cleanShipments(msg.rows) : null
-      if (!rows) return { error: 'bad shipments message' }
+      // Only from the content script on a Whatnot page; the key never reaches it. The page is
+      // known by its origin, not its path: Seller Hub moves between its pages without reloading
+      // and Chrome keeps reporting the URL the page was first loaded at, so a path check refused
+      // every send after the host clicked into Shipments from another Seller Hub page.
+      if (!fromContentScript(sender)) return { error: 'Shipments can only be sent from the Whatnot page itself.' }
+      if (!Array.isArray(msg.rows)) return { error: 'The shipments read came back empty; reload the page and send again.' }
+      if (msg.rows.length > MAX_ROWS) return { error: `More than ${MAX_ROWS} shipments were read; pick one show in Whatnot's filter and send again.` }
+      const rows = cleanShipments(msg.rows)
+      if (!rows) return { error: 'The shipments read could not be understood; reload the page and send again.' }
       return postShipments(await loadSettings(), rows, cleanShowLabel(msg.show))
     }
     case 'openOptions':
@@ -291,6 +297,35 @@ async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promi
 // script's sender.url is the whatnot.com page it runs in.
 const fromExtensionPage = (sender: chrome.runtime.MessageSender): boolean =>
   !!sender.url && sender.url.startsWith(chrome.runtime.getURL(''))
+
+/** Hosts whose pages run content.js: whatnot.com, plus whatever the manifest declares (the test build adds its fixture origin). */
+const CONTENT_HOSTS: ReadonlySet<string> = new Set([
+  'www.whatnot.com',
+  'whatnot.com',
+  ...(chrome.runtime.getManifest().content_scripts ?? [])
+    .filter((cs) => cs.js?.includes('content.js'))
+    .flatMap((cs) => cs.matches ?? [])
+    .map((pattern) => {
+      try {
+        return new URL(pattern).hostname
+      } catch {
+        return ''
+      }
+    })
+    .filter(Boolean),
+])
+
+/** From this extension's content script in a tab on one of those hosts (never an extension page). */
+function fromContentScript(sender: chrome.runtime.MessageSender): boolean {
+  if (!sender.tab || fromExtensionPage(sender)) return false
+  const from = sender.origin ?? sender.url
+  if (!from) return false
+  try {
+    return CONTENT_HOSTS.has(new URL(from).hostname)
+  } catch {
+    return false
+  }
+}
 
 chrome.runtime.onMessage.addListener((raw: Request, sender, sendResponse) => {
   // Only this extension's own content scripts and pages; never another extension.

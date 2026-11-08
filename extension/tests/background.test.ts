@@ -126,6 +126,43 @@ describe('background uploads', () => {
     expect(posts.map((t) => (t - t0) / 1000)).toEqual([2, 52])
   })
 
+  /** One message to the background, with the given sender, as chrome would deliver it. */
+  function ask(msg: unknown, sender: unknown): Promise<unknown> {
+    return new Promise((resolve) => onMessage(msg, sender, resolve))
+  }
+  const shipment = { recipient: 'buyer1', orderDate: 'Oct 31', items: '1', itemLines: [], value: '$5.00', status: 'Ready to Ship', tracking: '', lots: [] }
+
+  it('shipments are accepted from a Whatnot content script even when Chrome still reports the URL the page was loaded at', async () => {
+    const posted: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      posted.push(url)
+      return new Response(JSON.stringify({ stored: 1, lots: 0, show: null, skipped: 0, unmatched: 1, shows: {} }), { status: 200 })
+    })
+    // Seller Hub was opened at /dashboard and navigated in-page to Shipments: sender.url is stale.
+    const reply = await ask(
+      { cmd: 'shipments', rows: [shipment], show: 'E2E Show Oct 31•8:00 PM CDT' },
+      { id: 'ext', url: 'https://www.whatnot.com/dashboard', origin: 'https://www.whatnot.com', tab: { id: 1 } },
+    )
+    expect(reply).toMatchObject({ stored: 1, unmatched: 1 })
+    expect(posted).toEqual([SERVER + '/api/ingest/shipments'])
+  })
+
+  it('shipments from an extension page, another site, or a read that is too big are refused with a reason', async () => {
+    const posted: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      posted.push(url)
+      return new Response('{}', { status: 200 })
+    })
+    const page = { id: 'ext', url: 'chrome-extension://ext/options.html', origin: 'chrome-extension://ext' }
+    expect(await ask({ cmd: 'shipments', rows: [shipment], show: '' }, page)).toEqual({ error: 'Shipments can only be sent from the Whatnot page itself.' })
+    const elsewhere = { id: 'ext', url: 'https://evil.example/dashboard/shipments', origin: 'https://evil.example', tab: { id: 2 } }
+    expect(await ask({ cmd: 'shipments', rows: [shipment], show: '' }, elsewhere)).toEqual({ error: 'Shipments can only be sent from the Whatnot page itself.' })
+    const whatnot = { id: 'ext', url: 'https://www.whatnot.com/dashboard/shipments', origin: 'https://www.whatnot.com', tab: { id: 3 } }
+    expect(await ask({ cmd: 'shipments', rows: Array.from({ length: 2001 }, () => shipment), show: '' }, whatnot)).toMatchObject({ error: expect.stringContaining('More than 2000 shipments') })
+    expect(await ask({ cmd: 'shipments', rows: 'nope', show: '' }, whatnot)).toMatchObject({ error: expect.stringContaining('came back empty') })
+    expect(posted).toEqual([])
+  })
+
   it('a busy chat (a save every 1.5 s) still uploads every 2 s, not only on the minute sweep', async () => {
     online = true
     const t0 = Date.now()
