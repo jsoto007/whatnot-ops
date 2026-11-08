@@ -112,7 +112,10 @@ export function Laptops({ manage }: { manage: boolean }) {
                   <tr key={d.id} className={d.revoked ? 'disabled' : ''}>
                     <td>
                       <b>{d.name}</b>
-                      <div className="muted small">added {fmtWhen(d.createdAt)}</div>
+                      <div className="muted small" data-testid="device-maker">
+                        added {fmtWhen(d.createdAt)} by {d.createdBy ?? 'unknown'}
+                        {d.makerLostAccess && !d.revoked && <span className="neg"> · who no longer has access</span>}
+                      </div>
                     </td>
                     <td>
                       {d.revoked ? (
@@ -146,6 +149,12 @@ export function Laptops({ manage }: { manage: boolean }) {
             </tbody>
           </table>
         </div>
+      )}
+      {manage && list.some((d) => !d.revoked && (!d.createdBy || d.makerLostAccess)) && (
+        <p className="muted small" role="note" data-testid="unknown-maker-note">
+          A laptop's key stops working when the person who connected it loses access. Laptops added by “unknown” have no record of who that was, and ones marked “who no longer has access” were
+          connected before the app did this, so both keep uploading. To tie each one to someone who still has access, disconnect it and connect it again with a code.
+        </p>
       )}
 
       {manage && <ManualKey />}

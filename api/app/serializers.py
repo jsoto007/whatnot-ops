@@ -1,7 +1,7 @@
 from .models import AuditLog, Device, Invite, Organization, Show, User
 from .services import activity
 from .services.admin import is_protected
-from .services.permissions import permissions_for
+from .services.permissions import allowed, permissions_for
 
 
 def organization(o: Organization) -> dict:
@@ -49,6 +49,12 @@ def device(d: Device) -> dict:
         "lastSeenAt": d.last_seen_at.isoformat() if d.last_seen_at else None,
         "revoked": d.revoked_at is not None,
         "extensionVersion": d.extension_version,
+        # Who made the key; None for keys from before that was recorded (or the CLI).
+        "createdBy": d.created_by.name if d.created_by else None,
+        # A key made before 0018 by someone already disabled or demoted was not revoked
+        # by it: say so, so the page does not read as if that key were covered.
+        "makerLostAccess": d.created_by is not None
+        and (d.created_by.disabled or not allowed(d.created_by.role, "devices.manage")),
     }
 
 

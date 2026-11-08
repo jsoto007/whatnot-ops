@@ -103,6 +103,10 @@ export interface Device {
   revoked: boolean
   /** Chat Scraper version it last called in with; null before 1.5.0 or before its first call */
   extensionVersion: string | null
+  /** Who made its key (the key stops when they lose access); null when that was not recorded */
+  createdBy: string | null
+  /** Its maker is disabled or may no longer manage laptops, yet the key (made before that was enforced) still works unless revoked */
+  makerLostAccess: boolean
 }
 /** One activity-log line, already in words: the server never sends action codes or raw details. */
 export interface AuditEntry {

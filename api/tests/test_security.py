@@ -5,18 +5,34 @@ Each test names the finding it proves fixed.
 
 import io
 import json
+import threading
+import time
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from openpyxl import load_workbook
-from sqlalchemy import select
+from sqlalchemy import select, text, update
+from sqlalchemy.exc import OperationalError
 
 from app.config import Config, ConfigError
 from app.db import db
-from app.models import ChatMessage, ReviewItem, Sale, SaleStatus
-from app.services import pipeline, reconcile, reports, rules, stock
+from app.models import (
+    AuditLog,
+    ChatMessage,
+    Device,
+    DevicePairing,
+    Organization,
+    ReviewItem,
+    Role,
+    Sale,
+    SaleStatus,
+    User,
+)
+from app.services import accounts, devices, pipeline, reconcile, reports, rules, stock
 from app.services.inventory import Actor
 from tests.test_ingest import batch, row
 from tests.test_pipeline import run, sales
+from tests.test_player_wins import win_row
 
 PW = "correct-horse-battery"
 
@@ -322,6 +338,355 @@ def test_the_extension_disconnect_revokes_its_own_key(client, app, auth):
     assert client.get("/api/ingest/ping", headers=auth).status_code == 200
     assert client.post("/api/ingest/disconnect", headers=auth).status_code == 204
     assert client.get("/api/ingest/ping", headers=auth).status_code == 401
+
+
+# ---------- laptop keys end with their maker's access (2026-11-07 check, B1) ----------
+#
+# A device key can post "player" wins and declines, which the parser trusts as Whatnot:
+# forged wins autopay sales and commit stock, forged declines close real sales. A key
+# made by a manager must stop working when that manager is disabled or demoted.
+
+
+def _member(client, app, h, email, role, name):
+    """Invite and accept a teammate: (their client, their CSRF headers, their user id)."""
+    r = client.post("/api/team/invites", json={"email": email, "role": role}, headers=h)
+    token = r.get_json()["acceptUrl"].rsplit("/", 1)[1]
+    c = app.test_client()
+    hc = {"X-CSRF-Token": c.get("/api/auth/csrf").get_json()["token"]}
+    body = {"token": token, "name": name, "password": PW}
+    assert c.post("/api/auth/invites/accept", json=body, headers=hc).status_code < 300
+    users = client.get("/api/team").get_json()["users"]
+    return c, hc, next(u["id"] for u in users if u["email"] == email)
+
+
+def _typed_key(c, hc, name):
+    r = c.post("/api/devices", json={"name": name}, headers=hc)
+    assert r.status_code == 201, r.get_json()
+    return r.get_json()["key"]
+
+
+def _code(c, hc, name):
+    r = c.post("/api/devices/pairings", json={"name": name}, headers=hc)
+    assert r.status_code == 201, r.get_json()
+    return r.get_json()["code"]
+
+
+def _paired_key(app, code):
+    r = app.test_client().post("/api/pair", json={"code": code})
+    assert r.status_code == 201, r.get_json()
+    return r.get_json()["key"]
+
+
+def _ping(app, key) -> int:
+    headers = {"Authorization": "Bearer " + key}
+    return app.test_client().get("/api/ingest/ping", headers=headers).status_code
+
+
+@pytest.mark.parametrize(
+    "change", [{"disabled": True}, {"role": "viewer"}, {"role": "fulfillment"}]
+)
+def test_a_managers_laptop_keys_stop_when_they_are_disabled_or_demoted(client, app, change):
+    """B1: both kinds of key a manager made (typed in Settings, paired by code) 401 on
+    ingest once they are disabled or demoted; the owner's key is untouched; every
+    revocation is audited, by the system, naming the laptop and its maker."""
+    h = owner(client)
+    m, hm, mia = _member(client, app, h, "mia@shop.test", "manager", "Mia")
+    typed = _typed_key(m, hm, "Mia typed")
+    paired = _paired_key(app, _code(m, hm, "Mia paired"))
+    owners = _typed_key(client, h, "Front laptop")
+    assert [_ping(app, k) for k in (typed, paired, owners)] == [200, 200, 200]
+
+    r = client.patch(f"/api/team/users/{mia}", json=change, headers=h)
+    assert r.status_code == 200, r.get_json()
+
+    assert [_ping(app, k) for k in (typed, paired, owners)] == [401, 401, 200]
+    # The money path itself: a forged Whatnot win from either key is refused at the door.
+    forged = batch([win_row(1)])
+    for key in (typed, paired):
+        r = client.post("/api/ingest", json=forged, headers={"Authorization": "Bearer " + key})
+        assert r.status_code == 401
+    with app.app_context():
+        assert db.session.scalar(select(db.func.count()).select_from(ChatMessage)) == 0
+    listed = {d["name"]: d["revoked"] for d in client.get("/api/devices").get_json()["devices"]}
+    assert listed == {"Mia typed": True, "Mia paired": True, "Front laptop": False}
+    with app.app_context():
+        rows = db.session.scalars(
+            select(AuditLog).where(AuditLog.action == "device.revoked").order_by(AuditLog.id)
+        ).all()
+        assert [(a.actor_type, a.details["name"], a.details["makerId"]) for a in rows] == [
+            ("system", "Mia typed", mia),
+            ("system", "Mia paired", mia),
+        ]
+
+
+def test_a_manager_made_owner_keeps_their_laptops(client, app):
+    """Only losing the right to manage laptops ends a key: a promotion does not."""
+    h = owner(client)
+    m, hm, mia = _member(client, app, h, "mia@shop.test", "manager", "Mia")
+    key = _typed_key(m, hm, "Mia typed")
+    assert (
+        client.patch(f"/api/team/users/{mia}", json={"role": "owner"}, headers=h).status_code == 200
+    )
+    assert _ping(app, key) == 200
+
+
+def test_a_paired_laptop_belongs_to_whoever_made_the_code(client, app):
+    """B1: the pairing exchange copies the code's creator onto the new device, and the
+    Laptops page says who made each key (None for one with no recorded maker)."""
+    h = owner(client)
+    m, hm, mia = _member(client, app, h, "mia@shop.test", "manager", "Mia")
+    _paired_key(app, _code(m, hm, "Mia paired"))
+    _typed_key(client, h, "Front laptop")
+    with app.app_context():
+        assert (
+            db.session.scalar(select(Device.created_by_id).where(Device.name == "Mia paired"))
+            == mia
+        )
+        org = db.session.scalar(select(Organization))
+        devices.create_device(org, "From the CLI")  # no maker, like the CLI and old keys
+        db.session.commit()
+    listed = {d["name"]: d["createdBy"] for d in client.get("/api/devices").get_json()["devices"]}
+    assert listed == {"Mia paired": "Mia", "Front laptop": "O", "From the CLI": None}
+
+
+def test_no_key_or_code_is_handed_out_for_someone_who_lost_access(client, app):
+    """B1: the maker is re-checked in the database, not only by the session: a code whose
+    maker was disabled is refused even while it has not expired (a disable's clock can
+    trail the laptop's by a few ms), and is not spent; nor can such a person make one."""
+    h = owner(client)
+    m, hm, mia = _member(client, app, h, "mia@shop.test", "manager", "Mia")
+    code = _code(m, hm, "Mia paired")
+    with app.app_context():
+        user = db.session.get(User, mia)
+        user.disabled = True  # straight in the database: the code keeps its expiry
+        db.session.commit()
+        org = db.session.get(Organization, user.organization_id)
+        with pytest.raises(devices.PairingError) as made:
+            devices.create_device(org, "late", created_by=user)
+        assert made.value.status == 403
+        db.session.rollback()
+        with pytest.raises(devices.PairingError):
+            devices.start_pairing(org, "late", user=user)
+        db.session.rollback()
+    assert app.test_client().post("/api/pair", json={"code": code}).status_code == 404
+    with app.app_context():
+        assert db.session.scalar(select(db.func.count()).select_from(Device)) == 0
+        assert db.session.scalar(select(DevicePairing.used_at)) is None
+
+
+def _in_thread(app, fn, out, name):
+    def run():
+        with app.app_context():
+            try:
+                out[name] = fn()
+                db.session.commit()
+            except Exception as e:  # noqa: BLE001 (the test reads it)
+                db.session.rollback()
+                out[name] = e
+            finally:
+                db.session.remove()
+
+    t = threading.Thread(target=run)
+    t.start()
+    return t
+
+
+def _slow_withdraw(monkeypatch, holding: threading.Event, pause: float = 0.5):
+    """update_user stops just after its own user row is written (row locked, nothing
+    committed) so another request can run into it."""
+    real = accounts._withdraw_grants
+
+    def slow(user):
+        db.session.flush()
+        holding.set()
+        time.sleep(pause)
+        real(user)
+
+    monkeypatch.setattr(accounts, "_withdraw_grants", slow)
+
+
+def test_a_key_made_while_its_maker_is_being_disabled_waits_and_is_refused(
+    client, app, monkeypatch
+):
+    """B1 race: the create passed the session check before the disable committed. It
+    waits on the maker's row and then sees the disable: refused, nothing left behind."""
+    h = owner(client)
+    _member(client, app, h, "mia@shop.test", "manager", "Mia")
+    with app.app_context():
+        owner_id = db.session.scalar(select(User.id).where(User.email == "o@shop.test"))
+        mia = db.session.scalar(select(User.id).where(User.email == "mia@shop.test"))
+    holding, out = threading.Event(), {}
+    _slow_withdraw(monkeypatch, holding)
+
+    def disable():
+        return accounts.update_user(db.session.get(User, owner_id), mia, disabled=True)
+
+    def create():
+        user = db.session.get(User, mia)  # as the request loaded her: not disabled yet
+        org = db.session.get(Organization, user.organization_id)
+        return devices.create_device(org, "late", created_by=user)
+
+    t1 = _in_thread(app, disable, out, "disable")
+    assert holding.wait(5)
+    t2 = _in_thread(app, create, out, "create")
+    t1.join(10), t2.join(10)
+    assert not isinstance(out["disable"], Exception), out["disable"]
+    assert isinstance(out["create"], devices.PairingError) and out["create"].status == 403
+    with app.app_context():
+        assert db.session.scalar(select(db.func.count()).select_from(Device)) == 0
+
+
+def test_a_key_made_just_before_its_maker_is_disabled_is_revoked(client, app):
+    """B1 race, other order: the create holds the maker's row; the disable waits for it
+    to commit and then revokes the new key."""
+    h = owner(client)
+    _member(client, app, h, "mia@shop.test", "manager", "Mia")
+    with app.app_context():
+        owner_id = db.session.scalar(select(User.id).where(User.email == "o@shop.test"))
+        mia = db.session.scalar(select(User.id).where(User.email == "mia@shop.test"))
+    holding, out = threading.Event(), {}
+
+    def create():
+        user = db.session.get(User, mia)
+        org = db.session.get(Organization, user.organization_id)
+        _, key = devices.create_device(org, "early", created_by=user)
+        holding.set()
+        time.sleep(0.5)  # the disable is now waiting on her row
+        return key
+
+    def disable():
+        return accounts.update_user(db.session.get(User, owner_id), mia, disabled=True)
+
+    t1 = _in_thread(app, create, out, "create")
+    assert holding.wait(5)
+    t2 = _in_thread(app, disable, out, "disable")
+    t1.join(10), t2.join(10)
+    assert isinstance(out["create"], str) and not isinstance(out["disable"], Exception)
+    assert _ping(app, out["create"]) == 401
+
+
+def test_a_laptop_pairing_while_its_code_maker_is_disabled_is_revoked(client, app):
+    """B1 race: the laptop has won the code but not committed, holding a share lock on
+    the code maker's row; the disable waits on that row, then revokes the key it got."""
+    h = owner(client)
+    m, hm, mia = _member(client, app, h, "mia@shop.test", "manager", "Mia")
+    code = _code(m, hm, "Mia paired")
+    with app.app_context():
+        owner_id = db.session.scalar(select(User.id).where(User.email == "o@shop.test"))
+    holding, out = threading.Event(), {}
+
+    def pair():
+        _, _, key = devices.redeem_pairing(code)
+        holding.set()
+        time.sleep(0.5)  # the disable is now waiting on the code's row
+        return key
+
+    def disable():
+        return accounts.update_user(db.session.get(User, owner_id), mia, disabled=True)
+
+    t1 = _in_thread(app, pair, out, "pair")
+    assert holding.wait(5)
+    t2 = _in_thread(app, disable, out, "disable")
+    t1.join(10), t2.join(10)
+    assert isinstance(out["pair"], str), out["pair"]
+    assert not isinstance(out["disable"], Exception), out["disable"]
+    assert _ping(app, out["pair"]) == 401
+
+
+def _change_waits(app, user_id) -> bool:
+    """Whether changing this person's row, as a disable or demotion does, has to wait."""
+    with db.engine.connect() as c:
+        c.execute(text("SET lock_timeout = '200ms'"))
+        try:
+            c.execute(text("UPDATE users SET disabled = disabled WHERE id = :i"), {"i": user_id})
+            waited = False
+        except OperationalError:
+            waited = True
+        c.rollback()
+    return waited
+
+
+def test_every_key_hand_out_holds_its_makers_row_against_an_access_change(client, app):
+    """B1: what keeps a key from outliving its maker. While a key is made in Settings, a
+    code is made, or a laptop redeems a code, a change to the maker's user row must wait
+    (devices.hold_maker, FOR SHARE). FOR KEY SHARE would let it through unseen."""
+    h = owner(client)
+    m, hm, mia = _member(client, app, h, "mia@shop.test", "manager", "Mia")
+    code = _code(m, hm, "Mia paired")
+    with app.app_context():
+        assert not _change_waits(app, mia)
+        for hand_out in (
+            lambda u, o: devices.create_device(o, "typed", created_by=u),
+            lambda u, o: devices.start_pairing(o, "another", user=u),
+            lambda u, o: devices.redeem_pairing(code),
+        ):
+            user = db.session.get(User, mia)
+            hand_out(user, db.session.get(Organization, user.organization_id))
+            assert _change_waits(app, mia)
+            db.session.rollback()
+            assert not _change_waits(app, mia)
+
+
+def test_a_code_expiring_while_its_laptop_pairs_still_dies_with_its_maker(client, app):
+    """B1 race found in review: the laptop wins the code just before it expires and the
+    disable runs just after, when the code no longer looks open. The disable must still
+    wait for the laptop and revoke the key it got."""
+    h = owner(client)
+    m, hm, mia = _member(client, app, h, "mia@shop.test", "manager", "Mia")
+    code = _code(m, hm, "Mia paired")
+    expires = datetime.now(UTC) + timedelta(seconds=0.5)
+    with app.app_context():
+        owner_id = db.session.scalar(select(User.id).where(User.email == "o@shop.test"))
+        db.session.execute(update(DevicePairing).values(expires_at=expires))
+        db.session.commit()
+    won, out = threading.Event(), {}
+
+    def pair():
+        _, _, key = devices.redeem_pairing(code)
+        won.set()
+        while datetime.now(UTC) <= expires + timedelta(seconds=0.6):
+            time.sleep(0.02)  # the disable, started after expiry, is waiting on us
+        return key
+
+    def disable():
+        return accounts.update_user(db.session.get(User, owner_id), mia, disabled=True)
+
+    t1 = _in_thread(app, pair, out, "pair")
+    assert won.wait(5)
+    while datetime.now(UTC) <= expires:
+        time.sleep(0.01)
+    t2 = _in_thread(app, disable, out, "disable")
+    t1.join(10), t2.join(10)
+    assert isinstance(out["pair"], str), out["pair"]
+    assert not isinstance(out["disable"], Exception), out["disable"]
+    assert _ping(app, out["pair"]) == 401
+
+
+def test_a_laptop_pairing_while_its_code_maker_owner_is_demoted_does_not_deadlock(
+    client, app, monkeypatch
+):
+    """B1 race: demoting an owner locks their row FOR UPDATE (accounts._lock_owners). A
+    laptop pairing on that owner's code waits on the row before touching the code, so
+    the two never wait on each other: the demotion succeeds and the code is refused."""
+    h = owner(client)
+    o2, h2, second = _member(client, app, h, "o2@shop.test", "owner", "Second owner")
+    code = _code(o2, h2, "Second laptop")
+    with app.app_context():
+        owner_id = db.session.scalar(select(User.id).where(User.email == "o@shop.test"))
+    holding, out = threading.Event(), {}
+    _slow_withdraw(monkeypatch, holding)
+
+    def demote():
+        return accounts.update_user(db.session.get(User, owner_id), second, role=Role.viewer)
+
+    t1 = _in_thread(app, demote, out, "demote")
+    assert holding.wait(5)
+    t2 = _in_thread(app, lambda: devices.redeem_pairing(code), out, "pair")
+    t1.join(10), t2.join(10)
+    assert not isinstance(out["demote"], Exception), out["demote"]
+    assert isinstance(out["pair"], devices.PairingError) and out["pair"].status == 404
+    with app.app_context():
+        assert db.session.scalar(select(db.func.count()).select_from(Device)) == 0
 
 
 # ---------- 2026-10-31 hardening (claude-reports/Security-Efficiency-Review/) ----------

@@ -118,10 +118,10 @@ test('a page message from anything but Chat Scraper is ignored', async () => {
 test('Laptops lists each version and marks the ones behind', async () => {
   const seen = new Date().toISOString()
   const devices: Device[] = [
-    { id: 1, name: 'Front', keyPrefix: 'wn_a', createdAt: seen, lastSeenAt: seen, revoked: false, extensionVersion: '1.5.0' },
-    { id: 2, name: 'Back', keyPrefix: 'wn_b', createdAt: seen, lastSeenAt: seen, revoked: false, extensionVersion: '1.4.2' },
-    { id: 3, name: 'Old', keyPrefix: 'wn_c', createdAt: seen, lastSeenAt: seen, revoked: false, extensionVersion: null },
-    { id: 4, name: 'New', keyPrefix: 'wn_d', createdAt: seen, lastSeenAt: null, revoked: false, extensionVersion: null },
+    { id: 1, name: 'Front', keyPrefix: 'wn_a', createdAt: seen, lastSeenAt: seen, revoked: false, extensionVersion: '1.5.0', createdBy: 'O', makerLostAccess: false },
+    { id: 2, name: 'Back', keyPrefix: 'wn_b', createdAt: seen, lastSeenAt: seen, revoked: false, extensionVersion: '1.4.2', createdBy: 'O', makerLostAccess: false },
+    { id: 3, name: 'Old', keyPrefix: 'wn_c', createdAt: seen, lastSeenAt: seen, revoked: false, extensionVersion: null, createdBy: 'O', makerLostAccess: false },
+    { id: 4, name: 'New', keyPrefix: 'wn_d', createdAt: seen, lastSeenAt: null, revoked: false, extensionVersion: null, createdBy: 'O', makerLostAccess: false },
   ]
   wrap(<Laptops manage />, { ...EXT, '/api/devices': { devices } })
   const rows = await screen.findAllByTestId('device-version')

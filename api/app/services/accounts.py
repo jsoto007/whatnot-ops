@@ -512,9 +512,23 @@ def _lock_owners(org_id: int) -> None:
 
 
 def _withdraw_grants(user: User) -> None:
-    """A disabled or demoted person's open invites and laptop codes stop working too."""
-    from ..models import DevicePairing
+    """A disabled or demoted person's open invites and laptop codes stop working too,
+    and so do the laptop keys they made once they may no longer manage laptops
+    (security finding B1): a key can post "player" wins and declines, which the
+    parser trusts as Whatnot itself.
 
+    No key may outlive the change, even one being made right now. Every hand-out of a
+    key or code (Settings, a new code, a laptop redeeming a code) holds a FOR SHARE
+    lock on its maker's user row and checks their access under it
+    (devices.hold_maker). The flush below UPDATEs that row, so it waits for any such
+    hand-out to commit (and the key it made is revoked below), or the hand-out waits
+    for this commit and sees the change. Second guard: every unused code of the
+    person is expired, not only the unexpired ones, so this also queues behind a code
+    a laptop has won but not yet committed, even if the code expires meanwhile."""
+    from ..models import Device, DevicePairing
+    from .permissions import allowed
+
+    db.session.flush()  # UPDATE users now: waits for any hand-out holding this row
     db.session.execute(
         update(Invite)
         .where(
@@ -529,10 +543,30 @@ def _withdraw_grants(user: User) -> None:
         .where(
             DevicePairing.created_by_id == user.id,
             DevicePairing.used_at.is_(None),
-            DevicePairing.expires_at > now(),
         )
-        .values(expires_at=now())
+        .values(expires_at=func.least(DevicePairing.expires_at, now()))
+        .execution_options(synchronize_session=False)
     )
+    if not user.disabled and allowed(user.role, "devices.manage"):
+        return  # e.g. manager -> owner: still hands out keys, so theirs keep working
+    revoked = db.session.execute(
+        update(Device)
+        .where(
+            Device.created_by_id == user.id,
+            Device.organization_id == user.organization_id,
+            Device.revoked_at.is_(None),
+        )
+        .values(revoked_at=now())
+        .returning(Device.id, Device.name)
+    ).all()
+    for device_id, name in revoked:
+        audit.record(
+            user.organization_id,
+            "device.revoked",
+            target_type="device",
+            target_id=device_id,
+            details={"name": name, "reason": "maker_lost_access", "makerId": user.id},
+        )
 
 
 def _owner_count(org_id: int) -> int:
