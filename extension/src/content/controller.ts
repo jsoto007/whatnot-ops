@@ -12,6 +12,7 @@ import {
   type UploadStatus,
   showPage,
 } from '../shared/messages'
+import { chatCsv, csvTime } from '../shared/csv'
 import { showDate } from '../shared/showDate'
 import { collectAll } from '../shipments/collect'
 import { onShipmentsPage } from '../shipments/read'
@@ -539,22 +540,18 @@ export class Controller {
       this.panel.setStatus('Nothing captured yet.', 'bad')
       return
     }
-    const flagged = this.log.filter((r) => this.matchWord(r.rawText))
-    const line = (r: CapturedRow) => timeOf(r.capturedAt) + '\t' + r.rawText
-    const header = [
-      '# Whatnot show chat — ' + showDate(this.startedAt),
-      '# Started: ' + (this.startedAt ? new Date(this.startedAt).toLocaleString() : 'unknown'),
-      '# Saved:   ' + new Date().toLocaleString(),
-      '# Messages: ' + this.log.length,
-      '',
-    ]
-    const footer = flagged.length
-      ? ['', '# FLAGGED (' + this.watchWords.join(', ') + ')', ...flagged.map((r) => '# ' + line(r))]
-      : []
-    const body = [...header, ...this.log.map(line), ...footer].join('\n')
+    // A spreadsheet Excel opens as is (shared/csv.ts): one row per message, watch-word hits marked.
+    const body = chatCsv(
+      this.log.map((r) => ({
+        time: csvTime(r.capturedAt),
+        username: r.username,
+        message: r.body || r.rawText,
+        flagged: this.matchWord(r.rawText),
+      })),
+    )
     const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([body], { type: 'text/plain' }))
-    a.download = `Whatnot_${showDate(this.startedAt)}_${label}.txt`
+    a.href = URL.createObjectURL(new Blob([body], { type: 'text/csv' }))
+    a.download = `Whatnot_${showDate(this.startedAt)}_${label}.csv`
     a.click()
     setTimeout(() => URL.revokeObjectURL(a.href), 5000)
     this.panel.setStatus('Downloaded ' + this.log.length + ' messages.', 'good')

@@ -102,18 +102,48 @@ describe('Chat Search on a 30k-line show', () => {
     expect([...last.querySelectorAll('.line')].map((l) => l.classList.contains('m'))).toEqual([false, false, true, false, true, false, false])
   })
 
-  it('Download frees the file it made', async () => {
+  it('loads a CSV it wrote (and still the old .txt) as a show to search', async () => {
+    await open()
+    const csv = '\uFEFF"Time","Username","Message","Flagged"\r\n"2026-11-07 20:01:05","kat.c","I\'ll take 3","yes"\r\n"2026-11-07 20:01:09","troll","\'=SUM(1)",""\r\n'
+    const input = $('file') as HTMLInputElement
+    const file = new File([csv], 'Whatnot_2026-11-07_backup.csv', { type: 'text/csv' })
+    // jsdom's File has no text(); Chrome's does.
+    file.text ??= () => new Promise((resolve) => Object.assign(new FileReader(), { onload(this: FileReader) { resolve(this.result as string) } }).readAsText(file))
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    input.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect($('summary').textContent).toContain('2 messages'))
+    search('take')
+    expect([...lines()].map((l) => l.textContent)).toEqual(expect.arrayContaining([expect.stringContaining("kat.c I'll take 3")]))
+    search('SUM')
+    expect([...lines()].map((l) => l.textContent?.includes('troll =SUM(1)'))).toContain(true) // the apostrophe was only for Excel
+  })
+
+  it('Download writes a CSV spreadsheet and frees the file it made', async () => {
     await open()
     // jsdom has no object URLs.
     const orig = { create: URL.createObjectURL, revoke: URL.revokeObjectURL }
     const revoke = vi.fn()
-    URL.createObjectURL = () => 'blob:chat-search/1'
+    let blob: Blob | null = null
+    URL.createObjectURL = (b: Blob | MediaSource) => {
+      blob = b as Blob
+      return 'blob:chat-search/1'
+    }
     URL.revokeObjectURL = revoke
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       $('dl').click()
       expect(click).toHaveBeenCalledTimes(1)
+      const a = click.mock.contexts[0] as HTMLAnchorElement
+      expect(a.download).toMatch(/^Whatnot_\d{4}-\d{2}-\d{2}_show\.csv$/)
+      expect(blob!.type).toBe('text/csv')
+      const text = await new Promise<string>((resolve) => {
+        const fr = new FileReader()
+        fr.onload = () => resolve(fr.result as string)
+        fr.readAsText(blob!)
+      })
+      expect(text.startsWith('"Time","Username","Message","Flagged"\r\n')).toBe(true) // readAsText drops the BOM (download.test.ts checks it)
+      expect(text).toContain('","u1","msg 1 I\'ll take number 1",""\r\n')
       expect(revoke).not.toHaveBeenCalled()
       vi.advanceTimersByTime(5000)
       expect(revoke).toHaveBeenCalledWith('blob:chat-search/1')

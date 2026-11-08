@@ -1,6 +1,7 @@
-// Chat Search — reads shows saved by Chat Scraper (IndexedDB) or a downloaded .txt file.
+// Chat Search — reads shows saved by Chat Scraper (IndexedDB) or a file it downloaded (.csv now, .txt before).
 // Chat lines are whatever viewers typed: they reach the page only as text (textContent, text nodes).
 import type { CapturedRow, ShowMeta } from '../capture/types'
+import { chatCsv, csvTime, parseChatCsv } from '../shared/csv'
 import type { Broadcast } from '../shared/messages'
 import { isExtensionPage, showOpenedAsFile } from '../shared/openedAsFile'
 import { deleteShow, getRows, getShow, listShows, rowsAfter } from '../storage/db'
@@ -12,7 +13,12 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 
 interface Line {
   time: string
+  /** The whole line as chat showed it (username and message), what a search looks through. */
   text: string
+  /** Username and message apart, and the capture time, for the CSV download (saved shows and CSV files have them). */
+  user?: string
+  body?: string
+  iso?: string
 }
 interface Current {
   id: string
@@ -55,7 +61,7 @@ let fileShow: Current | null = null
 let view: View | null = null
 
 const timeOf = (iso: string) => (iso ? new Date(iso).toLocaleTimeString() : '')
-const toLine = (r: CapturedRow): Line => ({ time: timeOf(r.capturedAt), text: r.rawText })
+const toLine = (r: CapturedRow): Line => ({ time: timeOf(r.capturedAt), text: r.rawText, user: r.username, body: r.body, iso: r.capturedAt })
 
 function prettyDate(iso: string): string {
   const [y, m, d] = iso.split('-').map(Number)
@@ -123,7 +129,7 @@ function run(): void {
   view = null
   res.replaceChildren()
   if (!current) {
-    res.append(el('div', 'empty', 'No shows saved yet. Start Chat Scraper on a Whatnot show, or load a .txt file.'))
+    res.append(el('div', 'empty', 'No shows saved yet. Start Chat Scraper on a Whatnot show, or load a saved file.'))
   } else {
     const q = $<HTMLInputElement>('q').value.trim().toLowerCase()
     if (q) {
@@ -288,7 +294,13 @@ function toast(msg?: string): void {
   toastTimer = setTimeout(() => t.classList.remove('on'), 1400)
 }
 
-// ---------- .txt files (from Chat Scraper or the old console script) ----------
+// ---------- saved files: the CSV Chat Scraper writes now, the .txt it wrote before (and the old console script) ----------
+export function parseFile(body: string): Line[] {
+  const csv = parseChatCsv(body)
+  if (csv) return csv.map((l) => ({ time: l.time, text: l.username ? `${l.username} ${l.message}` : l.message, user: l.username, body: l.message }))
+  return parseTxt(body)
+}
+
 export function parseTxt(body: string): Line[] {
   return body
     .split(/\r?\n/)
@@ -305,7 +317,7 @@ $<HTMLInputElement>('file').onchange = (e) => {
   const f = input.files?.[0]
   if (!f) return
   f.text().then((body) => {
-    fileShow = { id: 'file', label: f.name, lines: parseTxt(body), lastSeq: -1 }
+    fileShow = { id: 'file', label: f.name, lines: parseFile(body), lastSeq: -1 }
     fillShows('file')
     void openShow('file')
   })
@@ -314,11 +326,12 @@ $<HTMLInputElement>('file').onchange = (e) => {
 
 $('dl').onclick = () => {
   if (!current) return
-  const body = current.lines.map((r) => r.time + '\t' + r.text).join('\n')
-  const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }))
+  // A spreadsheet Excel opens as is (shared/csv.ts). A line from an old .txt has only its time and text.
+  const body = chatCsv(current.lines.map((l) => ({ time: l.iso ? csvTime(l.iso) : l.time, username: l.user ?? '', message: l.body ?? l.text })))
+  const url = URL.createObjectURL(new Blob([body], { type: 'text/csv' }))
   const a = document.createElement('a')
   a.href = url
-  a.download = current.meta ? `Whatnot_${current.meta.date}_show.txt` : current.label
+  a.download = current.meta ? `Whatnot_${current.meta.date}_show.csv` : current.label.replace(/\.(txt|csv)$/i, '') + '.csv'
   a.click()
   // The download has its own copy by then; otherwise the whole show stays in memory until the tab closes.
   setTimeout(() => URL.revokeObjectURL(url), 5000)
