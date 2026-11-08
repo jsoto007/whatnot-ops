@@ -56,8 +56,13 @@ class Device(db.Model):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The Chat Scraper version it last called in with (X-Extension-Version); None before 1.5.0.
     extension_version: Mapped[str | None] = mapped_column(String(16))
+    # The person who made the key (in Settings, or the pairing code's creator). The key is
+    # revoked when that person is disabled or can no longer manage laptops
+    # (accounts._withdraw_grants). None for keys made before 0018 or from the CLI.
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 
     organization: Mapped[Organization] = relationship(back_populates="devices")
+    created_by: Mapped["User | None"] = relationship()  # noqa: F821 (models/accounts.py)
 
     @property
     def active(self) -> bool:

@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 from flask import Blueprint, g, jsonify, request
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from .. import serializers
 from ..auth import require
@@ -25,6 +26,7 @@ def list_devices():
     rows = db.session.scalars(
         select(Device)
         .where(Device.organization_id == g.u.organization_id)
+        .options(selectinload(Device.created_by))
         .order_by(Device.created_at)
     ).all()
     return jsonify({"devices": [serializers.device(d) for d in rows]})
@@ -36,7 +38,7 @@ def create():
     name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
     if not name:
         return jsonify({"error": "give the laptop a name"}), 400
-    device, key = create_device(g.u.organization, name)
+    device, key = create_device(g.u.organization, name, created_by=g.u)
     audit.record(
         g.u.organization_id,
         "device.created",
