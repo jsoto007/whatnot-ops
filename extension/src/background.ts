@@ -140,8 +140,10 @@ async function flush(): Promise<UploadOutcome> {
       lastError = e.message
       if (e.kind === 'offline') {
         failures++
-        uploads.backOff(backoffSeconds(failures) * 1000)
-        chrome.alarms.create(ALARM_RETRY, { delayInMinutes: backoffSeconds(failures) / 60 })
+        // A 429 says how long to wait (Retry-After); otherwise the backoff grows per failure.
+        const waitMs = Math.max(backoffSeconds(failures) * 1000, e.retryAfterMs ?? 0)
+        uploads.backOff(waitMs)
+        chrome.alarms.create(ALARM_RETRY, { delayInMinutes: waitMs / 60_000 })
         return { status: 'offline', detail: e.message }
       }
       if (e.kind === 'auth') {

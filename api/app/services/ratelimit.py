@@ -1,7 +1,7 @@
 """Attempt limits: unauthenticated endpoints (login, sign-up, password reset, invite
 acceptance, laptop pairing, wrong device keys) per client address, and per device, user or shop
 for authenticated work that costs (uploads from a laptop, file imports, AI audits, re-parsing,
-and every change a signed-in person makes).
+team invites (each one sends an email), and every change a signed-in person makes).
 
 Counters live in Postgres so both gunicorn workers share them. Each hit is one
 atomic `INSERT … ON CONFLICT DO UPDATE SET count = count + 1 RETURNING count`

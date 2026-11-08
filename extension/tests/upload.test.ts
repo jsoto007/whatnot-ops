@@ -4,7 +4,7 @@ import type { CapturedRow } from '../src/capture/types'
 import { validateBatch } from '../src/upload/schema'
 import { LIMITS } from '../src/upload/limits'
 import { normaliseUrl } from '../src/upload/settings'
-import { BATCH_MAX, UploadError, backoffSeconds, pairDevice, postBatch, uploadOnce, type UploadStore } from '../src/upload/uploader'
+import { BATCH_MAX, UploadError, backoffSeconds, pairDevice, ping, postBatch, uploadOnce, type UploadStore } from '../src/upload/uploader'
 
 const FIXTURES = path.resolve(__dirname, '..', '..', 'shared', 'fixtures')
 const fixture = (name: string) => JSON.parse(readFileSync(path.join(FIXTURES, name), 'utf8'))
@@ -102,6 +102,21 @@ describe('uploadOnce', () => {
       message: 'invalid batch; rows/0/id: bad',
     })
     expect(new UploadError('offline', 'x').kind).toBe('offline')
+  })
+
+  it('a 429 is a wait, not a refusal: rows stay queued and the Retry-After is kept', async () => {
+    const store = memoryStore([row(S, 1)])
+    const busy = async () => new Response(JSON.stringify({ error: 'too many attempts' }), { status: 429, headers: { 'Retry-After': '42' } })
+    await expect(uploadOnce(store, settings, busy)).rejects.toMatchObject({ kind: 'offline', retryAfterMs: 42_000 })
+    expect(store.uploaded.size + store.parked.size).toBe(0)
+    expect(await store.pendingCount()).toBe(1)
+    // No header: a minute. An absurd header: capped at ten minutes.
+    const noHeader = async () => new Response('', { status: 429 })
+    const batch = { version: 1 as const, show: { id: S, startedAt: S }, rows: [row(S, 1)] }
+    await expect(postBatch(settings, batch, noHeader)).rejects.toMatchObject({ kind: 'offline', retryAfterMs: 60_000 })
+    const huge = async () => new Response('', { status: 429, headers: { 'Retry-After': '99999' } })
+    await expect(postBatch(settings, batch, huge)).rejects.toMatchObject({ retryAfterMs: 600_000 })
+    await expect(ping(settings, busy)).rejects.toMatchObject({ kind: 'offline', retryAfterMs: 42_000 })
   })
 
   it('sets a refused batch aside and keeps sending the other shows', async () => {

@@ -51,8 +51,8 @@ commands.
 - **Rate limits** live in `services/ratelimit.py` (Postgres counters, own
   transaction): per address for unauthenticated routes and wrong device keys,
   per device for `/api/ingest*`, per user for every signed-in write
-  (`auth.require`), uploads and costly reads (`@require(…, heavy=True)`), per
-  shop for "Parse now" and AI audits. Add a limit to any new unauthenticated
+  (`auth.require`), uploads, costly reads (`@require(…, heavy=True)`) and team
+  invites (each sends an email), per shop for "Parse now" and AI audits. Add a limit to any new unauthenticated
   or costly route. Production trusts `PROXY_HOPS` (default 2: Cloudflare, then
   Render) for the client address; the first visitor request logs a WARNING
   "client address check … match/MISMATCH" against Cloudflare's header.
