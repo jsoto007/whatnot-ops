@@ -812,7 +812,7 @@ def test_odd_or_unknown_audit_rows_still_read_as_words():
         == "Changed pat@x.test's role from Manager to Owner; turned off pat@x.test's access"
     )
     assert describe("inventory.imported", {"set": 2, "create": 1, "skip": 0}) == (
-        "Imported the stock sheet: 1 added, 2 updated"
+        "Imported the stock sheet: 1 new, 2 updated"
     )
     assert actor("system", "flask autopay-reserved") == "Automatic"
     assert actor("rule", "whatnot autopay") == "Automatic"
@@ -892,13 +892,59 @@ def test_forgot_password_does_the_same_work_for_unknown_addresses(client, app, m
     with app.app_context():
         queued = db.session.scalars(select(Job).order_by(Job.id).offset(before)).all()
         assert [j.kind for j in queued] == ["reset_mail", "reset_mail"]
-        for j in queued:  # the worker: the failing mail stays in the job, never in a response
-            jobs.run_job(j.id)
+        # The web process decides the link's address (the worker has no public URL).
+        assert all(j.payload["link"].endswith("/reset/") for j in queued)
+        assert {j.max_attempts for j in queued} == {1}  # never a second email from a retry
+        # The worker: the failing mail stays in the job, never in a response (the unknown
+        # address has nothing to send, so its job is simply done).
+        assert [jobs.run_job(j.id).status.value for j in queued] == ["failed", "done"]
         assert db.session.scalar(select(db.func.count()).select_from(PasswordReset)) == 0
         monkeypatch.setattr(mail, "send", lambda _msg, **_kw: True)
         for j in queued:
             jobs.run_job(j.id)
         assert db.session.scalar(select(db.func.count()).select_from(PasswordReset)) == 1
+
+
+def test_reset_mail_fails_loudly_on_a_worker_without_mailgun(app, monkeypatch):
+    """Peer review (HIGH): MAILGUN_* lived only on the web service; the worker's job
+    finished "done" having only logged the email."""
+    from app.services import accounts, mail
+
+    monkeypatch.delenv("MAILGUN_API_KEY", raising=False)
+    with app.app_context():
+        monkeypatch.setitem(app.config, "APP_ENV", "production")
+        with pytest.raises(mail.MailError):
+            accounts._reset_mail_job({"email": "o@shop.test", "link": "https://x/reset/"})
+
+
+def test_logged_database_errors_carry_no_row_values(app):
+    """Peer review: hide_parameters hides the statement's values, but Postgres quotes the
+    failing row in its DETAIL, which the exception's text carries."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.logsafe import error_line
+    from app.models import Organization
+
+    with app.app_context():
+        db.session.add(Organization(name="A", slug="secret-slug-1"))
+        db.session.commit()
+        db.session.add(Organization(name="B", slug="secret-slug-1"))
+        with pytest.raises(IntegrityError) as caught:
+            db.session.commit()
+        db.session.rollback()
+    assert "secret-slug-1" in str(caught.value)  # what log.exception used to write
+    line = error_line(caught.value)
+    assert line.startswith("UniqueViolation: duplicate key") and "secret-slug-1" not in line
+
+
+def test_names_of_only_invisible_marks_are_refused(client):
+    h = {"X-CSRF-Token": client.get("/api/auth/csrf").get_json()["token"]}
+    r = client.post(
+        "/api/auth/signup",
+        json={"organization": "\u200b", "name": "O", "email": "o@shop.test", "password": PW},
+        headers=h,
+    )
+    assert r.status_code == 400
 
 
 def test_a_planted_csrf_cookie_is_not_enough_and_the_token_survives_sign_in(client):
@@ -938,16 +984,31 @@ def test_production_cookies_and_logs_resist_tossing_and_leaks(monkeypatch):
             _production_config(monkeypatch, PROXY_HOPS=bad)
 
 
-def test_the_client_address_is_the_one_cloudflare_saw(monkeypatch):
+def test_the_client_address_is_the_one_cloudflare_saw(monkeypatch, caplog):
     """B2: X-Forwarded-For arrives as "<client>, <cloudflare edge>" (anything the client
     sent is further left). One hop gave every visitor the edge's address."""
+    import logging
+
     from app import create_app
 
+    # The test DB's migrations ran Alembic's fileConfig, which disables loggers made
+    # before it (production migrates in its own process, before gunicorn starts).
+    monkeypatch.setattr(logging.getLogger("app"), "disabled", False)
     prod = create_app(_production_config(monkeypatch))
     prod.add_url_rule("/_ip", "ip", lambda: request_ip())
     c = prod.test_client()
-    seen = c.get("/_ip", headers={"X-Forwarded-For": "6.6.6.6, 203.0.113.9, 172.68.1.1"})
+    c.get("/api/health")  # Render's health check is not the visitor the check line needs
+    seen = c.get(
+        "/_ip",
+        headers={
+            "X-Forwarded-For": "6.6.6.6, 203.0.113.9, 172.68.1.1",
+            "CF-Connecting-IP": "203.0.113.9",
+        },
+    )
     assert seen.get_data(as_text=True) == "203.0.113.9"
+    checks = [r for r in caplog.records if "client address check" in r.getMessage()]
+    assert len(checks) == 1 and checks[0].levelname == "WARNING"
+    assert "using 203.0.113.9, Cloudflare saw 203.0.113.9 (match" in checks[0].getMessage()
 
 
 def request_ip() -> str:
@@ -976,3 +1037,35 @@ def test_show_keys_with_hidden_characters_are_refused_not_a_500(client, auth):
         validate(payload)
     assert client.get("/api/ingest/stock?show=a%00b", headers=auth).status_code == 400
     assert client.get("/api/ingest/shows/a%00b", headers=auth).status_code == 404
+
+
+def test_a_near_duplicate_name_is_a_409_not_a_500(client):
+    """Peer review: the cleaner runs on assignment, so the duplicate checks must compare
+    the cleaned value too, or "Red\\tbundle" passes the check and fails the unique index."""
+    h = owner(client)
+    assert client.post("/api/products", json={"name": "Red bundle"}, headers=h).status_code == 201
+    for twin in ("Red\tbundle", "Red  bundle", "Red bundle\x07"):
+        r = client.post("/api/products", json={"name": twin}, headers=h)
+        assert r.status_code == 409, (twin, r.status_code)
+    other = client.post("/api/products", json={"name": "Blue"}, headers=h).get_json()["product"]
+    r = client.patch(f"/api/products/{other['id']}", json={"name": "Red​ bundle"}, headers=h)
+    assert r.status_code == 409
+
+
+def test_the_activity_log_names_the_right_actor_and_ledger_source():
+    from app.services.activity import describe, movement_source, who
+
+    assert who("login.failed", "system", "") == "Sign-in page"
+    assert who("device.paired", "system", "") == "Laptop"
+    assert who("sale.autopaid", "system", "flask autopay-reserved") == "Automatic"
+    assert movement_source("sale_repaid", "12") == "sale #12 (paid after a decline)"
+    assert movement_source("manual", "") == "by hand"
+    assert describe("inventory.adjusted", {"delta": 0, "reason": None}, "RED") == (
+        "Checked stock of RED: no change"
+    )
+    assert describe("organization.updated", {"name": ["Old", "New shop"]}) == (
+        "Renamed the shop to “New shop”"
+    )
+    assert describe("inventory.imported", {"unchanged": 40, "set": 1}) == (
+        "Imported the stock sheet: 1 updated, 40 unchanged"
+    )

@@ -392,7 +392,7 @@ function EventsTab({ showId }: { showId: string }) {
               <th>Item</th>
               <th className="num">Qty</th>
               <th>Price</th>
-              <th>Sure</th>
+              <th>Confidence</th>
               <th>Line</th>
             </tr>
           </thead>

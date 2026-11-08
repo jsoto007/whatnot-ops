@@ -66,8 +66,15 @@ def update_product(product_id: int):
     p = catalog.get_product(g.u.organization_id, product_id)
     d = _body()
     before = {"name": p.name, "active": p.active}
-    if isinstance(d.get("name"), str) and d["name"].strip():
-        p.name = d["name"].strip()[:160]
+    name = catalog.typed(d.get("name"), 160)
+    if name and name != p.name:
+        if db.session.scalar(
+            select(Product.id).where(
+                Product.organization_id == g.u.organization_id, Product.name == name
+            )
+        ):
+            raise CatalogError("a product with that name already exists", 409)
+        p.name = name
     if "notes" in d:
         p.notes = d["notes"] if isinstance(d["notes"], str) else None
     if "active" in d:

@@ -54,7 +54,10 @@ commands.
   (`auth.require`), uploads and costly reads (`@require(…, heavy=True)`), per
   shop for "Parse now" and AI audits. Add a limit to any new unauthenticated
   or costly route. Production trusts `PROXY_HOPS` (default 2: Cloudflare, then
-  Render) for the client address; the first request logs what it resolved. `RATE_LIMITS=off` works
+  Render) for the client address; the first visitor request logs a WARNING
+  "client address check … match/MISMATCH" against Cloudflare's header.
+  Password-reset emails are a `reset_mail` job: the worker needs `MAILGUN_*`
+  too, and the web process puts the link's base URL in the job. `RATE_LIMITS=off` works
   only in dev/test (the browser e2e sets it).
 - **Text from outside** (captured chat, uploaded CSVs, the show URL) goes
   through `services/text.py` before it is stored: no control characters or

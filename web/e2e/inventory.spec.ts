@@ -122,8 +122,8 @@ test('products, adding an item, the shelf stepper, the item panel, sorting and t
     buffer: Buffer.from('Item,Start of Show Inventory,Current Stock\nRed bundle,12,9\nUltra Pack,4,4\n'),
   })
   await page.getByRole('button', { name: 'Preview' }).click()
-  await expect(page.getByTestId('import-summary')).toContainText('1 set')
-  await expect(page.getByTestId('import-summary')).toContainText('1 create')
+  await expect(page.getByTestId('import-summary')).toContainText('1 update')
+  await expect(page.getByTestId('import-summary')).toContainText('1 new')
   await expect(cell(page, 'RED', 'on-hand')).toHaveText('1')
   await page.getByTestId('apply-import').click()
   await expect(cell(page, 'RED', 'on-hand')).toHaveText('9')

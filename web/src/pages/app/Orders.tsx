@@ -4,7 +4,7 @@ import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleStatus, type Show } from '../../lib/api'
 import { fmtLongDate } from '../../lib/format'
-import { orderStatusLabel, saleStatusLabel } from '../../lib/labels'
+import { lotLabel, orderStatusLabel, saleStatusLabel } from '../../lib/labels'
 
 const NEXT: Partial<Record<OrderStatus, { label: string; to: OrderStatus }>> = {
   paid: { label: 'Start picking', to: 'picking' },
@@ -247,7 +247,6 @@ export function OrderDetail() {
   )
 }
 
-const TYPE_LABEL: Record<string, string> = { red: 'Red', bundle: 'Bundle', ultra: 'Ultra', mega: 'Mega', quick_hit: 'Quick Hit' }
 const NOT_SHIPPING: SaleStatus[] = ['cancelled', 'payment_failed']
 
 /** One empty tick box per unit, so a packer can tick each physical item like on the paper sheet. */
@@ -276,7 +275,7 @@ function PackingSlip({ o }: { o: Order }) {
   const date = fmtLongDate(o.showDate)
   const count = o.items + gifts.length // the sheet counts gift lines among the items
   const extras = shipping.reduce((n, s) => n + s.giftCount, 0) // "Gift N" lots: free gifts in the box
-  const label = (s: Sale) => `${TYPE_LABEL[s.auctionType] ?? 'Listing'}${s.seq ? ` · line ${s.seq}` : ''}`
+  const label = (s: Sale) => `${lotLabel(s.auctionType) || 'Listing'}${s.seq ? ` · line ${s.seq}` : ''}`
   return (
     <div className="card slip" data-testid="packing-slip">
       <div className="slip-head">

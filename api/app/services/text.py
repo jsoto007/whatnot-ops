@@ -33,6 +33,15 @@ def clean(s: str | None, *, single_line: bool = True) -> str | None:
     return s.encode("utf-8", "replace").decode("utf-8")
 
 
+def typed(value, limit: int | None = None) -> str:
+    """A name someone typed, as models/clean.py will store it: cleaned, trimmed, cut to
+    `limit`. "Required" and duplicate checks use this, so a name of only invisible marks
+    is empty, and a tab or a bell does not make a "different" name that then fails the
+    unique index with a 500."""
+    s = (clean(value) if isinstance(value, str) else "").strip()
+    return s[:limit] if limit else s
+
+
 def has_hidden(s: str) -> bool:
     """Control characters, invisible marks or lone surrogates. An identifier holding them
     (a show key) is refused, not rewritten: lookups must match what is stored, and

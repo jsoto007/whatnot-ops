@@ -22,25 +22,25 @@ ORDER_STATUS = {
     "shipped": "shipped",
     "cancelled": "cancelled",
 }
-IMPORT_ACTION = {"create": "added", "set": "updated", "skip": "skipped"}
+IMPORT_ACTION = {"create": "new", "set": "updated", "unchanged": "unchanged", "skip": "skipped"}
 RECONCILE_ACTION = {
     "mark_paid": "marked paid",
     "cancel": "cancelled",
-    "decline": "declined",
+    "decline": "payment declined",
     "unchanged": "unchanged",
-    "unmatched": "not matched",
+    "unmatched": "no matching sale",
     "skip": "skipped",
     "uncovered": "not in the file",
 }
 
 
 SALE_STATUS = {
-    "detected": "needs review",
+    "detected": "needs a decision",
     "reserved": "reserved",
     "paid": "paid",
     "cancelled": "cancelled",
     "payment_failed": "payment declined",
-    "fulfilled": "fulfilled",
+    "fulfilled": "shipped",
 }
 MOVEMENT_KIND = {
     "reserve": "held for a sale",
@@ -50,6 +50,7 @@ MOVEMENT_KIND = {
     "adjust": "adjusted",
 }
 MOVEMENT_SOURCE = {
+    "demo": "demo data",
     "receive": "delivery",
     "count": "stock count",
     "import": "sheet import",
@@ -69,8 +70,9 @@ def lot(auction_type: str | None) -> str:
 
 
 def movement_source(source_type: str, source_id: str) -> str:
-    if source_type == "sale":
-        return f"sale #{source_id}" if source_id else "sale"
+    if source_type in ("sale", "sale_repaid"):
+        again = " (paid after a decline)" if source_type == "sale_repaid" else ""
+        return (f"sale #{source_id}" if source_id else "sale") + again
     return MOVEMENT_SOURCE.get(source_type, "other")
 
 
@@ -94,6 +96,23 @@ def movement_actor(actor_type: str | None, actor_id, label: str | None, names: d
     """Who moved stock: a person by name (every role sees the ledger, so never an email)."""
     if actor_type == "user":
         return names.get(actor_id) or "Team member"
+    return actor(actor_type, label)
+
+
+# Rows written with no signed-in person, where "Automatic" would mislead: someone typed a
+# password or asked for a reset on the sign-in page, or a laptop acted with its own key.
+WHO = {
+    "login.failed": "Sign-in page",
+    "password.reset_requested": "Sign-in page",
+    "device.paired": "Laptop",
+    "device.disconnected": "Laptop",
+}
+
+
+def who(action: str, actor_type: str | None, label: str | None) -> str:
+    """The activity log's "Who" column."""
+    if actor_type not in ("user", "device", "ai") and action in WHO:
+        return WHO[action]
     return actor(actor_type, label)
 
 
@@ -179,6 +198,8 @@ def _counted(d: dict, _target: str) -> str:
 
 def _adjusted(d: dict, target: str) -> str:
     delta = d.get("delta", 0)
+    if not delta:
+        return "Checked stock" + (f" of {target}" if target else "") + ": no change"
     text = f"{'Added' if delta >= 0 else 'Removed'} {abs(delta)}"
     text += f" {target}" if target else ""
     return text + (f" · {d['reason']}" if d.get("reason") else "")
@@ -206,12 +227,16 @@ def _order_updated(d: dict, _target: str) -> str:
 
 
 def _org_updated(d: dict, _target: str) -> str:
+    parts = []
+    if "name" in d:
+        parts.append(f"renamed the shop to {_q(d['name'][1])}")
     if "hostUsername" in d:
         new = d["hostUsername"][1]
-        return (
-            f"Set the host's Whatnot username to @{new}" if new else "Cleared the host's username"
+        parts.append(
+            f"set the host's Whatnot username to @{new}" if new else "cleared the host's username"
         )
-    return ""
+    text = "; ".join(parts)
+    return text[:1].upper() + text[1:]
 
 
 def _report(d: dict, _target: str) -> str:

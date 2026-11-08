@@ -96,8 +96,9 @@ def end_session() -> None:
 
 
 def _clear_session_keep_csrf() -> None:
-    """Signing in or out keeps the page's CSRF token: only same-origin script can read it
-    (GET /api/auth/csrf), so it does not need to change with the account."""
+    """Signing in or out keeps the page's CSRF token. Only same-origin script can read it
+    (GET /api/auth/csrf), and the production session cookie is `__Host-`, so no other
+    site or subdomain can plant a session with a token it knows before sign-in."""
     token = session.get(CSRF_KEY)
     session.clear()
     if isinstance(token, str):

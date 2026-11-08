@@ -6,7 +6,7 @@ from ..auth import require
 from ..config import is_dev
 from ..db import db
 from ..models import Invite, Role, User
-from ..services import accounts, mail
+from ..services import accounts, mail, text
 from ..services.accounts import AccountError
 from ..services.permissions import invitable_roles
 
@@ -78,9 +78,9 @@ def update_organization():
     d = request.get_json(silent=True) or {}
     org = g.u.organization
     changes: dict = {}
-    if "name" in d and (d["name"] or "").strip():
-        changes["name"] = [org.name, d["name"].strip()]
-        org.name = d["name"].strip()
+    if "name" in d and (new_name := text.typed(d["name"], 120)):
+        changes["name"] = [org.name, new_name]
+        org.name = new_name
     if "hostUsername" in d:
         value = (d["hostUsername"] or "").strip().lstrip("@")[:80] or None
         changes["hostUsername"] = [org.host_username, value]

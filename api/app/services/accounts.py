@@ -14,7 +14,7 @@ from sqlalchemy import func, select, update
 from ..config import is_dev
 from ..db import db
 from ..models import Invite, Organization, PasswordReset, Role, User
-from . import audit, mail, mail_templates
+from . import audit, mail, mail_templates, text
 from .admin import admin_email, is_admin, is_protected
 from .jobs import handler
 
@@ -161,17 +161,18 @@ def signup(
         raise AccountError("enter the setup code you were given", 403)
     email = normalise_email(email)
     check_password_strength(password)
-    if not (org_name or "").strip() or not (name or "").strip():
+    org_name, name = text.typed(org_name, 120), text.typed(name, 120)
+    if not org_name or not name:
         raise AccountError("shop name and your name are required")
     if db.session.scalar(select(User.id).where(User.email == email)) is not None:
         raise AccountError("an account with that email already exists", 409)
-    org = Organization(name=org_name.strip(), slug=slugify(org_name))
+    org = Organization(name=org_name, slug=slugify(org_name))
     db.session.add(org)
     db.session.flush()
     user = User(
         organization=org,
         email=email,
-        name=name.strip(),
+        name=name,
         password_hash=hash_password(password),
         role=Role.owner,
         session_token=secrets.token_hex(16),
@@ -380,14 +381,15 @@ def invite_by_token(token: str) -> Invite:
 def accept_invite(token: str, name: str, password: str) -> User:
     invite = invite_by_token(token)
     check_password_strength(password)
-    if not (name or "").strip():
+    name = text.typed(name, 120)
+    if not name:
         raise AccountError("your name is required")
     if db.session.scalar(select(User.id).where(User.email == invite.email)) is not None:
         raise AccountError("that email already has an account", 409)
     user = User(
         organization_id=invite.organization_id,
         email=invite.email,
-        name=name.strip(),
+        name=name,
         password_hash=hash_password(password),
         role=invite.role,
         session_token=secrets.token_hex(16),
@@ -572,13 +574,19 @@ def request_password_reset(email: str, *, return_token: bool = False) -> str | N
         token = _issue_reset(email)
         db.session.commit()
         return token
-    jobs.enqueue("reset_mail", {"email": email})
+    # The link's address is decided here: Render tells only web services their public URL
+    # (RENDER_EXTERNAL_URL), so the worker would otherwise send a localhost link.
+    job = jobs.enqueue("reset_mail", {"email": email, "link": app_url("/reset/")})
+    # One attempt: a Mailgun timeout after it accepted the mail must not send a second
+    # link. A person whose email did not arrive asks again.
+    job.max_attempts = 1
     db.session.commit()
     return None
 
 
-def _issue_reset(email: str) -> str | None:
-    """Make a reset link for an enabled account and email it; None when there is none."""
+def _issue_reset(email: str, link: str | None = None) -> str | None:
+    """Make a reset link for an enabled account and email it; None when there is none.
+    `link` is the address the token is appended to (default: this process's app_url)."""
     user = db.session.scalar(select(User).where(User.email == email, User.disabled.is_(False)))
     if user is None:
         return None
@@ -592,14 +600,20 @@ def _issue_reset(email: str) -> str | None:
         user.organization_id, "password.reset_requested", target_type="user", target_id=user.id
     )
     mail.send(
-        mail_templates.password_reset(to=email, url=app_url("/reset/" + token), hours=RESET_HOURS)
+        mail_templates.password_reset(
+            to=email, url=(link or app_url("/reset/")) + token, hours=RESET_HOURS
+        )
     )
     return token
 
 
 @handler("reset_mail")
 def _reset_mail_job(payload: dict) -> None:
-    _issue_reset(payload["email"])  # the job runner commits
+    """Runs on the worker, which needs MAILGUN_* too. Without them production fails the
+    job loudly (worker log, jobs table) instead of finishing "done" with no email sent."""
+    if not mail.configured() and not is_dev(current_app.config.get("APP_ENV")):
+        raise mail.MailError("reset email not sent: MAILGUN_API_KEY / MAILGUN_DOMAIN unset here")
+    _issue_reset(payload["email"], payload.get("link"))  # the job runner commits
 
 
 def reset_password(token: str, password: str) -> User:

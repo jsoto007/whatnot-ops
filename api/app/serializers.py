@@ -58,7 +58,7 @@ def audit_entry(a: AuditLog, target: str = "") -> dict:
     return {
         "id": a.id,
         "at": a.created_at.isoformat(),
-        "who": activity.actor(a.actor_type, a.actor_label),
+        "who": activity.who(a.action, a.actor_type, a.actor_label),
         "summary": activity.describe(a.action, a.details, target),
     }
 

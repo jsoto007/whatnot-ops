@@ -32,6 +32,11 @@ const ACTION_LABEL: Record<string, string> = {
   classify_sale: 'Record it as a sale',
   confirm_sale: 'Record it as a sale',
   dismiss: 'Ignore this line',
+  chatter: 'Ignore this line',
+  gift: 'Record it as a gift',
+  missing_sale: 'Add the missed sale',
+  duplicate_sale: 'Remove the duplicate',
+  other: 'Take a look',
 }
 
 export function Review() {
@@ -104,7 +109,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
       <p>{item.summary}</p>
       {!!item.proposal?.action && item.proposal.action !== 'none' && (
         <p className="proposal" data-testid="proposal">
-          <b>AI suggests:</b> {ACTION_LABEL[String(item.proposal.action)] ?? String(item.proposal.action)}
+          <b>AI suggests:</b> {ACTION_LABEL[String(item.proposal.action)] ?? 'Take a look'}
           {typeof item.proposal.confidence === 'number' && <span className="muted"> · {Math.round(Number(item.proposal.confidence) * 100)}% sure</span>}
           {item.proposal.reasoning ? <span className="muted small"> — {String(item.proposal.reasoning)}</span> : null}
           {item.proposal.summary ? <span className="muted small"> — {String(item.proposal.summary)}</span> : null}

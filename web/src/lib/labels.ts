@@ -15,12 +15,12 @@ export const ROLE_LABEL: Record<Role, string> = {
 export const roleLabel = (r: string | undefined | null): string => ROLE_LABEL[r as Role] ?? 'Team member'
 
 export const SALE_STATUS_LABEL: Record<SaleStatus, string> = {
-  detected: 'needs review',
+  detected: 'needs a decision',
   reserved: 'reserved',
   paid: 'paid',
   cancelled: 'cancelled',
   payment_failed: 'payment declined',
-  fulfilled: 'fulfilled',
+  fulfilled: 'shipped',
 }
 export const saleStatusLabel = (s: string): string => SALE_STATUS_LABEL[s as SaleStatus] ?? 'other'
 
@@ -40,7 +40,7 @@ const LOT_LABEL: Record<string, string> = { red: 'Red', mega: 'Mega', ultra: 'Ul
 export const lotLabel = (t: string | null | undefined): string => (t ? (LOT_LABEL[t] ?? '') : '')
 
 /** What the stock-sheet import will do with a row. */
-const IMPORT_ACTION: Record<string, string> = { create: 'add', set: 'update', skip: 'skip' }
+const IMPORT_ACTION: Record<string, string> = { create: 'new', set: 'update', unchanged: 'unchanged', skip: 'skip' }
 export const importActionLabel = (a: string): string => IMPORT_ACTION[a] ?? 'skip'
 
 /** What matching the payment file will do with a row. */
@@ -48,12 +48,20 @@ const RECONCILE_ACTION: Record<string, string> = {
   mark_paid: 'mark paid',
   cancel: 'cancel',
   decline: 'payment declined',
-  unchanged: 'no change',
+  unchanged: 'unchanged',
   unmatched: 'no matching sale',
   skip: 'skip',
-  none: 'no change',
+  none: 'unchanged',
+  uncovered: 'not in the file',
 }
-export const reconcileActionLabel = (a: string): string => RECONCILE_ACTION[a] ?? 'no change'
+export const reconcileActionLabel = (a: string): string => RECONCILE_ACTION[a] ?? 'unchanged'
+
+/** "3 update · 1 new" from a plan's {code: count} summary, in words. */
+export const summaryWords = (summary: Record<string, number>, label: (code: string) => string): string =>
+  Object.entries(summary)
+    .filter(([, n]) => n)
+    .map(([k, n]) => `${n} ${label(k)}`)
+    .join(' · ')
 
 /** Where a review item came from. */
 export const reviewSourceLabel = (s: string): string => (s === 'ai' ? 'AI suggestion' : 'from the chat')
