@@ -67,13 +67,28 @@ class Config:
             "max_overflow": 5,
             "pool_timeout": 10,
             "pool_recycle": 1800,
+            # A logged database error must not carry row values (password hashes, session
+            # tokens, buyer names): production logs show the SQL without its parameters.
+            "hide_parameters": self.APP_ENV == "production",
         }
+        # Trusted proxies in front of the app (Cloudflare, then Render's router): see
+        # create_app. Wrong in either direction is a security bug (too few: all visitors
+        # share a rate limit; too many: a client picks its own address), so it is checked.
+        hops = os.environ.get("PROXY_HOPS", "2").strip()
+        if not hops.isdigit() or not 1 <= int(hops) <= 4:
+            raise ConfigError(f"PROXY_HOPS must be a number from 1 to 4 (got {hops!r})")
+        self.PROXY_HOPS = int(hops)
         if self.APP_ENV == "production" and not self.SECRET_KEY:
             raise ConfigError("SECRET_KEY must be set in production")
         if self.APP_ENV == "production" and os.environ.get("JOBS_INLINE") == "1":
             # Inline jobs would run every parse (and any AI call) inside a web request.
             raise ConfigError("JOBS_INLINE=1 is for development and tests, not production")
-        self.SESSION_COOKIE_NAME = "wn_session"
+        # `__Host-` in production: the browser only accepts it from this exact host over
+        # HTTPS with Path=/ and no Domain, so no sibling subdomain can plant a session (and
+        # with it a CSRF token) for this one. Plain http://localhost cannot use the prefix.
+        self.SESSION_COOKIE_NAME = (
+            "__Host-wn_session" if self.APP_ENV == "production" else "wn_session"
+        )
         self.SESSION_COOKIE_SECURE = self.APP_ENV == "production"
         self.SESSION_COOKIE_HTTPONLY = True
         self.SESSION_COOKIE_SAMESITE = "Lax"

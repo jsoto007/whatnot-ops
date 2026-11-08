@@ -304,8 +304,8 @@ def test_devices_are_created_once_shown_and_revocable(client):
         client.get("/api/ingest/ping", headers={"Authorization": "Bearer " + key}).status_code
         == 401
     )
-    actions = [e["action"] for e in client.get("/api/audit").get_json()["entries"]]
-    assert actions[:2] == ["device.revoked", "device.created"]
+    said = [e["summary"] for e in client.get("/api/audit").get_json()["entries"]]
+    assert said[0].startswith("Disconnected laptop “") and said[1].startswith("Added laptop “")
 
 
 # ---------- password reset ----------
@@ -469,7 +469,7 @@ def test_the_admin_cannot_be_demoted_or_disabled_and_is_restored_on_login(client
     assert users["boss@shop.test"]["isAdmin"] is True and users["co@shop.test"]["isAdmin"] is False
     hc = csrf(co)
     r = co.patch(f"/api/team/users/{admin_id}", json={"role": "viewer"}, headers=hc)
-    assert r.status_code == 409 and "ADMIN_EMAIL" in r.get_json()["error"]
+    assert r.status_code == 409 and "protected owner" in r.get_json()["error"]
     r = co.patch(f"/api/team/users/{admin_id}", json={"disabled": True}, headers=hc)
     assert r.status_code == 409
     # Even if the database says otherwise (an old demotion, a manual edit), logging in
@@ -484,8 +484,8 @@ def test_the_admin_cannot_be_demoted_or_disabled_and_is_restored_on_login(client
         "/api/auth/login", json={"email": "boss@shop.test", "password": PW}, headers=csrf(fresh)
     )
     assert r.status_code == 200 and r.get_json()["user"]["role"] == "owner"
-    actions = [e["action"] for e in fresh.get("/api/audit").get_json()["entries"]]
-    assert "user.admin_restored" in actions
+    said = [e["summary"] for e in fresh.get("/api/audit").get_json()["entries"]]
+    assert "Restored boss@shop.test as an owner" in said
 
 
 def test_an_invited_admin_email_becomes_owner(client, app, monkeypatch):

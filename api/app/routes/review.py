@@ -47,7 +47,7 @@ def ai_status():
 
 
 @bp.get("")
-@require("review.act")
+@require("review.act", heavy=True)
 def list_review():
     status = request.args.get("status", "open")
     q = select(ReviewItem).where(ReviewItem.organization_id == g.u.organization_id)

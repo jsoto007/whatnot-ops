@@ -10,7 +10,6 @@ from ..auth import (
     known_device_tags,
     remember_device,
     require,
-    set_csrf_cookie,
     start_session,
 )
 from ..config import is_dev
@@ -40,8 +39,7 @@ def account_error(e: AccountError):
 
 @bp.get("/csrf")
 def csrf():
-    token = csrf_token()
-    return set_csrf_cookie(jsonify({"token": token}), token)
+    return jsonify({"token": csrf_token()})
 
 
 @bp.get("/me")
@@ -127,7 +125,7 @@ def accept_invite():
 def forgot():
     ratelimit.per_ip("forgot", 10, 900)
     d = request.get_json(silent=True) or {}
-    token = accounts.request_password_reset(d.get("email", ""))
+    token = accounts.request_password_reset(d.get("email", ""), return_token=_dev_links_allowed())
     body: dict = {"ok": True}
     if token and _dev_links_allowed():
         body["resetUrl"] = accounts.app_url("/reset/" + token)

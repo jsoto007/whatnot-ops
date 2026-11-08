@@ -8,33 +8,40 @@ export class ApiError extends Error {
   }
 }
 
-const CSRF_COOKIE = 'csrf'
+const CSRF_ERROR = 'missing or invalid CSRF token'
 
-function readCookie(name: string): string | null {
-  const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'))
-  return m ? decodeURIComponent(m[1]!) : null
-}
-
-let csrfReady: Promise<void> | null = null
-/** The API sets a double-submit cookie; every write echoes it in a header. */
-async function ensureCsrf(): Promise<string> {
-  if (!readCookie(CSRF_COOKIE)) {
-    csrfReady ??= fetch('/api/auth/csrf', { credentials: 'same-origin' }).then(() => undefined)
-    await csrfReady
-  }
-  return readCookie(CSRF_COOKIE) ?? ''
+let csrf: Promise<string> | null = null
+/** The server keeps this page's CSRF token in its signed session cookie and hands it out
+ *  once (`/api/auth/csrf`); every write echoes it in a header. Kept in memory only. */
+function ensureCsrf(): Promise<string> {
+  csrf ??= fetch('/api/auth/csrf', { credentials: 'same-origin' })
+    .then((r) => r.json() as Promise<{ token?: string }>)
+    .then((j) => j.token ?? '')
+    .catch((e: unknown) => {
+      csrf = null
+      throw e
+    })
+  return csrf
 }
 
 export async function api<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' }
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
-  if (method !== 'GET') headers['X-CSRF-Token'] = await ensureCsrf()
-  const res = await fetch(path, {
-    method,
-    headers,
-    credentials: 'same-origin',
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+  const send = async () => {
+    const headers: Record<string, string> = { Accept: 'application/json' }
+    if (body !== undefined) headers['Content-Type'] = 'application/json'
+    if (method !== 'GET') headers['X-CSRF-Token'] = await ensureCsrf()
+    return fetch(path, {
+      method,
+      headers,
+      credentials: 'same-origin',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  }
+  let res = await send()
+  if (res.status === 403 && method !== 'GET' && (await res.clone().text()).includes(CSRF_ERROR)) {
+    // The session cookie expired or was replaced since the token was fetched: once more.
+    csrf = null
+    res = await send()
+  }
   if (res.status === 204) return undefined as T
   const text = await res.text()
   let json: unknown = undefined
@@ -97,15 +104,12 @@ export interface Device {
   /** Chat Scraper version it last called in with; null before 1.5.0 or before its first call */
   extensionVersion: string | null
 }
+/** One activity-log line, already in words: the server never sends action codes or raw details. */
 export interface AuditEntry {
   id: number
   at: string
-  actorType: string
-  actor: string
-  action: string
-  targetType: string | null
-  targetId: string | null
-  details: Record<string, unknown> | null
+  who: string
+  summary: string
 }
 export interface Show {
   id: number
@@ -280,7 +284,7 @@ export interface ParseStats {
   events: Record<string, number>
   sales: Record<string, number>
   openReviews: number
-  job: { id: number; status: string; error: string | null } | null
+  job: { id: number; status: string } | null
 }
 
 // ---------- AI supervisor (Phase 6) ----------
@@ -289,7 +293,8 @@ export interface AiStatus {
   enabled: boolean
   callsToday: number
   failedToday: number
-  lastError: string | null
+  /** When the last call failed; the vendor's error text stays on the server. */
+  lastFailedAt: string | null
   openProposals: number
 }
 

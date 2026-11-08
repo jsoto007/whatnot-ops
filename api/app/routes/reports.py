@@ -16,7 +16,9 @@ def _date(s: str | None) -> date | None:
 
 
 @bp.get("/dashboard")
-@require("shows.view")  # the landing page for every role; it shows nothing the show pages do not
+@require(
+    "shows.view", heavy=True
+)  # the landing page for every role; it shows nothing the show pages do not
 def get_dashboard():
     return jsonify(dashboard.overview(g.u.organization_id))
 
@@ -28,7 +30,7 @@ def get_counts():
 
 
 @bp.get("/dashboard/shows/<int:show_id>")
-@require("shows.view")
+@require("shows.view", heavy=True)
 def get_show_dashboard(show_id: int):
     show = db.session.get(Show, show_id)
     if show is None or show.organization_id != g.u.organization_id:

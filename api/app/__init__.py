@@ -99,14 +99,39 @@ def _security_headers(app: Flask) -> None:
         return jsonify({"error": "something went wrong on our side"}), 500
 
 
+def _log_first_client_address(app: Flask) -> None:
+    """One line per process, so the hop count can be checked against a known visitor's
+    address in the logs after a deploy (never the header's other entries)."""
+    seen = []
+
+    @app.before_request
+    def log_client_address():
+        if not seen:
+            seen.append(True)
+            entries = len(
+                [p for p in request.headers.get("X-Forwarded-For", "").split(",") if p.strip()]
+            )
+            log.info(
+                "client address check: %s from %d X-Forwarded-For entries (PROXY_HOPS=%s)",
+                request.remote_addr,
+                entries,
+                app.config.get("PROXY_HOPS"),
+            )
+
+
 def create_app(config: Config | None = None) -> Flask:
     config = config or Config()
     app = Flask(__name__, static_folder=None)
     app.config.from_object(config)
     if config.APP_ENV == "production":
-        # Render terminates TLS in front of gunicorn: trust exactly one proxy hop for the
-        # client address and scheme (rate limits, Secure cookies, request.is_secure).
-        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+        # Cloudflare sits in front of Render (`server: cloudflare`, seen 2026-10-25), so a
+        # request arrives with X-Forwarded-For "<client>, <cloudflare edge>": Cloudflare
+        # appends the address it saw, Render appends Cloudflare's, and whatever a client
+        # sent itself stays further left. The client is therefore the second entry from
+        # the right (PROXY_HOPS). With one hop every visitor behind the same edge shared
+        # one per-address rate-limit bucket. The scheme comes from the last hop.
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=config.PROXY_HOPS, x_proto=1)
+        _log_first_client_address(app)
     _security_headers(app)
 
     db.init_app(app)

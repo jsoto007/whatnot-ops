@@ -101,7 +101,7 @@ def test_cannot_be_demoted_or_disabled_and_login_restores(client, app, configure
     h = csrf(client)
     support_id = _user(app, SUPPORT).id
     r = client.patch(f"/api/team/users/{support_id}", json={"role": "viewer"}, headers=h)
-    assert r.status_code == 409 and "IT_SUPPORT" in r.get_json()["error"]
+    assert r.status_code == 409 and "protected owner" in r.get_json()["error"]
     r = client.patch(f"/api/team/users/{support_id}", json={"disabled": True}, headers=h)
     assert r.status_code == 409
     with app.app_context():

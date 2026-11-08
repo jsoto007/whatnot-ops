@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { Icon, type IconName } from '../../components/Icon'
 import { apiGet, type NavCounts } from '../../lib/api'
+import { roleLabel } from '../../lib/labels'
 import { UpdateBanner } from './settings/UpdateExtension'
 
 const GROUPS: { title: string; items: { to: string; label: string; permission: string; icon: IconName; end?: boolean }[] }[] = [
@@ -157,7 +158,7 @@ export function AppLayout() {
           </span>
           <div className="label">
             <b>{me?.user.name}</b>
-            <div className="role">{me?.user.role}</div>
+            <div className="role">{roleLabel(me?.user.role)}</div>
           </div>
           <button
             className="icon-btn"

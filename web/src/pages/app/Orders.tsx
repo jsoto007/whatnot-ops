@@ -4,6 +4,7 @@ import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleStatus, type Show } from '../../lib/api'
 import { fmtLongDate } from '../../lib/format'
+import { orderStatusLabel, saleStatusLabel } from '../../lib/labels'
 
 const NEXT: Partial<Record<OrderStatus, { label: string; to: OrderStatus }>> = {
   paid: { label: 'Start picking', to: 'picking' },
@@ -23,7 +24,6 @@ const VIEWS: { key: string; label: string; match: (o: Order) => boolean }[] = [
   { key: 'shipped', label: 'Shipped', match: (o) => o.status === 'shipped' },
   { key: 'all', label: 'All', match: () => true },
 ]
-const STATUS_LABEL: Partial<Record<OrderStatus, string>> = { paid: 'ready', open: 'needs review' }
 const RANK: Record<OrderStatus, number> = { paid: 0, picking: 1, packed: 2, open: 3, shipped: 4, cancelled: 5 }
 
 function itemSummary(o: Order): string {
@@ -129,7 +129,7 @@ export function Orders() {
                 <td className="num">{money(o.totalCents)}</td>
                 <td className="muted">{o.showDate}</td>
                 <td>
-                  <span className={`status ${o.status}`}>{STATUS_LABEL[o.status] ?? o.status}</span>
+                  <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
                   {o.status === 'open' && (
                     <div className="muted small">
                       {(o.sales ?? []).some((s) => s.status === 'detected') ? (
@@ -207,7 +207,7 @@ export function OrderDetail() {
         <h2>
           {o.buyer} · {o.showDate}
         </h2>
-        <span className={`status ${o.status}`}>{STATUS_LABEL[o.status] ?? o.status}</span>
+        <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
       </div>
       <PackingSlip o={o} />
       {can('orders.fulfill') && (
@@ -314,7 +314,7 @@ function PackingSlip({ o }: { o: Order }) {
               </td>
               <td>{s.giftCount ? `Gift ${s.giftCount}` : ''}</td>
               <td className="no-print">
-                <span className={`status ${s.status}`}>{s.status.replace('_', ' ')}</span>
+                <span className={`status ${s.status}`}>{saleStatusLabel(s.status)}</span>
                 {s.externalOrderId && <span className="muted small"> · #{s.externalOrderId}</span>}
               </td>
               <td className="slip-notes" />
@@ -394,7 +394,7 @@ function BuyerHistory({ buyer, current }: { buyer: string; current: number }) {
               <td className="num">{o.items}</td>
               <td>{money(o.totalCents)}</td>
               <td>
-                <span className={`status ${o.status}`}>{o.status}</span>
+                <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
               </td>
             </tr>
           ))}

@@ -69,7 +69,8 @@ def _stats(show: Show) -> dict:
         "events": {k.value: v for k, v in events.items()},
         "sales": {k.value: v for k, v in sales.items()},
         "openReviews": open_reviews or 0,
-        "job": {"id": job.id, "status": job.status.value, "error": job.error} if job else None,
+        # The job's own error (an exception line) stays in the worker log and the jobs table.
+        "job": {"id": job.id, "status": job.status.value} if job else None,
     }
 
 
@@ -121,7 +122,7 @@ def ai_audit(show_id: int):
     from ..services import supervisor
 
     if not supervisor.status(g.u.organization_id)["enabled"]:
-        return jsonify({"error": "AI is not configured (AI_PROVIDER)"}), 409
+        return jsonify({"error": "AI checks are not turned on for this shop"}), 409
     # Each audit is a paid call to the AI vendor.
     ratelimit.per_org("ai-audit", g.u.organization_id, 30, 3600)
     supervisor.schedule_audit(show, delay_s=0)

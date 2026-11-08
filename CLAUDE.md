@@ -24,11 +24,13 @@ commands.
   (`APP_ENV=test`) for `e2e/ingest.spec.ts`.
 - `shared/`: `chat-event-batch.schema.json`, the contract for
   `POST /api/ingest`; both sides validate the same `shared/fixtures/`.
-- Web sessions: signed cookie (`wn_session`, 14 days) carrying the user's
-  `session_token`, which is rotated on role change, disable, password reset
-  and "log out everywhere". Every non-GET `/api` call from the SPA sends the
-  double-submit `X-CSRF-Token` header (`web/src/lib/api.ts` fetches
-  `/api/auth/csrf` once). Routes declare a permission with
+- Web sessions: signed cookie (`wn_session`; `__Host-wn_session` in
+  production, 14 days) carrying the user's `session_token`, which is rotated on
+  role change, disable, password reset and "log out everywhere". The CSRF
+  token lives in that signed session (never a plain cookie): every non-GET
+  `/api` call from the SPA sends it as `X-CSRF-Token` (`web/src/lib/api.ts`
+  fetches `/api/auth/csrf` once, keeps it in memory, refetches once on a CSRF
+  403). Routes declare a permission with
   `@require("…")` (`api/app/auth.py`); the role → permission matrix is only
   in `api/app/services/permissions.py`, and the SPA gets the user's list
   from `/api/auth/me`. Every state change writes `audit_log`
@@ -49,13 +51,23 @@ commands.
 - **Rate limits** live in `services/ratelimit.py` (Postgres counters, own
   transaction): per address for unauthenticated routes and wrong device keys,
   per device for `/api/ingest*`, per user for every signed-in write
-  (`auth.require`) and uploads, per shop for "Parse now" and AI audits. Add a
-  limit to any new unauthenticated or costly route. `RATE_LIMITS=off` works
+  (`auth.require`), uploads and costly reads (`@require(…, heavy=True)`), per
+  shop for "Parse now" and AI audits. Add a limit to any new unauthenticated
+  or costly route. Production trusts `PROXY_HOPS` (default 2: Cloudflare, then
+  Render) for the client address; the first request logs what it resolved. `RATE_LIMITS=off` works
   only in dev/test (the browser e2e sets it).
 - **Text from outside** (captured chat, uploaded CSVs, the show URL) goes
   through `services/text.py` before it is stored: no control characters or
   invisible / bidi marks, show URLs only on whatnot.com. Store and show it as
-  plain text; never render it as HTML.
+  plain text; never render it as HTML. What staff type (names, notes,
+  reasons) is cleaned the same way on assignment (`models/clean.py`).
+- **No internal names on screen.** The browser gets words, not codes: the
+  activity log is built as sentences by `services/activity.py` (never raw
+  `audit_log.details` or action codes), the SPA labels every status, role and
+  lot type through `web/src/lib/labels.ts`, the Excel sheets use the same
+  words, and errors never name a setting (`ADMIN_EMAIL`, `AI_PROVIDER`…), a
+  permission or a vendor's raw error text. Stock history shows people's
+  names, not emails (every role reads it).
 - **Chat is attacker-controlled.** Anyone watching can type in it: never let
   a viewer line become a sale, a cancel or the current listing without the
   host/platform or a person. The AI may auto-apply only what

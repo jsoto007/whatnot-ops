@@ -271,7 +271,8 @@ def test_inventory_routes_end_to_end(client, app):
     levels = client.get("/api/inventory").get_json()["skus"]
     assert levels[0]["productName"] == "Red bundle" and levels[0]["available"] == 8
     moves = client.get(f"/api/inventory/{sku_id}/movements").get_json()["movements"]
-    assert [m["kind"] for m in moves] == ["adjust", "adjust"] and moves[0]["actor"] == "o@shop.test"
+    # A name, never an email: every role can read the stock history.
+    assert [m["kind"] for m in moves] == ["adjust", "adjust"] and moves[0]["actor"] == "O"
     r = client.post(
         "/api/inventory/import",
         json={"csv": "Item,Current Stock\nRed bundle,3\nNew thing,2\n"},
@@ -289,8 +290,8 @@ def test_inventory_routes_end_to_end(client, app):
     assert r.get_json()["applied"] is True
     levels = {s["code"]: s["onHand"] for s in client.get("/api/inventory").get_json()["skus"]}
     assert levels == {"NEW-THING": 2, "RED": 3}
-    actions = [e["action"] for e in client.get("/api/audit").get_json()["entries"]]
-    assert actions[0] == "inventory.imported"
+    said = [e["summary"] for e in client.get("/api/audit").get_json()["entries"]]
+    assert said[0].startswith("Imported the stock sheet: ")
 
 
 def test_viewer_can_read_but_not_write_inventory(app, client):

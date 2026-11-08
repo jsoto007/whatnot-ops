@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ApiError, api, type ImportRow } from '../../../lib/api'
+import { importActionLabel } from '../../../lib/labels'
 
 /** The team's existing spreadsheet: preview first, nothing changes until Apply. */
 export function Import({ onDone }: { onDone: () => Promise<unknown> }) {
@@ -81,7 +82,7 @@ export function Import({ onDone }: { onDone: () => Promise<unknown> }) {
                   <td className="num">{r.quantity}</td>
                   <td className="num">{r.before ?? '—'}</td>
                   <td>
-                    {r.action}
+                    {importActionLabel(r.action)}
                     {r.error ? ` (${r.error})` : ''}
                   </td>
                 </tr>

@@ -4,6 +4,7 @@ import io
 from datetime import date
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from sqlalchemy import select
@@ -11,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from ..db import db
 from ..models import InventoryMovement, Order, Organization, ParsedEvent, Product, Sale, Show, Sku
-from . import dashboard, sale_chat
+from . import activity, dashboard, sale_chat
 from .showdate import SHOP_TZ
 
 HEAD = Font(bold=True, color="FFFFFF")
@@ -36,6 +37,9 @@ def _sheet(
         c.fill = FILL
         c.alignment = Alignment(vertical="center")
     for k, r in enumerate(rows, start=2):
+        # Text saved before models/clean.py may hold control characters, which openpyxl
+        # refuses: one old order note must not fail the whole report.
+        r = [ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v for v in r]
         ws.append(r)
         # Chat text, notes and names are written as text, never as formulas: a buyer or
         # item named "=HYPERLINK(...)" must not become a live formula in the owner's Excel.
@@ -83,8 +87,8 @@ def _sale_rows(sales: list[Sale]) -> list[list]:
             s.quantity,
             s.price_cents,
             (s.price_cents or 0) * s.quantity,
-            s.auction_type,
-            s.status.value,
+            activity.lot(s.auction_type),
+            activity.word(activity.SALE_STATUS, s.status),
             s.external_order_id or "",
             s.paid_at.isoformat() if s.paid_at else "",
             s.status_reason or "",
@@ -336,7 +340,7 @@ def build(
                     [
                         o.show.show_date.isoformat(),
                         o.buyer_username,
-                        o.status.value,
+                        activity.word(activity.ORDER_STATUS, o.status),
                         s.sku.code if s.sku else "",
                         s.sku.product.name if s.sku else s.item_text,
                         s.quantity,
@@ -361,6 +365,7 @@ def build(
     if since:
         mq = mq.where(InventoryMovement.created_at >= since)
     moves = db.session.scalars(mq.limit(5000)).all()
+    names = activity.user_names(org.id, {m.actor_id for m in moves if m.actor_type == "user"})
     _sheet(
         wb,
         "Stock movements",
@@ -369,10 +374,10 @@ def build(
             [
                 m.created_at.isoformat(timespec="seconds"),
                 m.sku.code,
-                m.kind.value,
+                activity.word(activity.MOVEMENT_KIND, m.kind),
                 m.quantity,
-                f"{m.source_type} {m.source_id}".strip(),
-                m.actor_label or m.actor_type,
+                activity.movement_source(m.source_type, m.source_id),
+                activity.movement_actor(m.actor_type, m.actor_id, m.actor_label, names),
                 m.reason or "",
                 m.on_hand_after,
                 m.reserved_after,

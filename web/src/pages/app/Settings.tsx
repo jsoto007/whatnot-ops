@@ -10,9 +10,7 @@ export function Settings() {
   return (
     <section>
       <h2>Settings</h2>
-      <p className="muted">
-        {me?.organization.name} · <code>{me?.organization.slug}</code>
-      </p>
+      <p className="muted">{me?.organization.name}</p>
       {can('settings.manage') && <HostUsername />}
 
       <Laptops manage={can('devices.manage')} />
@@ -54,10 +52,10 @@ function Ai() {
         {s.enabled ? (
           <>
             Provider <b>{s.provider}</b> · {s.callsToday} calls today{s.failedToday ? `, ${s.failedToday} failed` : ''} · {s.openProposals} open suggestions
-            {s.lastError && <span className="form-error"> · last error: {s.lastError}</span>}
+            {s.lastFailedAt && <span className="form-error"> · last failed {new Date(s.lastFailedAt).toLocaleString()}</span>}
           </>
         ) : (
-          <>Off. Set AI_PROVIDER (jev or claude) and the matching key on the server to enable suggestions and show audits.</>
+          <>Off. AI suggestions and show checks are not turned on for this shop.</>
         )}
       </p>
     </>
@@ -75,19 +73,15 @@ function Audit() {
             <tr>
               <th>When</th>
               <th>Who</th>
-              <th>Action</th>
-              <th>Details</th>
+              <th>What happened</th>
             </tr>
           </thead>
           <tbody>
             {q.data.entries.map((e) => (
               <tr key={e.id}>
                 <td>{new Date(e.at).toLocaleString()}</td>
-                <td>{e.actor || e.actorType}</td>
-                <td>
-                  <code>{e.action}</code>
-                </td>
-                <td>{e.details ? JSON.stringify(e.details) : ''}</td>
+                <td>{e.who}</td>
+                <td>{e.summary}</td>
               </tr>
             ))}
           </tbody>

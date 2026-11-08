@@ -33,6 +33,17 @@ def clean(s: str | None, *, single_line: bool = True) -> str | None:
     return s.encode("utf-8", "replace").decode("utf-8")
 
 
+def has_hidden(s: str) -> bool:
+    """Control characters, invisible marks or lone surrogates. An identifier holding them
+    (a show key) is refused, not rewritten: lookups must match what is stored, and
+    Postgres refuses NUL and surrogates with an error instead of a row."""
+    try:
+        s.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return bool(_CONTROLS.search(s) or _INVISIBLE.search(s))
+
+
 def clean_file(s: str) -> str:
     """An uploaded CSV: keep its line structure, clean everything else."""
     return clean(s.replace("\r\n", "\n").replace("\r", "\n"), single_line=False) or ""

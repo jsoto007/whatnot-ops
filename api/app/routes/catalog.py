@@ -266,7 +266,12 @@ def adjust(sku_id: int):
     )
     db.session.commit()
     s = catalog.get_sku(g.u.organization_id, sku_id)
-    return jsonify({"sku": serializers.sku(s), "movement": serializers.movement(m) if m else None})
+    return jsonify(
+        {
+            "sku": serializers.sku(s),
+            "movement": serializers.movement(m, {g.u.id: g.u.name}) if m else None,
+        }
+    )
 
 
 @bp.post("/inventory/import")
