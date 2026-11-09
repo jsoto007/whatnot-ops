@@ -863,3 +863,89 @@ body.sheet-open, body.modal-open { overflow: hidden; }
   .code-box { font-size: 32px; }
   .setup-steps .btn { flex: 1 1 100%; }
 }
+
+/* ---------- orders list: one verb per row, a card per order on a phone ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.icon-btn.sm { width: 34px; height: 34px; background: var(--fill); color: var(--text-muted); }
+.icon-btn.sm:hover { background: var(--fill-strong); color: var(--text); }
+.orders { container-type: inline-size; container-name: orders; }
+.orders .page-head { margin-bottom: var(--space-3); }
+.orders .toolbar { justify-content: space-between; }
+.orders .search { flex: 0 1 260px; }
+.orders .search input { width: auto; min-height: 0; border: 0; background: transparent; border-radius: 0; padding: 0; }
+.orders .tabs { scrollbar-width: none; }
+.orders .tabs::-webkit-scrollbar { display: none; }
+.orders .tabs button.zero { color: var(--text-faint); }
+.orders .tabs button.zero .tab-count { background: transparent; }
+.show-select { min-height: 40px; border: 1px solid rgba(255, 255, 255, 0.9); border-radius: var(--pill); padding: 0 34px 0 14px; font: 600 14px var(--font-family); color: var(--text); background: rgba(255, 255, 255, 0.7); cursor: pointer; max-width: 100%; }
+.orders .buyer { font-weight: 600; color: var(--text); text-decoration: none; }
+.orders .buyer:hover { color: var(--accent); }
+.orders .show-inline { display: none; font-size: 13px; color: var(--text-muted); }
+.item-lines { display: flex; flex-direction: column; gap: 6px; }
+.item-line { display: flex; flex-direction: column; gap: 4px; }
+.item-line .unknown { color: var(--tint-amber-ink); }
+.lots { display: flex; gap: 4px; flex-wrap: wrap; }
+.lot { display: inline-block; font-size: 12px; font-weight: 600; color: var(--text-muted); background: var(--fill); border-radius: 8px; padding: 0 7px; line-height: 20px; font-variant-numeric: tabular-nums; }
+.lot.more { background: transparent; color: var(--text-faint); }
+.orders .sub { margin-top: 4px; }
+.orders .sub.unknown { color: var(--tint-amber-ink); }
+.orders .c-status .status + .sub { display: block; }
+.orders .acts { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+.orders .acts .btn.small { white-space: nowrap; }
+.menu-wrap { position: relative; display: inline-flex; }
+.menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; width: 250px; padding: 6px; border-radius: 16px; background: var(--glass-solid); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); border: 1px solid var(--glass-edge); box-shadow: var(--glass-shadow-lift); display: flex; flex-direction: column; gap: 2px; text-align: left; }
+.menu a, .menu button { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 12px; border: 0; background: none; border-radius: 10px; font: 500 14px var(--font-family); color: var(--text); cursor: pointer; text-align: left; width: 100%; text-decoration: none; }
+.menu a:hover, .menu button:hover { background: var(--fill); color: var(--text); }
+.menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 8px; }
+.banner { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; padding: 14px 14px 14px 18px; margin-bottom: var(--space-3); border-radius: 22px; background: rgba(255, 149, 0, 0.12); border: 1px solid rgba(255, 194, 120, 0.7); box-shadow: var(--glass-shadow); }
+.banner-main { display: flex; gap: 14px; align-items: center; flex: 1 1 320px; min-width: 0; }
+.banner-main b { font-weight: 600; }
+.banner-icon { width: 40px; height: 40px; border-radius: 12px; background: var(--orange); color: #fff; display: grid; place-items: center; flex: none; }
+.banner .small { color: var(--tint-amber-ink); }
+.banner .btns { display: flex; gap: 8px; }
+.orders .foot { display: flex; justify-content: space-between; gap: 8px; padding: 0 6px; margin-top: var(--space-2); }
+.orders .card.flush { overflow: visible; } /* the row menu floats past the card's edge */
+.orders .card.flush .table { border-radius: var(--radius-l); box-shadow: none; border: 0; background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
+.orders .table th:first-child { border-top-left-radius: var(--radius-l); }
+.orders .table th:last-child { border-top-right-radius: var(--radius-l); }
+
+/* The product picker: the match list sits in the dialog's flow instead of floating over it. */
+.product-picker { display: flex; flex-direction: column; gap: var(--space-3); }
+.product-picker .sku-field { flex: none; max-width: none; }
+.product-picker .sku-list { position: static; margin-top: 6px; max-height: 260px; }
+.recent-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.stock-note { margin: 0; }
+.modal .field.check { align-items: flex-start; }
+.modal .field.check input { margin-top: 3px; }
+.modal .field.check span { font-weight: 500; font-size: 14px; color: var(--text); }
+
+@container orders (max-width: 1100px) {
+  .orders .col-show { display: none; }
+  .orders .show-inline { display: block; }
+  .orders .page-head .sub { display: none; }
+  .orders .table { display: table; white-space: normal; overflow: visible; }
+}
+@container orders (max-width: 700px) {
+  .banner { flex-direction: column; align-items: stretch; padding: 14px 16px; }
+  .banner-main { flex: 0 0 auto; align-items: flex-start; }
+  .banner .btns .btn { flex: 1; }
+  .orders .toolbar { flex-direction: column; align-items: stretch; }
+  .orders .search { flex: 1 1 auto; }
+  .orders .table, .orders .table tbody { display: block; white-space: normal; overflow: visible; }
+  .orders .table thead { display: none; }
+  .orders .table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "buyer total" "items items" "status status" "action action"; gap: 6px 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  .orders .table tr:last-child { border-bottom: 0; }
+  .orders .table td, .orders .table tr:last-child td { display: block; padding: 0; border: 0; }
+  .orders .table tbody tr:hover td { background: transparent; }
+  .orders .c-buyer { grid-area: buyer; }
+  .orders .c-total { grid-area: total; }
+  .orders .c-items { grid-area: items; }
+  .orders .table td.col-show { display: none; }
+  .orders .table td.c-status { grid-area: status; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .orders .c-status .sub { margin-top: 0; }
+  .orders .c-action { grid-area: action; }
+  .orders .acts { justify-content: stretch; }
+  .orders .acts .btn.small { flex: 1; min-height: 44px; font-size: 15px; }
+  .orders .acts .icon-btn.sm { width: 44px; height: 44px; }
+  .orders .foot { flex-direction: column; gap: 4px; }
+}

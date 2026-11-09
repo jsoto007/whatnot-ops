@@ -1083,8 +1083,14 @@ def record_sale_from_event(item: ReviewItem) -> Sale:
 
 
 def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
+    # One decision at a time per item, taken on its committed state: two people settling the
+    # same lot with different products must not both move stock. The item and its sale are
+    # locked before anything is checked, so the second person gets a 409 and moves nothing.
+    db.session.refresh(item, with_for_update=True)
     if item.status is not ReviewStatus.open:
         raise ReviewError("already resolved", 409)
+    if item.sale is not None:
+        db.session.refresh(item.sale, with_for_update=True)
     actor = Actor.user(user)
     if action == "dismiss":
         item.status = ReviewStatus.dismissed
@@ -1170,3 +1176,69 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
     item.resolved_by_id = user.id
     item.resolved_at = datetime.now(UTC)
     return item
+
+
+def similar_open_items(item: ReviewItem) -> list[ReviewItem]:
+    """The other open "item not recognised" decisions in the same show whose lot title is this
+    one's without the lot number ("$1 BEAUTY PULLS #521" next to "#520"). Only a person may
+    treat them as one product; the rules never assume it (lot #761 may be another bottle)."""
+    sale = item.sale
+    if sale is None or item.show_id is None or not sale.item_text:
+        return []
+    key = rules.item_title(sale.item_text).lower()
+    if not key:
+        return []
+    others = db.session.scalars(
+        select(ReviewItem)
+        .where(
+            ReviewItem.organization_id == item.organization_id,
+            ReviewItem.show_id == item.show_id,
+            ReviewItem.status == ReviewStatus.open,
+            ReviewItem.reason == "unmatched_item",
+            ReviewItem.id != item.id,
+        )
+        .order_by(ReviewItem.id)
+    ).all()
+    return [
+        o
+        for o in others
+        if o.sale is not None
+        and o.sale.sku_id is None
+        and o.sale.status in OPEN
+        and rules.item_title(o.sale.item_text or "").lower() == key
+    ]
+
+
+# One request names at most this many extra lots: each one is a reserve, a payment and an
+# order refresh inside a single transaction that holds the SKU row.
+SIMILAR_LIMIT = 300
+# The class half of the (class, show id) advisory lock for "name it once" runs.
+SIMILAR_LOCK = 0x5369_6D69  # "Simi"
+
+
+def lock_similar(show_id: int) -> None:
+    """One "name it once" run per show at a time (taken before the first lot is resolved, so a
+    second run waits and then finds its lots already settled instead of deadlocking)."""
+    db.session.execute(
+        text("SELECT pg_advisory_xact_lock(:cls, :show)"), {"cls": SIMILAR_LOCK, "show": show_id}
+    )
+
+
+def resolve_similar(
+    item: ReviewItem, sku_id: int, *, remember: bool, user, only: set[int] | None = None
+) -> list[ReviewItem]:
+    """After `item` got its SKU: give the same SKU to the similar open lots of the show, each
+    through resolve(), so stock, payment and the order move exactly as for a single pick.
+    `only` narrows that to the review items the person was shown (a lot that appeared in
+    the meantime is left alone); a lot in `only` that is not similar any more is skipped."""
+    similar = similar_open_items(item)
+    if only is not None:
+        similar = [o for o in similar if o.id in only]
+    if len(similar) > SIMILAR_LIMIT:
+        raise ReviewError(f"name up to {SIMILAR_LIMIT} other lots at a time", 400)
+    done = []
+    for other in similar:
+        done.append(
+            resolve(other, "assign_sku", {"skuId": sku_id, "remember": remember}, user=user)
+        )
+    return done

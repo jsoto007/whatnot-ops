@@ -73,14 +73,38 @@ def resolve(item_id: int):
     if item is None or item.organization_id != g.u.organization_id:
         return jsonify({"error": "review item not found"}), 404
     body = request.get_json(silent=True) or {}
-    pipeline.resolve(item, body.get("action", ""), body, user=g.u)
-    audit.record(
-        g.u.organization_id,
-        "review.resolved",
-        user=g.u,
-        target_type="review",
-        target_id=item.id,
-        details={"reason": item.reason, **(item.resolution or {})},
-    )
+    action = body.get("action", "")
+    # "Also use it for the other lots": `applyTo` names the review items the person was shown;
+    # `applyToSimilar` alone means every similar open lot of the show.
+    ids = body.get("applyTo")
+    only = None
+    if isinstance(ids, list):
+        if not all(isinstance(i, int) for i in ids) or len(ids) > pipeline.SIMILAR_LIMIT:
+            return jsonify({"error": "applyTo must be a short list of review item ids"}), 400
+        only = set(ids)
+    widen = action == "assign_sku" and (only is not None or bool(body.get("applyToSimilar")))
+    if widen and item.show_id is not None:
+        pipeline.lock_similar(item.show_id)
+    pipeline.resolve(item, action, body, user=g.u)
+    also: list[ReviewItem] = []
+    if widen:
+        also = pipeline.resolve_similar(
+            item,
+            item.resolution["skuId"],
+            remember=bool(body.get("remember")),
+            user=g.u,
+            only=only,
+        )
+    for r in (item, *also):
+        audit.record(
+            g.u.organization_id,
+            "review.resolved",
+            user=g.u,
+            target_type="review",
+            target_id=r.id,
+            details={"reason": r.reason, **(r.resolution or {})},
+        )
     db.session.commit()
-    return jsonify({"item": serializers.review_item(item, _context(item))})
+    return jsonify(
+        {"item": serializers.review_item(item, _context(item)), "alsoResolved": len(also)}
+    )
