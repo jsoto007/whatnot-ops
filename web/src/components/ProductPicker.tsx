@@ -43,7 +43,7 @@ export interface PickerTarget {
  * "Which product is “$1 BEAUTY PULLS #520”?" for one buyer's lot. The pick lands on that lot
  * alone unless the person ticks the box for the other lots of the show with the same title.
  */
-export function ProductPicker({ target, onClose, onDone }: { target: PickerTarget; onClose: () => void; onDone: (msg: string) => void }) {
+export function ProductPicker({ target, onClose, onDone }: { target: PickerTarget; onClose: () => void; onDone: (msg: string) => void | Promise<void> }) {
   const { sale, buyer, showDate, reviewId, similar } = target
   const products = useQuery({ queryKey: ['products'], queryFn: () => apiGet<{ products: Product[] }>('/api/products') })
   const skus: PickerSku[] = (products.data?.products ?? []).flatMap((p) => p.skus.map((s) => ({ ...s, productName: p.name })))
@@ -64,15 +64,19 @@ export function ProductPicker({ target, onClose, onDone }: { target: PickerTarge
     setBusy(true)
     setError(null)
     try {
+      // The other lots are named by id: exactly the ones this dialog listed, never a lot that
+      // appeared after it opened. The server re-checks each is still a similar open lot.
+      const applyTo = applyAll ? similar.map((s) => s.review?.id).filter((id): id is number => id != null) : undefined
       const r = await api<{ alsoResolved: number }>('POST', `/api/review/${reviewId}/resolve`, {
         action: 'assign_sku',
         skuId: chosen.id,
         remember,
         applyToSimilar: applyAll,
+        ...(applyTo ? { applyTo } : {}),
       })
       pushRecent(chosen.id)
       const also = r?.alsoResolved ?? 0
-      onDone(`${chosen.productName} set for ${buyer}'s ${lotText(sale)}${also ? ` and ${plural(also, 'other lot', 'other lots')}` : ''}.`)
+      await onDone(`${chosen.productName} set for ${buyer}'s ${lotText(sale)}${also ? ` and ${plural(also, 'other lot', 'other lots')}` : ''}.`)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Could not set the product. Try again.')
       setBusy(false)

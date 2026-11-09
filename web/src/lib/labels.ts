@@ -46,8 +46,8 @@ export const ORDER_STEP_BACK: Partial<Record<OrderStatus, { label: string; to: O
 }
 export const orderStatusLabel = (s: string): string => ORDER_STATUS_LABEL[s as OrderStatus] ?? 'other'
 
-/** "lot #520" for a sale whose title carries Whatnot's lot number, else "this lot". */
-export const lotText = (s: Pick<Sale, 'lot'>) => (s.lot != null ? `lot #${s.lot}` : 'this lot')
+/** "lot #520" for a sale whose title carries Whatnot's lot number, else the chat line it came from. */
+export const lotText = (s: Pick<Sale, 'lot' | 'seq'>) => (s.lot != null ? `lot #${s.lot}` : s.seq ? `line ${s.seq}` : 'this lot')
 
 /** Lot types read from the listing title (api `rules.AUCTION_TYPES` / `LOT_LABELS`). */
 const LOT_LABEL: Record<string, string> = { red: 'Red', mega: 'Mega', ultra: 'Ultra', bundle: 'Bundle', quick_hit: 'Quick Hit' }

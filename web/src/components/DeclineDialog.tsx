@@ -11,7 +11,7 @@ import { lotText } from '../lib/labels'
  * ends: a person either restores the sale (saying which product it was, if nobody knew) or
  * keeps it declined, which leaves the item in stock.
  */
-export function DeclineDialog({ sale, buyer, showDate, reviewId, onClose, onDone }: { sale: Sale; buyer: string; showDate: string; reviewId: number; onClose: () => void; onDone: (msg: string) => void }) {
+export function DeclineDialog({ sale, buyer, showDate, reviewId, onClose, onDone }: { sale: Sale; buyer: string; showDate: string; reviewId: number; onClose: () => void; onDone: (msg: string) => void | Promise<void> }) {
   const needsSku = !sale.sku
   const products = useQuery({ queryKey: ['products'], queryFn: () => apiGet<{ products: Product[] }>('/api/products'), enabled: needsSku })
   const skus = (products.data?.products ?? []).flatMap((p) => p.skus.map((s): Sku & { productName: string } => ({ ...s, productName: p.name })))
@@ -23,7 +23,7 @@ export function DeclineDialog({ sale, buyer, showDate, reviewId, onClose, onDone
     setError(null)
     try {
       await api('POST', `/api/review/${reviewId}/resolve`, body)
-      onDone(msg)
+      await onDone(msg)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Could not update the sale. Try again.')
       setBusy(false)
@@ -58,7 +58,7 @@ export function DeclineDialog({ sale, buyer, showDate, reviewId, onClose, onDone
       }
     >
       <p style={{ margin: 0 }}>
-        Whatnot declined the card for <b>{item}</b>. The item is back in stock. The buyer can still pay another way until the show ends; if they did, restore the sale.
+        Whatnot declined the card for <b>{item}</b>. {sale.flagged ? 'Picking had already begun, so the item was not put back in stock.' : 'The item is back in stock.'} The buyer can still pay another way until the show ends; if they did, restore the sale.
       </p>
       {needsSku && (
         <div className="sku-field">

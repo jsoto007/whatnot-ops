@@ -15,8 +15,10 @@ const NEXT = ORDER_NEXT_STEP
  * pick at once. `open` only means an item still needs a person (not recognised); a declined
  * card shows on the order and in its own tab. */
 const declined = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'payment_failed')
-/** The lots a person still has to name: no product, and a decision open on them. */
-const unknown = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'detected' && !s.sku && s.review?.reason === 'unmatched_item')
+/** Lots with no product yet (the order stays open until each one is named). */
+const unnamed = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'detected' && !s.sku)
+/** The ones a person can name from here: a decision is still open on them. */
+const unknown = (o: Order) => unnamed(o).filter((s) => s.review?.reason === 'unmatched_item')
 const VIEWS: { key: string; label: string; match: (o: Order) => boolean }[] = [
   { key: 'queue', label: 'Ready to pick', match: (o) => o.status === 'paid' },
   { key: 'progress', label: 'In progress', match: (o) => o.status === 'picking' || o.status === 'packed' },
@@ -29,8 +31,12 @@ const RANK: Record<OrderStatus, number> = { paid: 0, picking: 1, packed: 2, open
 const STANDING: SaleStatus[] = ['reserved', 'paid', 'fulfilled', 'detected']
 
 const titleOf = (s: Sale) => (s.sku ? `${s.sku.productName}${s.sku.name ? ' ' + s.sku.name : ''}` : s.itemTitle || s.item || '?')
-/** Lots that are "the same item": one show, one title without the lot number. */
-const groupKey = (s: Sale) => `${s.showId}|${(s.itemTitle || s.item || '').toLowerCase()}`
+/** Lots that are "the same item": one show, one title without the lot number. A title that is
+ * only a lot number ("#520") names nothing, so such lots are never grouped. */
+const groupKey = (s: Sale): string | null => {
+  const title = (s.itemTitle || '').toLowerCase()
+  return title ? `${s.showId}|${title}` : null
+}
 const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: SHOP_TZ })
 
 function wonAt(o: Order): number {
@@ -69,21 +75,27 @@ export function Orders() {
 
   // Lots nobody has named yet, grouped by show and title: "$1 BEAUTY PULLS #520" and "#521" are one group.
   const groups = new Map<string, Sale[]>()
-  for (const o of orders) for (const s of unknown(o)) groups.set(groupKey(s), [...(groups.get(groupKey(s)) ?? []), s])
+  for (const o of orders)
+    for (const s of unknown(o)) {
+      const key = groupKey(s)
+      if (key) groups.set(key, [...(groups.get(key) ?? []), s])
+    }
   const biggest = [...groups.values()].sort((a, b) => b.length - a.length)[0]
   const stuck = biggest && biggest.length > 1 && can('review.act') ? biggest : null
   const stuckOrders = stuck ? new Set(stuck.map((s) => s.orderId)).size : 0
 
   const openPicker = (sale: Sale, applyToSimilar = false) => {
     if (!sale.review) return
-    const similar = (groups.get(groupKey(sale)) ?? []).filter((s) => s.id !== sale.id)
+    const key = groupKey(sale)
+    const similar = (key ? (groups.get(key) ?? []) : []).filter((s) => s.id !== sale.id)
     setPicking({ sale, buyer: sale.buyer, showDate: sale.showDate, reviewId: sale.review.id, similar, applyToSimilar })
   }
-  const done = (msg: string) => {
+  /** The dialog stays up until the list has refetched, so no button can act on a lot just settled. */
+  const done = async (msg: string) => {
+    await qc.invalidateQueries()
     setPicking(null)
     setDecline(null)
     setToast(msg)
-    void qc.invalidateQueries()
   }
 
   return (
@@ -144,7 +156,7 @@ export function Orders() {
                 {plural(stuckOrders, 'order is', 'orders are')} waiting on one item the shop does not know yet.
               </b>
               <div className="small">
-                The chat called it “{stuck[0]!.itemTitle || stuck[0]!.item} #…”. Name the product once and every one of them moves to Ready to pick.
+                The chat called it “{stuck[0]!.itemTitle} #…”. Name the product once and every one of these lots is settled.
               </div>
             </div>
           </div>
@@ -268,7 +280,7 @@ function Lots({ lots }: { lots: number[] }) {
 }
 
 function Status({ o }: { o: Order }) {
-  const unk = unknown(o)
+  const unk = unnamed(o)
   const dec = declined(o)
   const won = wonAt(o)
   return (
@@ -305,8 +317,9 @@ function Actions({ o, onPick, onDecline }: { o: Order; onPick: (sale: Sale) => v
   })
   const canReview = can('review.act')
   const canFulfil = can('orders.fulfill')
-  const next = NEXT[o.status]
-  const back = ORDER_STEP_BACK[o.status]
+  // Picking, packing and shipping need every lot paid; a decline mid-fulfilment takes that away.
+  const next = o.verified ? NEXT[o.status] : undefined
+  const back = o.verified ? ORDER_STEP_BACK[o.status] : undefined
   const unk = unknown(o)
   const dec = declined(o).filter((s) => s.review?.reason === 'payment_declined')
   let primary: ReactNode = null
@@ -343,6 +356,13 @@ function Actions({ o, onPick, onDecline }: { o: Order; onPick: (sale: Sale) => v
         <Icon name="card" size={16} />
         Resolve the declined payment
       </button>,
+    )
+  if (o.status === 'open' && canReview)
+    more.push(
+      <Link key="review" role="menuitem" to={`/app/review/${o.showId}`}>
+        <Icon name="review" size={16} />
+        Open Review for this show
+      </Link>,
     )
   if (back && canFulfil)
     more.push(

@@ -92,6 +92,14 @@ const orders: Order[] = [
     sales: [sale({ buyer: 'kels.finds', orderId: 5, sku: RED, item: '$1 BEAUTY PULLS #530', lot: 530, status: 'paid', paidAt: '2026-11-08T03:30:00Z', wonAt: '2026-11-08T03:30:00Z' })],
   }),
   order({
+    id: 7,
+    buyer: 'pinkpony_22',
+    status: 'picking',
+    verified: false,
+    pickedAt: '2026-11-08T20:12:00Z',
+    sales: [sale({ buyer: 'pinkpony_22', orderId: 7, sku: RED, item: '$1 BEAUTY PULLS #533', lot: 533, status: 'payment_failed', wonAt: '2026-11-08T03:31:00Z', review: { id: 15, reason: 'payment_declined' } })],
+  }),
+  order({
     id: 6,
     buyer: 'scrollstoppers',
     status: 'cancelled',
@@ -163,7 +171,13 @@ test('every row names its state and the one verb that moves it on', async () => 
   expect(within(screen.getByTestId('order-scrollstoppers')).getByRole('button', { name: 'Resolve decline' })).toBeInTheDocument()
   // the oldest win comes first within a state; ready orders come before stuck ones
   const rows = screen.getAllByTestId(/^order-/).map((r) => r.getAttribute('data-testid'))
-  expect(rows).toEqual(['order-amyshopsalot', 'order-kels.finds', 'order-moonlove3', 'order-taravat08', 'order-scrollstoppers'])
+  expect(rows).toEqual(['order-amyshopsalot', 'order-kels.finds', 'order-pinkpony_22', 'order-moonlove3', 'order-taravat08', 'order-scrollstoppers'])
+  // a decline while picking: the order is no longer fully paid, so no step forward is offered
+  const pink = screen.getByTestId('order-pinkpony_22')
+  expect(pink).toHaveTextContent('Picking')
+  expect(pink).toHaveTextContent('payment declined')
+  expect(within(pink).queryByRole('button', { name: 'Mark packed' })).toBeNull()
+  expect(within(pink).getByRole('button', { name: 'Resolve decline' })).toBeInTheDocument()
 })
 
 test('naming the product is for that buyer’s lot alone unless the person widens it', async () => {
@@ -193,7 +207,7 @@ test('the banner names the item once for every lot with that title, and says so'
   const posts = mount()
   const banner = await screen.findByTestId('stuck-banner')
   expect(banner).toHaveTextContent('2 orders are waiting on one item the shop does not know yet.')
-  expect(banner).toHaveTextContent('The chat called it “$1 BEAUTY PULLS #…”')
+  expect(banner).toHaveTextContent('The chat called it “$1 BEAUTY PULLS #…”. Name the product once and every one of these lots is settled.')
   fireEvent.click(within(banner).getByTestId('name-it-once'))
   const dialog = await screen.findByRole('dialog')
   // the oldest lot is the one being named; the others follow because the box is ticked
@@ -205,7 +219,7 @@ test('the banner names the item once for every lot with that title, and says so'
   expect(within(dialog).getByTestId('stock-note')).toHaveTextContent('3 units will be sold from it')
   fireEvent.click(use)
   await waitFor(() => expect(posts).toHaveLength(1))
-  expect(posts[0]).toEqual({ url: '/api/review/11/resolve', body: { action: 'assign_sku', skuId: 7, remember: true, applyToSimilar: true } })
+  expect(posts[0]).toEqual({ url: '/api/review/11/resolve', body: { action: 'assign_sku', skuId: 7, remember: true, applyToSimilar: true, applyTo: [12, 13] } })
   expect(await screen.findByRole('status')).toHaveTextContent("set for moonlove3's lot #520 and 2 other lots.")
 })
 

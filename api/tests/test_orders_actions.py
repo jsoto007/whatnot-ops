@@ -182,3 +182,77 @@ def test_similar_lots_are_the_same_show_only(app, world):
         item = db.session.scalar(select(ReviewItem).where(ReviewItem.show_id == world["show"]))
         assert pipeline.similar_open_items(item) == []
         assert db.session.scalar(select(db.func.count()).select_from(Order)) == 2
+
+
+def test_widening_reaches_only_the_lots_the_person_was_shown(client, app, world):
+    world["say"](
+        app,
+        [
+            win("moonlove3", "$1 BEAUTY PULLS #520"),
+            win("taravat08", "$1 BEAUTY PULLS #521"),
+            win("amyshopsalot", "$1 BEAUTY PULLS #522"),
+            win("kels.finds", "$1 BEAUTY PULLS #523"),
+        ],
+    )
+    run(app, world["show"])
+    h = sign_in(client, app, world["org"])
+    orders = by_buyer(client)
+    rid = {b: o["sales"][0]["review"]["id"] for b, o in orders.items()}
+    # The dialog listed taravat08 and amyshopsalot; kels.finds won after it opened. An id that
+    # is not a similar open lot of this show (another org, a typo) is ignored, never resolved.
+    r = client.post(
+        f"/api/review/{rid['moonlove3']}/resolve",
+        json={
+            "action": "assign_sku",
+            "skuId": world["red"],
+            "remember": False,
+            "applyTo": [rid["taravat08"], rid["amyshopsalot"], 999_999],
+        },
+        headers=h,
+    )
+    assert r.status_code == 200, r.get_json()
+    assert r.get_json()["alsoResolved"] == 2
+    assert sorted(sales(app, world["show"])) == sorted(
+        [
+            ("moonlove3", "paid", "RED", 1),
+            ("taravat08", "paid", "RED", 1),
+            ("amyshopsalot", "paid", "RED", 1),
+            ("kels.finds", "detected", None, 1),
+        ]
+    )
+    # Only a list of ids will do.
+    r = client.post(
+        f"/api/review/{rid['kels.finds']}/resolve",
+        json={"action": "assign_sku", "skuId": world["red"], "applyTo": ["12"]},
+        headers=h,
+    )
+    assert r.status_code == 400
+    assert sales(app, world["show"])[-1] == ("kels.finds", "detected", None, 1)
+
+
+def test_a_bulk_run_is_capped_and_changes_nothing_when_refused(client, app, world, monkeypatch):
+    world["say"](
+        app,
+        [
+            win("moonlove3", "$1 BEAUTY PULLS #520"),
+            win("taravat08", "$1 BEAUTY PULLS #521"),
+            win("amyshopsalot", "$1 BEAUTY PULLS #522"),
+        ],
+    )
+    run(app, world["show"])
+    h = sign_in(client, app, world["org"])
+    moon = by_buyer(client)["moonlove3"]["sales"][0]["review"]["id"]
+    monkeypatch.setattr(pipeline, "SIMILAR_LIMIT", 1)
+    r = client.post(
+        f"/api/review/{moon}/resolve",
+        json={"action": "assign_sku", "skuId": world["red"], "applyToSimilar": True},
+        headers=h,
+    )
+    assert r.status_code == 400 and "1 other lots" in r.get_json()["error"]
+    # Refused as a whole: moonlove3's own pick did not land either.
+    assert sales(app, world["show"]) == [
+        ("moonlove3", "detected", None, 1),
+        ("taravat08", "detected", None, 1),
+        ("amyshopsalot", "detected", None, 1),
+    ]
+    assert [r for r, _ in open_reviews(app)] == ["unmatched_item"] * 3
