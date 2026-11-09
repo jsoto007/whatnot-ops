@@ -1,8 +1,15 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router'
-import { api, apiGet, type Product, type ReviewItem } from '../../lib/api'
+import { Link, useParams } from 'react-router'
+import { Icon } from '../../components/Icon'
+import { SkuPicker } from '../../components/SkuPicker'
+import { api, apiGet, type Product, type ReviewItem, type Sku } from '../../lib/api'
+import { fmtLongDate, plural } from '../../lib/format'
 import { reviewSourceLabel } from '../../lib/labels'
+import { groupByShow, type ShowGroup } from '../../lib/reviewGroups'
+
+/** A SKU as the picker lists it: with its product's name (the chat names come along from /api/products). */
+type ReviewSku = Sku & { productName: string }
 
 const REASON_LABEL: Record<string, string> = {
   unmatched_item: 'Item not recognised',
@@ -39,33 +46,93 @@ const ACTION_LABEL: Record<string, string> = {
   other: 'Take a look',
 }
 
+const showTitle = (g: { showDate: string | null }) => (g.showDate ? `${fmtLongDate(g.showDate)} show` : 'Not tied to a show')
+
+/** `/app/review` lists the shows with decisions waiting; `/app/review/:showId` is one show's queue. */
 export function Review() {
+  const { showId } = useParams()
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['review'], queryFn: () => apiGet<{ items: ReviewItem[] }>('/api/review') })
   const products = useQuery({ queryKey: ['products'], queryFn: () => apiGet<{ products: Product[] }>('/api/products') })
-  const [reason, setReason] = useState('')
   const refresh = () => qc.invalidateQueries()
   if (q.isPending) return <p className="muted">Loading…</p>
   if (q.isError) return <p className="form-error">Could not load the review queue.</p>
+  const groups = groupByShow(q.data.items)
+  if (!showId) return <ShowList groups={groups} total={q.data.items.length} />
   const skus = (products.data?.products ?? []).flatMap((p) => p.skus.map((s) => ({ ...s, productName: p.name })))
-  const items = q.data.items
-  const byReason = new Map<string, number>()
-  for (const it of items) byReason.set(it.reason, (byReason.get(it.reason) ?? 0) + 1)
-  const visible = reason ? items.filter((it) => it.reason === reason) : items
+  const group = groups.find((g) => g.key === showId)
+  const elsewhere = q.data.items.length - (group?.items.length ?? 0)
+  return <ShowQueue key={showId} group={group} elsewhere={elsewhere} skus={skus} onDone={refresh} />
+}
+
+/** One row per show with decisions waiting, newest show first. */
+function ShowList({ groups, total }: { groups: ShowGroup[]; total: number }) {
+  const shows = groups.filter((g) => g.showId != null).length
   return (
     <section>
       <div className="page-head">
         <div>
           <h2>Review</h2>
-          <div className="sub">{items.length ? `${items.length} decision${items.length === 1 ? '' : 's'} waiting. Each one is a chat line the rules could not settle on their own.` : 'Nothing waiting on you.'}</div>
+          <div className="sub">{total ? `${plural(total, 'decision', 'decisions')} waiting${shows ? ` across ${plural(shows, 'show', 'shows')}` : ''}. Open a show to work through its queue.` : 'Nothing waiting on you.'}</div>
         </div>
+      </div>
+      {total === 0 ? (
+        <div className="empty">
+          <b>Nothing waiting</b>
+          The rules handled everything they saw.
+        </div>
+      ) : (
+        <div className="card flush review-shows">
+          <ul className="attention" data-testid="review-shows">
+            {groups.map((g) => (
+              <li key={g.key}>
+                <Link to={`/app/review/${g.key}`} className="attn-row" data-testid={`review-show-${g.key}`}>
+                  <span className="attn-icon tone-amber" aria-hidden>
+                    <Icon name="review" size={20} />
+                  </span>
+                  <span className="attn-text">
+                    <b>{showTitle(g)}</b>
+                    <span>{[...g.byReason.entries()].map(([r, n]) => `${REASON_LABEL[r] ?? 'Something to check'} (${n})`).join(' · ')}</span>
+                  </span>
+                  <span className="attn-verb btn primary">{plural(g.items.length, 'decision', 'decisions')}</span>
+                  <Icon name="chevron" className="attn-chev" size={18} />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  )
+}
+
+/** One show's decisions, filterable by reason. `group` is undefined once its queue is clear. */
+function ShowQueue({ group, elsewhere, skus, onDone }: { group: ShowGroup | undefined; elsewhere: number; skus: ReviewSku[]; onDone: () => Promise<unknown> }) {
+  const [reason, setReason] = useState('')
+  const items = group?.items ?? []
+  const visible = reason ? items.filter((it) => it.reason === reason) : items
+  return (
+    <section>
+      <p className="small">
+        <Link to="/app/review">← All shows</Link>
+      </p>
+      <div className="page-head">
+        <div>
+          <h2>{group ? showTitle(group) : 'Review'}</h2>
+          <div className="sub">{items.length ? `${plural(items.length, 'decision', 'decisions')} waiting. Each one is a chat line the rules could not settle on their own.` : 'Nothing waiting for this show.'}</div>
+        </div>
+        {group?.showId != null && (
+          <Link className="btn ghost" to={`/app/shows/${group.showId}`}>
+            Open the show
+          </Link>
+        )}
       </div>
       {items.length > 0 && (
         <div className="chips filter" role="group" aria-label="Filter by reason" style={{ marginBottom: 'var(--space-3)' }}>
           <button className={'chip' + (reason === '' ? ' on' : '')} onClick={() => setReason('')}>
             All <span className="chip-n">{items.length}</span>
           </button>
-          {[...byReason.entries()].map(([r, n]) => (
+          {[...group!.byReason.entries()].map(([r, n]) => (
             <button key={r} className={'chip' + (reason === r ? ' on' : '')} onClick={() => setReason(r)}>
               {REASON_LABEL[r] ?? 'Something to check'} <span className="chip-n">{n}</span>
             </button>
@@ -75,16 +142,22 @@ export function Review() {
       {items.length === 0 ? (
         <div className="empty">
           <b>Nothing waiting</b>
-          The rules handled everything they saw.
+          This show's queue is clear.
+          {elsewhere > 0 && (
+            <>
+              {' '}
+              <Link to="/app/review">{plural(elsewhere, 'decision is', 'decisions are')} waiting in other shows.</Link>
+            </>
+          )}
         </div>
       ) : (
-        visible.map((it) => <Item key={it.id} item={it} skus={skus} onDone={refresh} />)
+        visible.map((it) => <Item key={it.id} item={it} skus={skus} onDone={onDone} />)
       )}
     </section>
   )
 }
 
-function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; code: string; name: string; productName: string; available: number }[]; onDone: () => Promise<unknown> }) {
+function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onDone: () => Promise<unknown> }) {
   const [skuId, setSkuId] = useState('')
   const [remember, setRemember] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -129,17 +202,10 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
       <div className="inline-form">
         {(item.reason === 'unmatched_item' || item.reason === 'insufficient_stock') && (
           <>
-            <label className="field">
-              <span>SKU</span>
-              <select value={skuId} onChange={(e) => setSkuId(e.target.value)} aria-label={`SKU for review ${item.id}`}>
-                <option value="">Choose…</option>
-                {skus.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.productName} {s.name} ({s.code}) · {s.available} available
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="sku-field">
+              <span className="sku-label">SKU</span>
+              <SkuPicker skus={skus} value={skuId} onChange={setSkuId} label={`SKU for review ${item.id}`} />
+            </div>
             {item.reason === 'unmatched_item' && (
               <label className="field check">
                 <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> <span>remember this name</span>
@@ -188,17 +254,10 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: { id: number; co
           <>
             {/* The win's item was never recognised: say which product it was first. */}
             {!item.sale.sku && (
-              <label className="field">
-                <span>SKU</span>
-                <select value={skuId} onChange={(e) => setSkuId(e.target.value)} aria-label={`SKU for review ${item.id}`}>
-                  <option value="">Choose…</option>
-                  {skus.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.productName} {s.name} ({s.code})
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="sku-field">
+                <span className="sku-label">SKU</span>
+                <SkuPicker skus={skus} value={skuId} onChange={setSkuId} label={`SKU for review ${item.id}`} showAvailable={false} />
+              </div>
             )}
             <button
               className="btn primary"

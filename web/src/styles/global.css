@@ -191,6 +191,7 @@ code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background
   .tabs button { white-space: nowrap; }
   .inline-form { flex-direction: column; align-items: stretch; }
   .inline-form .btn, .inline-form label.btn { justify-content: center; }
+  .inline-form .sku-field { flex: 0 0 auto; max-width: none; } /* the column form would read 340px as a height */
   .row-actions .btn { flex: 1 1 auto; justify-content: center; }
   .table { display: block; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; }
   .tiles.primary { grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); }
@@ -289,6 +290,26 @@ tr.short td { background: rgba(255, 59, 48, 0.06); }
 .sale-chat-row > td { padding-top: 0; }
 @media (max-width: 900px) { .sale-chat .chat.small .chat-line { grid-template-columns: 56px minmax(0, 1fr); } }
 .review .chat.small .chat-line { grid-template-columns: 50px 120px 1fr; font-size: 14px; }
+/* Review: the queue is split by show; each row opens that show's decisions. */
+.review-shows .attention { padding: 0; }
+.review-shows .attention li:first-child .attn-row { border-top: 0; }
+/* Review: the SKU picker is a search box over the catalogue with the best matches listed under it.
+   The open list floats over the cards below, so the card it belongs to rises above its siblings. */
+.review { position: relative; }
+.review:focus-within { z-index: 5; }
+.sku-field { display: grid; gap: var(--space-1); flex: 1 1 340px; max-width: 560px; min-width: 0; }
+.sku-label { font-size: 13px; color: var(--text-muted); font-weight: 600; }
+.sku-picker { position: relative; min-width: 0; }
+.sku-picker .search { flex: 1 1 auto; max-width: none; min-height: 44px; }
+.sku-picker .search input { width: 100%; }
+.sku-list { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 20; padding: 6px; max-height: 320px; overflow-y: auto; background: var(--glass-solid); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); border: 1px solid var(--glass-edge); border-radius: var(--radius-m); box-shadow: var(--glass-shadow); }
+.sku-list ul { list-style: none; margin: 0; padding: 0; }
+.sku-list li { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); padding: 8px 12px; border-radius: var(--radius-s); cursor: pointer; font-size: 14px; color: var(--text); }
+.sku-list li[aria-selected="true"] { background: var(--accent-soft); }
+.sku-list .sku-name { min-width: 0; }
+.sku-list .sku-name b { font-weight: 600; }
+.sku-list .sku-meta { color: var(--text-muted); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sku-note { padding: 8px 12px; color: var(--text-faint); font-size: 13px; }
 .field.check { display: flex; flex-direction: row; align-items: center; gap: 8px; }
 .proposal { background: var(--tint-blue); padding: 10px 14px; border-radius: var(--radius-m); }
 

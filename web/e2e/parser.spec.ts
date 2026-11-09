@@ -100,6 +100,9 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
 
   // Review: teach the app that "mystery box" is a red bundle.
   await page.getByRole('link', { name: /^Review/ }).click()
+  // The queue is listed by show: one row here; open it.
+  await expect(page.getByTestId(/^review-show-/)).toHaveCount(1)
+  await page.getByTestId(/^review-show-/).click()
   await expect(page.locator('.review')).toHaveCount(3)
   // lani808's declined card: the item is back in stock; they never paid another way.
   const decline = page.locator('.review', { hasText: 'Payment declined' })
@@ -107,9 +110,11 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   await expect(decline.getByTestId('mark-paid-after-decline')).toBeVisible()
   await decline.getByRole('button', { name: 'Keep declined' }).click()
   await expect(page.locator('.review')).toHaveCount(2)
-  const select = page.getByLabel(/SKU for review/)
-  const redValue = await select.locator('option', { hasText: 'RED' }).getAttribute('value')
-  await select.selectOption(redValue!)
+  // The SKU box is a search: type part of the code and pick the match.
+  const pick = page.getByRole('combobox', { name: /SKU for review/ })
+  await pick.fill('red')
+  await page.getByRole('option', { name: /RED/ }).click()
+  await expect(pick).toHaveValue(/\(RED\)/)
   await page.getByRole('button', { name: 'Use this SKU' }).click()
   await expect(page.locator('.review')).toHaveCount(1)
   // The split winner line: the rules would not trust it, a person vouches for it and it becomes

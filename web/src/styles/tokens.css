@@ -23,6 +23,7 @@
     radial-gradient(45% 40% at 15% 85%, rgba(220, 203, 255, 0.2) 0%, rgba(220, 203, 255, 0) 70%);
   --glass: rgba(255, 255, 255, 0.45);
   --glass-strong: rgba(255, 255, 255, 0.78);
+  --glass-solid: rgba(255, 255, 255, 0.94); /* floating lists: readable over whatever sits below */
   --glass-inset: rgba(255, 255, 255, 0.6);
   --glass-edge: rgba(255, 255, 255, 0.75);
   --glass-blur: blur(30px) saturate(180%);

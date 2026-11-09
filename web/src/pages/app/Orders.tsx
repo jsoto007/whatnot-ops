@@ -133,7 +133,7 @@ export function Orders() {
                   {o.status === 'open' && (
                     <div className="muted small">
                       {(o.sales ?? []).some((s) => s.status === 'detected') ? (
-                        <Link to="/app/review">item not recognised — see Review</Link>
+                        <Link to={`/app/review/${o.showId}`}>item not recognised — see Review</Link>
                       ) : (
                         'older sale, waiting for the payment file'
                       )}
