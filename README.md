@@ -191,6 +191,28 @@ What it does (`api/app/services/supervisor.py`):
 `flask ai-eval` replays the (synthetic) rules corpus through the configured
 provider and prints the agreement.
 
+## During a show (the panel)
+
+On a show page Chat Scraper floats a small panel. Press **Start** and click
+one chat message; from then on the one big button is **Stop & Save**, which
+also downloads the chat as a spreadsheet. The dot in the header says how it is
+going: **green**, breathing, means recording, chat in view and everything
+uploaded; **amber** means it is sorting something out by itself (the chat
+scrolled off screen, Sales Ops unreachable and retrying, lines set aside);
+**red** needs a click (this laptop is not connected, was disconnected in
+Settings → Laptops, or the extension was reloaded and the page needs a
+refresh); **blue** waits for the click on a message; grey is not recording.
+
+Three tabs: **Live** (status, wins, the button, and a "running low" row that
+opens this show's low-stock list), **Find** (what a buyer said, live) and
+**Flags** (lines matching the watch words, and the words themselves).
+Everything else is behind **⋯**: Chat Search, a backup copy, Settings and
+Clear. The minus button shrinks the panel to a pill with the dot and the
+message count; click the pill to open it again, drag either to move it,
+double-click the header to put it back in the corner. Wins ("tiffybid won ·
+$19.00"), "2 left" and "Sold out" pop up beside the panel or the pill for five
+seconds, newest at the bottom, three at most; click one to dismiss it.
+
 ## Connect a laptop
 
 **Settings → Laptops** (owner or manager):

@@ -20,6 +20,7 @@ import type { ShipmentsReply } from '../shipments/upload'
 import { type StockSeen, stockAlerts } from '../stock/alerts'
 import type { StockReply } from '../stock/fetch'
 import { Panel, readLayout } from './panel'
+import { dotState, uploadNote, winNotice } from './status'
 
 const WORDS_KEY = 'cs_watchwords'
 /** Where the host dragged the panel and how big they made it; every Whatnot tab shares it. */
@@ -40,6 +41,8 @@ const STOCK_POLL_MS = 8000
 const PAGE_POLL_MS = 1000
 /** Find buyer refreshes at most this often while new lines arrive. */
 export const FIND_MS = 300
+/** Watch words apply this long after the last keystroke. */
+const WORDS_MS = 250
 
 type State = 'idle' | 'picking' | 'recording' | 'stopped'
 
@@ -88,6 +91,11 @@ export class Controller {
   private watchWords: string[] = []
   private findTerm = ''
   private findTimer: ReturnType<typeof setTimeout> | null = null
+  private wordsTimer: ReturnType<typeof setTimeout> | null = null
+  /** The background's last word on uploads; it colours the dot. */
+  private upload: UploadStatus | null = null
+  /** chrome.* is gone: the extension was reloaded under this page. */
+  private dead = false
   private onPickBound = (e: MouseEvent) => this.onPick(e)
   private onUnload = () => void this.flush()
 
@@ -127,7 +135,16 @@ export class Controller {
       this.findTerm = (e.target as HTMLInputElement).value.trim().toLowerCase()
       this.renderFind()
     })
-    p.el<HTMLInputElement>('words').addEventListener('change', (e) => this.setWords((e.target as HTMLInputElement).value))
+    // Watch words take effect as they are typed (a short pause after the last key), not only on
+    // leaving the field: the flagged list then grows while typing, not under the next click. The
+    // panel sits on its bottom edge, so a list that grows on blur moves the tabs out from under
+    // the pointer between mousedown and mouseup.
+    const words = p.el<HTMLInputElement>('words')
+    words.addEventListener('input', () => {
+      if (this.wordsTimer) clearTimeout(this.wordsTimer)
+      this.wordsTimer = setTimeout(() => this.setWords(words.value), WORDS_MS)
+    })
+    words.addEventListener('change', () => this.setWords(words.value))
     p.el('resume').onclick = () => {
       p.el('resumeRow').hidden = true
       p.setStatus('Resumed ' + this.log.length + ' saved messages.', 'good')
@@ -224,8 +241,8 @@ export class Controller {
     this.spot = null
     this.endCapture()
     if (this.uploadTimer) clearInterval(this.uploadTimer)
-    for (const t of [this.flushTimer, this.findTimer]) if (t) clearTimeout(t)
-    this.uploadTimer = this.flushTimer = this.findTimer = null
+    for (const t of [this.flushTimer, this.findTimer, this.wordsTimer]) if (t) clearTimeout(t)
+    this.uploadTimer = this.flushTimer = this.findTimer = this.wordsTimer = null
     document.removeEventListener('click', this.onPickBound, true)
     window.removeEventListener('beforeunload', this.onUnload)
     // Also drops the panel's window listener: it reached this Controller (and the show's log) through the buttons.
@@ -234,6 +251,7 @@ export class Controller {
 
   /** Cut off with no newer copy injected (it failed, or Chrome blocked it): say what to do. */
   private cutOff(): void {
+    this.dead = true
     this.spot = null
     this.endCapture()
     if (this.uploadTimer) clearInterval(this.uploadTimer)
@@ -389,7 +407,12 @@ export class Controller {
     }
     if (this.declines) rows.push(...this.declines.check(document, this.declineScan(timer)))
     if (!rows.length) return
-    for (const row of rows) this.onRow(row)
+    for (const row of rows) {
+      this.onRow(row)
+      // Each win is also a notice beside the panel or the pill, for a few seconds.
+      const notice = winNotice(row)
+      if (notice) this.panel.notify(notice)
+    }
     this.renderWins()
   }
 
@@ -505,7 +528,9 @@ export class Controller {
       })
       if (reply?.ok) {
         this.synced = reply.count ?? this.synced + batch.length
-        this.panel.setSync(`saved ${this.synced}` + this.uploadNote(reply.upload))
+        if (reply.upload) this.upload = reply.upload
+        this.panel.setSync(`saved ${this.synced}` + uploadNote(this.upload))
+        this.renderDot()
         return true
       }
       throw new Error(reply?.error ?? 'save failed')
@@ -518,17 +543,12 @@ export class Controller {
     }
   }
 
-  private uploadNote(u?: UploadStatus): string {
-    if (!u) return ''
-    if (!u.configured) return ' · not uploading (connect this laptop in Settings)'
-    if (u.lastError) return ` · ${u.pending} to upload — ${u.lastError}`
-    return u.pending ? ` · ${u.pending} to upload` : ' · uploaded'
-  }
-
   async refreshUpload(): Promise<void> {
     try {
       const u = await send<UploadStatus>({ cmd: 'getUploadStatus' })
-      if (this.log.length) this.panel.setSync(`saved ${this.synced}` + this.uploadNote(u))
+      this.upload = u
+      if (this.log.length) this.panel.setSync(`saved ${this.synced}` + uploadNote(u))
+      this.renderDot()
     } catch {
       /* background asleep or reloaded */
     }
@@ -581,10 +601,14 @@ export class Controller {
   }
 
   private setWords(str: string): void {
-    this.watchWords = str
+    if (this.wordsTimer) clearTimeout(this.wordsTimer)
+    this.wordsTimer = null
+    const next = str
       .split(',')
       .map((w) => w.trim().toLowerCase())
       .filter(Boolean)
+    if (next.join(',') === this.watchWords.join(',')) return // nothing changed: no rebuild, no write
+    this.watchWords = next
     chrome.storage.local.set({ [WORDS_KEY]: this.watchWords }).catch(() => {})
     this.rebuildFlags()
   }
@@ -599,6 +623,7 @@ export class Controller {
     div.querySelector('span')!.textContent = r.rawText
     fl.prepend(div)
     while (fl.children.length > 30) fl.lastChild!.remove()
+    this.panel.setFlagCount(fl.querySelectorAll('.fi').length)
   }
 
   private rebuildFlags(): void {
@@ -607,6 +632,7 @@ export class Controller {
     const hits = this.log.filter((r) => this.matchWord(r.rawText)).slice(-30)
     if (!hits.length) fl.innerHTML = '<div class="empty">Nothing flagged yet.</div>'
     hits.forEach((r) => this.addFlag(r))
+    this.panel.setFlagCount(hits.length)
   }
 
   // ---------- find buyer ----------
@@ -716,13 +742,30 @@ export class Controller {
     const s = this.state
     const recording = this.spot !== null
     const watching = !!this.recorder?.attached
-    p.setDot(s === 'picking' ? 'picking' : recording ? (watching ? 'recording' : 'warn') : 'idle')
-    // While the chat cannot be found the host may point at it again; recording does not stop for that.
-    p.el<HTMLButtonElement>('start').disabled = s === 'picking' || watching
-    p.el('start').textContent = recording ? (watching ? 'Start' : 'Pick chat') : this.log.length ? 'Continue' : 'Start'
-    p.el<HTMLButtonElement>('stop').disabled = !recording
+    this.renderDot()
+    // One button: Start (or Continue) before, Stop & Save during. While the chat cannot be found the
+    // host may point at it again ("Pick chat"); recording does not stop for that. The resume question
+    // stands in for the button until it is answered.
+    const start = p.el<HTMLButtonElement>('start')
+    start.hidden = (recording && watching) || !p.el('resumeRow').hidden
+    start.disabled = s === 'picking'
+    start.textContent = recording ? 'Pick chat' : this.log.length ? 'Continue' : 'Start'
+    p.el('stop').hidden = !recording
     p.el<HTMLButtonElement>('backup').disabled = !this.log.length
     p.el<HTMLButtonElement>('clear').disabled = recording || !this.log.length
     p.setCount(this.log.length)
+  }
+
+  /** The dot's colour: whether it records, whether it sees the chat, and how uploads go (status.ts). */
+  private renderDot(): void {
+    this.panel.setDot(
+      dotState({
+        picking: this.state === 'picking',
+        recording: this.spot !== null,
+        watching: !!this.recorder?.attached,
+        upload: this.upload,
+        cutOff: this.dead,
+      }),
+    )
   }
 }

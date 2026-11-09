@@ -100,6 +100,7 @@ const ALARM_SWEEP = 'cs_upload_sweep'
 const SWEEP_MINUTES = 1
 let failures = 0
 let lastError: string | undefined
+let trouble: UploadStatus['trouble']
 let lastSentAt: number | undefined
 let flushing: Promise<UploadOutcome> | null = null
 const uploads = new UploadTimer(() => void flush())
@@ -131,13 +132,18 @@ async function flush(): Promise<UploadOutcome> {
       if (outcome.status === 'sent') {
         uploadsWork()
         lastError = outcome.parked ? `${outcome.parked} lines set aside (the server refused them): ${outcome.detail ?? ''}` : undefined
+        trouble = outcome.parked ? 'rejected' : undefined
         lastSentAt = Date.now()
         if (outcome.remaining > 0) scheduleFlush(250)
-      } else if (outcome.status === 'unconfigured') lastError = 'server not configured'
+      } else if (outcome.status === 'unconfigured') {
+        lastError = 'server not configured'
+        trouble = undefined
+      }
       return outcome
     } catch (err) {
       const e = err as UploadError
       lastError = e.message
+      trouble = e.kind
       if (e.kind === 'offline') {
         failures++
         // A 429 says how long to wait (Retry-After); otherwise the backoff grows per failure.
@@ -172,7 +178,7 @@ let counts: { at: number; value: Promise<{ pending: number; parked: number }> } 
 
 async function uploadStatus(full = false): Promise<UploadStatus> {
   const isConfigured = configured(await loadSettings())
-  if (!full && !isConfigured) return { configured: false, pending: 0, parked: 0, lastError, lastSentAt }
+  if (!full && !isConfigured) return { configured: false, pending: 0, parked: 0, lastError, trouble, lastSentAt }
   if (full || !counts || Date.now() - counts.at > STATUS_MS) {
     counts = { at: Date.now(), value: Promise.all([pendingCount(), parkedCount()]).then(([pending, parked]) => ({ pending, parked })) }
     counts.value.catch(() => (counts = null))
@@ -182,6 +188,7 @@ async function uploadStatus(full = false): Promise<UploadStatus> {
     ...(await counts.value),
     ...(full ? { uploaded: await uploadedCount() } : {}),
     lastError,
+    trouble,
     lastSentAt,
   }
 }
@@ -226,6 +233,7 @@ async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promi
     case 'settingsChanged':
       uploadsWork()
       lastError = undefined
+      trouble = undefined
       scheduleFlush(100)
       return { ok: true }
     case 'parkPending':

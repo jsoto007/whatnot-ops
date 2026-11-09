@@ -26,41 +26,53 @@ test('player wins count E2E Mug down and the panel calls out 3, 2, 1 left and so
   await page.locator(panel('#start')).click()
   await page.locator('.msg-row .msg-text').nth(1).click()
   await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
-  // The seed leaves 4: not low yet, so neither the list nor an alert shows. E2E Spare is
+  // The seed leaves 4: not low yet, so neither the running-low row nor a notice shows. E2E Spare is
   // down to 1, but this show has not sold it, so the panel does not mention it either.
   await page.waitForTimeout(1500)
-  await expect(page.locator(panel('#low'))).toBeHidden()
-  await expect(page.locator(panel('#alert'))).toBeHidden()
+  await expect(page.locator(panel('#lowbtn'))).toBeHidden()
+  await expect(page.locator(panel('#toasts .toast'))).toHaveCount(0)
 
   // Buyers unique per run: the same buyer/item/price as an earlier run's show on the test DB
   // would rightly be held in Review as "the same win in another recording of this show".
   const run = Date.now().toString(36)
   const steps: [string, string][] = [
-    [`buyer_a_${run}`, '3 left: E2E Mug (E2E-MUG)'],
-    [`buyer_b_${run}`, '2 left: E2E Mug (E2E-MUG)'],
-    [`buyer_c_${run}`, '1 left: E2E Mug (E2E-MUG)'],
-    [`buyer_d_${run}`, 'sold out: E2E Mug (E2E-MUG)'],
+    [`buyer_a_${run}`, '3 left'],
+    [`buyer_b_${run}`, '2 left'],
+    [`buyer_c_${run}`, '1 left'],
+    [`buyer_d_${run}`, 'Sold out'],
   ]
-  for (const [i, [buyer, alert]] of steps.entries()) {
+  const low = page.locator(panel('#low'))
+  for (const [i, [buyer, title]] of steps.entries()) {
     await page.evaluate((b) => {
       window.__player.idle('E2E Mug')
       window.__player.bidding('someone', '$9', 'E2E Mug')
       setTimeout(() => window.__player.won(b, '$10', 'E2E Mug'), 700)
     }, buyer)
-    await expect(page.locator(panel('#alert'))).toHaveText(alert, STEP)
-    await expect(page.locator(panel('#low'))).toContainText('E2E Mug')
-    await expect(page.locator(panel('#low'))).toContainText('E2E-MUG')
-    await expect(page.locator(panel('#low'))).not.toContainText('E2E Spare')
-    if (i === 2) await expect(page.locator(panel('#alert'))).toHaveClass(/urgent/)
-    await page.locator(panel('#alert')).click() // dismissed; the list stays
-    await expect(page.locator(panel('#alert'))).toBeHidden()
+    // Each drop is a notice beside the panel (the win is one too, so take the stock one):
+    // amber, red from 1 left; a click takes it away.
+    const notice = page.locator(panel('#toasts .toast[data-group="stock"]')).last()
+    await expect(notice).toContainText(title, STEP)
+    await expect(notice).toContainText('E2E Mug · E2E-MUG')
+    await expect(notice).toHaveClass(i >= 2 ? /urgent/ : /low/)
+    await notice.click()
+    await expect(notice).toBeHidden()
+    // The running-low row counts; it opens the list, which then stays open.
+    await expect(page.locator(panel('#lown'))).toHaveText('1 running low')
+    if (i === 0) await page.locator(panel('#lowbtn')).click()
+    await expect(low).toBeVisible()
+    await expect(low).toContainText('E2E Mug')
+    await expect(low).toContainText('E2E-MUG')
+    await expect(low).not.toContainText('E2E Spare')
   }
-  await expect(page.locator(panel('#low'))).toContainText('sold out')
+  await expect(low).toContainText('sold out')
 
-  // Still visible with the panel minimised; Stop clears it.
+  // Minimised, only the pill shows; the list is back when the panel is. Stop clears it.
   await page.locator(panel('#min')).click()
-  await expect(page.locator(panel('#low'))).toBeVisible()
-  await page.locator(panel('#min')).click()
+  await expect(page.locator(panel('#pill'))).toBeVisible()
+  await expect(low).toBeHidden()
+  await page.locator(panel('#pill')).click()
+  await expect(low).toBeVisible()
   await page.locator(panel('#stop')).click()
-  await expect(page.locator(panel('#low'))).toBeHidden()
+  await expect(low).toBeHidden()
+  await expect(page.locator(panel('#lowbtn'))).toBeHidden()
 })

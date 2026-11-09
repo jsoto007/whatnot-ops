@@ -29,7 +29,8 @@ test('uploads captured rows to the API, recovers from a wrong key, and never dou
     for (let i = 0; i < 30; i++) window.__chat.append('buyer' + i, 'I will take ' + i)
   })
   await expect(page.locator(panel('#cnt'))).toHaveText('40')
-  await expect(page.locator(panel('#sync'))).toContainText('rejected the API key', { timeout: 15_000 })
+  await expect(page.locator(panel('#sync'))).toContainText('no longer recognises this laptop', { timeout: 15_000 })
+  await expect(page.locator(panel('#dot'))).toHaveClass(/bad/) // red: the host has to fix the connection
   await expect(page.locator(panel('#sync'))).toContainText('40 to upload')
 
   // Fix the key: the background notices the change and drains the outbox.
@@ -38,6 +39,7 @@ test('uploads captured rows to the API, recovers from a wrong key, and never dou
   await expect(options.locator('#msg')).toHaveText('Connected as "e2e device" (E2E Shop).')
   await options.locator('#save').click()
   await expect(page.locator(panel('#sync'))).toHaveText('saved 40 · uploaded', { timeout: 15_000 })
+  await expect(page.locator(panel('#dot'))).toHaveClass(/good/) // green: recording, chat in view, uploaded
   await expect(options.locator('#stats')).toContainText('Uploaded 40 · pending 0', { timeout: 10_000 })
 
   // The API has exactly those rows, with the username split applied.

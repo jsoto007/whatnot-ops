@@ -73,6 +73,8 @@ export interface UploadStatus {
   /** Rows set aside: rejected by the server, or captured for another shop. Never sent. */
   parked: number
   lastError?: string
+  /** Why the last upload failed, for the panel's colours: the key was refused, the server could not be reached, or lines were set aside. */
+  trouble?: 'auth' | 'offline' | 'rejected'
   lastSentAt?: number
 }
 
