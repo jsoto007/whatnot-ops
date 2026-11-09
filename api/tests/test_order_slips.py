@@ -177,3 +177,40 @@ def test_an_app_sale_with_a_huge_quantity_prints_a_bounded_slip(app, world):
         doc = order_slips.build(db.session.get(Show, world["show"]))
     [slip] = [b for b in doc["slips"] if b["username"] == "big_buyer"]
     assert len(slip["rows"]) == order_slips.MAX_UNIT_ROWS and slip["needsReview"]
+
+
+def test_only_ready_keeps_the_buyers_whose_order_is_ready_to_pick(client, app, world):
+    """The Orders page's "Print ready slips": a slip for every order that is Ready to pick
+    (every item paid and named, picking not started); the others are counted, not printed."""
+    world["say"](
+        app,
+        [
+            win("jess88", "Quick Hit 2", "14.89"),  # the title names no product: Needs review
+            win("lani808", "Red bundle", "25.00"),  # matched and charged at the win: ready
+            ("", "kat.c won the giveaway!"),  # a gift alone is no order
+        ],
+    )
+    run(app, world["show"])
+    with app.app_context():
+        show = db.session.get(Show, world["show"])
+        everyone = order_slips.build(show)
+        ready = order_slips.build(show, only="ready")
+        with pytest.raises(ValueError):
+            order_slips.build(show, only="shipped")
+    assert [(b["username"], b["orderStatus"]) for b in everyone["slips"]] == [
+        ("jess88", "open"),
+        ("kat.c", None),
+        ("lani808", "paid"),
+    ]  # one item each, so A-Z
+    assert everyone["only"] is None and everyone["leftOut"] == 0
+    assert [b["username"] for b in ready["slips"]] == ["lani808"]
+    assert ready["only"] == "ready" and ready["leftOut"] == 2
+    assert ready["totals"] == {"buyers": 1, "items": 1, "gifts": 0}
+    assert ready["summary"] == [{"username": "lani808", "items": 1, "gifts": 0}]
+
+    signed_in(app, client, world["org"])
+    url = f"/api/orders/shows/{world['show']}/order-slips"
+    r = client.get(url + "?only=ready")
+    assert r.status_code == 200 and r.get_json()["totals"]["buyers"] == 1
+    assert client.get(url + "?only=shipped").status_code == 400
+    assert client.get(url + "?only=").get_json()["only"] is None

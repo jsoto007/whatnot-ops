@@ -112,7 +112,7 @@ const products: Product[] = [
   { id: 2, name: 'Beauty Blind Bag', notes: null, active: true, skus: [sku(8, 2, 'BB-01', '')] },
 ]
 
-function mount(permissions = ['orders.view', 'orders.fulfill', 'review.act', 'inventory.view'], path = '/app/orders?view=all') {
+function mount(permissions = ['orders.view', 'orders.fulfill', 'review.act', 'inventory.view'], path = '/app/orders?view=all', list: Order[] = orders) {
   const posts: { url: string; body: unknown }[] = []
   vi.stubGlobal(
     'fetch',
@@ -123,7 +123,7 @@ function mount(permissions = ['orders.view', 'orders.fulfill', 'review.act', 'in
         return new Response(JSON.stringify({ alsoResolved: also }), { status: 200 })
       }
       if (url === '/api/shows') return new Response(JSON.stringify({ shows: [SHOW] }), { status: 200 })
-      if (url.startsWith('/api/orders')) return new Response(JSON.stringify({ orders }), { status: 200 })
+      if (url.startsWith('/api/orders')) return new Response(JSON.stringify({ orders: list }), { status: 200 })
       if (url === '/api/products') return new Response(JSON.stringify({ products }), { status: 200 })
       if (url === '/api/auth/csrf') return new Response(JSON.stringify({ token: 't' }), { status: 200 })
       return new Response('{}', { status: 404 })
@@ -255,4 +255,41 @@ test('without the review permission the stuck rows and the banner offer nothing 
   expect(within(moon).queryByRole('button', { name: 'Name the product' })).toBeNull()
   expect(screen.queryByTestId('stuck-banner')).toBeNull()
   expect(within(screen.getByTestId('order-amyshopsalot')).getByRole('button', { name: 'Start picking' })).toBeInTheDocument()
+})
+
+test('"Print ready slips" opens the show’s slips for the orders that are ready to pick', async () => {
+  mount()
+  await screen.findByTestId('order-moonlove3')
+  // one order is ready (amyshopsalot), so the button goes straight to its show
+  const print = screen.getByTestId('print-ready')
+  expect(print).toHaveTextContent('Print 1 ready slip')
+  expect(print).toHaveAttribute('href', '/app/orders/slips/3?only=ready')
+})
+
+test('with ready orders in several shows, the button lists each show, newest first', async () => {
+  const late = order({
+    id: 9,
+    buyer: 'late_bird',
+    showId: 4,
+    showDate: '2026-11-05',
+    status: 'paid',
+    verified: true,
+    sales: [sale({ buyer: 'late_bird', orderId: 9, showId: 4, showDate: '2026-11-05', sku: RED, status: 'paid', wonAt: '2026-11-06T03:00:00Z' })],
+  })
+  mount(undefined, '/app/orders', [...orders, late])
+  await screen.findByTestId('order-late_bird')
+  fireEvent.click(screen.getByRole('button', { name: 'Print 2 ready slips' }))
+  const menu = screen.getByRole('menu', { name: 'Print ready slips, by show' })
+  const items = within(menu).getAllByRole('menuitem')
+  expect(items.map((i) => i.getAttribute('href'))).toEqual(['/app/orders/slips/3?only=ready', '/app/orders/slips/4?only=ready'])
+  expect(items[0]).toHaveTextContent('Nov 7, 2026 · 1 order')
+  expect(items[1]).toHaveTextContent('Nov 5, 2026 · 1 order')
+})
+
+test('with nothing ready to pick the print button waits', async () => {
+  mount(undefined, '/app/orders?view=all', orders.filter((o) => o.status !== 'paid'))
+  await screen.findByTestId('order-moonlove3')
+  const print = screen.getByTestId('print-ready')
+  expect(print).toHaveTextContent('Print ready slips')
+  expect(print).toBeDisabled()
 })
