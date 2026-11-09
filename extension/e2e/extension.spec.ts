@@ -277,6 +277,7 @@ test('a 20,000-message show: every line saved, the panel keeps up, a reload carr
   }
   await expect(cnt).toHaveText('20010')
   await expect(page.locator(panel('#sync'))).toContainText('saved 20010', { timeout: 120_000 })
+  await page.locator(panel('#tab-find')).click()
   await page.locator(panel('#find')).fill('buyer77')
   await expect(page.locator(panel('#fr .fi')).first()).toBeVisible()
   await page.reload()
@@ -325,8 +326,8 @@ test('the panel moves by its header, resizes from its corner, stays on screen an
   expect(sized.width).toBeGreaterThan(moved.width + 100)
   expect(sized.height).toBeLessThan(moved.height - 80)
   // The body scrolls inside the smaller panel; the controls are still there.
-  await page.locator(panel('#find')).scrollIntoViewIfNeeded()
-  await expect(page.locator(panel('#find'))).toBeVisible()
+  await page.locator(panel('#start')).scrollIntoViewIfNeeded()
+  await expect(page.locator(panel('#start'))).toBeVisible()
 
   // Dragged far off screen, it stays inside the window.
   const h2 = (await hd.boundingBox())!
@@ -352,4 +353,48 @@ test('the panel moves by its header, resizes from its corner, stays on screen an
   const back = (await box.boundingBox())!
   expect(back.x + back.width).toBeCloseTo(1200 - 16, 0)
   expect(back.width).toBeCloseTo(start.width, 0)
+})
+
+test('minimises to a pill with the dot and the count; the menu holds what a show does not need', async ({ page }) => {
+  await page.goto('/chat.html')
+  await page.locator(panel('#start')).click()
+  await page.locator('.msg-row .msg-text').nth(2).click()
+  await expect(page.locator(panel('#st'))).toHaveText('Watching chat.')
+  // This laptop is not connected to Sales Ops: once the first save says so, the dot is red (needs a click).
+  // ingest.spec.ts covers green, with a connected laptop.
+  await expect(page.locator(panel('#sync'))).toContainText('not uploading (connect this laptop in Settings)')
+  await expect(page.locator(panel('#dot'))).toHaveClass(/bad/)
+  // One button: Stop & Save while recording, Start otherwise.
+  await expect(page.locator(panel('#stop'))).toBeVisible()
+  await expect(page.locator(panel('#start'))).toBeHidden()
+  // Chat Search, the backup copy, Settings and Clear live behind the menu.
+  await expect(page.locator(panel('#backup'))).toBeHidden()
+  await page.locator(panel('#menu')).click()
+  await expect(page.locator(panel('#backup'))).toBeVisible()
+  await expect(page.locator(panel('#clear'))).toBeDisabled() // not while recording
+  await page.locator(panel('.ttl')).click() // anywhere outside the sheet closes it
+  await expect(page.locator(panel('#backup'))).toBeHidden()
+  // Minimised: only the pill, with the live count; the panel comes back from it.
+  await page.locator(panel('#min')).click()
+  await expect(page.locator(panel('#p'))).toBeHidden()
+  await expect(page.locator(panel('#pill'))).toBeVisible()
+  await expect(page.locator(panel('#pcnt'))).toHaveText('10')
+  await page.evaluate(() => window.__chat.append('while_small', 'still counting'))
+  await expect(page.locator(panel('#pcnt'))).toHaveText('11')
+  // A win shows beside the pill for a few seconds, then goes by itself.
+  await page.evaluate(() => window.__player.bidding('someone', '$9', 'Lot #900'))
+  await page.waitForTimeout(700)
+  await page.evaluate(() => window.__player.won('chonwhite828', '$12', 'Lot #900'))
+  const notice = page.locator(panel('#toasts .toast')).last()
+  await expect(notice).toContainText('chonwhite828 won · $12.00')
+  await expect(notice).toContainText('Lot #900')
+  await expect(page.locator(panel('#pcnt'))).toHaveText('12')
+  await expect(notice).toBeHidden({ timeout: 8_000 })
+  await expect(page.locator(panel('#pdot'))).toHaveClass(/bad/) // the pill's dot says the same as the header's
+  await page.locator(panel('#pill')).click()
+  await expect(page.locator(panel('#p'))).toBeVisible()
+  await expect(page.locator(panel('#pill'))).toBeHidden()
+  await page.locator(panel('#stop')).click()
+  await expect(page.locator(panel('#dot'))).toHaveClass('dot') // grey: not recording
+  await expect(page.locator(panel('#start'))).toHaveText('Continue')
 })
