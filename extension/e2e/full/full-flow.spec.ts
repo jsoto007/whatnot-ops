@@ -139,8 +139,10 @@ test('download → pair → record a show → parsed sales in the portal', async
   await expect(sales.locator('tr', { hasText: 'cardguy' })).toContainText('$10.00')
   await expect(sales.locator('tr', { hasText: 'scammer99' })).toHaveCount(0)
 
-  // Review: every card shows the lines around it, so pick the card by its heading.
+  // Review lists the shows with decisions waiting; open this one. Every card shows the lines
+  // around it, so pick the card by its heading.
   await page.getByRole('link', { name: /^Review/ }).click()
+  await page.getByTestId(/^review-show-/).click()
   const unsure = page.locator('.review', { has: page.getByRole('heading', { name: /^Not sure/ }) })
   await expect(unsure).toHaveCount(1)
   await expect(unsure).toContainText('"scammer99 won the auction!"')

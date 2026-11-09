@@ -43,7 +43,7 @@ export function OrderSlips() {
         {review > 0 && (
           <p className="card small" data-testid="slips-review">
             {count(review, 'buyer')} still {review === 1 ? 'has' : 'have'} an item nobody has picked (shown as "No Pick").{' '}
-            <Link to="/app/review">Open Review</Link> to name it before printing.
+            <Link to={`/app/review/${showId}`}>Open Review</Link> to name it before printing.
           </p>
         )}
       </div>

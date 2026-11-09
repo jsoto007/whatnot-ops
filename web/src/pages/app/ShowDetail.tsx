@@ -98,7 +98,7 @@ export function ShowDetail() {
         ))}
       </div>
       {tab === 'sales' && <SalesTab sales={list} loading={sales.isPending} />}
-      {tab === 'walkaways' && <WalkawaysTab rows={walkaways} loading={dash.isPending} canReview={can('review.act')} onTab={setTab} />}
+      {tab === 'walkaways' && <WalkawaysTab rows={walkaways} loading={dash.isPending} canReview={can('review.act')} showId={id} onTab={setTab} />}
       {tab === 'payments' && (can('orders.reconcile') ? <Reconcile showId={id} /> : <p className="card muted">Only owners and managers can reconcile payments.</p>)}
       {tab === 'events' && <EventsTab showId={id} />}
       {tab === 'messages' && <MessagesTab showId={id} />}
@@ -157,7 +157,7 @@ function SaleStatusBar({ counts }: { counts: Counts }) {
 function NextSteps({ t, counts, walkaways, showId, canReconcile, canReview, onTab }: { t: ShowTiles; counts: Counts; walkaways: number; showId: string; canReconcile: boolean; canReview: boolean; onTab: (t: Tab) => void }) {
   const steps: React.ReactNode[] = []
   if (walkaways) steps.push(<li key="w">{walkaways} winner{walkaways === 1 ? '' : 's'} walked away (nothing picked, cancelled, unpaid) — <a href="#walkaways" onClick={(e) => { e.preventDefault(); onTab('walkaways') }}>see who</a></li>)
-  if (canReview && t.openReviews) steps.push(<li key="r">{t.openReviews} line{t.openReviews === 1 ? '' : 's'} need{t.openReviews === 1 ? 's' : ''} a decision — <Link to="/app/review">open Review</Link></li>)
+  if (canReview && t.openReviews) steps.push(<li key="r">{t.openReviews} line{t.openReviews === 1 ? '' : 's'} need{t.openReviews === 1 ? 's' : ''} a decision — <Link to={`/app/review/${showId}`}>open Review</Link></li>)
   // Whatnot charges every win, so sales are paid at once. Only sales recorded before that (still
   // reserved) wait for the payment file.
   const open = counts.reserved?.n ?? 0
@@ -312,7 +312,7 @@ function SaleChat({ sale, lines }: { sale: Sale; lines: SaleChatLine[] }) {
 const WALKAWAY_CLASS: Record<WalkAway['outcome'], string> = { no_item: 'detected', cancelled: 'cancelled', payment_failed: 'payment_failed', unpaid: 'reserved', unconfirmed: 'detected' }
 
 /** Winners with nothing to pack: who won, why nothing is going out, and the chat line to check. */
-function WalkawaysTab({ rows, loading, canReview, onTab }: { rows: WalkAway[]; loading: boolean; canReview: boolean; onTab: (t: Tab) => void }) {
+function WalkawaysTab({ rows, loading, canReview, showId, onTab }: { rows: WalkAway[]; loading: boolean; canReview: boolean; showId: string; onTab: (t: Tab) => void }) {
   if (loading) return <p className="muted">Loading…</p>
   if (!rows.length)
     return (
@@ -329,7 +329,7 @@ function WalkawaysTab({ rows, loading, canReview, onTab }: { rows: WalkAway[]; l
         {unconfirmed > 0 && canReview && (
           <>
             {' '}
-            {unconfirmed} win{unconfirmed === 1 ? ' is' : 's are'} waiting for a decision in <Link to="/app/review">Review</Link>.
+            {unconfirmed} win{unconfirmed === 1 ? ' is' : 's are'} waiting for a decision in <Link to={`/app/review/${showId}`}>Review</Link>.
           </>
         )}
       </p>

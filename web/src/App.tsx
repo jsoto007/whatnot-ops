@@ -81,6 +81,7 @@ export function App() {
               <Route path="products" element={<Products />} />
               <Route element={<RequirePermission permission="review.act" />}>
                 <Route path="review" element={<Review />} />
+                <Route path="review/:showId" element={<Review />} />
               </Route>
               <Route element={<RequirePermission permission="reports.view" />}>
                 <Route path="reports" element={<Reports />} />
