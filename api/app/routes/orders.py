@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 from .. import serializers
 from ..auth import require
 from ..db import db
-from ..models import Order, OrderStatus, ParsedEvent, Sale, Show
+from ..models import Order, OrderStatus, ParsedEvent, ReviewItem, ReviewStatus, Sale, Show
 from ..services import audit, order_slips, orders, ratelimit, reconcile
 from ..services.inventory import Actor, InventoryError
 from ..services.orders import OrderError
@@ -34,6 +34,29 @@ def _loaded():
     )
 
 
+# When a sale has more than one open decision, the row acts on the one a person can settle
+# from the Orders page: the unknown item first, then a declined payment.
+_REVIEW_RANK = {"unmatched_item": 0, "insufficient_stock": 1, "payment_declined": 2}
+
+
+def _open_reviews(rows) -> dict[int, ReviewItem]:
+    """sale id → the open review item waiting on it, for every sale of these orders (one query)."""
+    sale_ids = [s.id for o in rows for s in o.sales]
+    if not sale_ids:
+        return {}
+    items = db.session.scalars(
+        select(ReviewItem)
+        .where(ReviewItem.sale_id.in_(sale_ids), ReviewItem.status == ReviewStatus.open)
+        .order_by(ReviewItem.id)
+    ).all()
+    best: dict[int, ReviewItem] = {}
+    for r in items:
+        held = best.get(r.sale_id)
+        if held is None or _REVIEW_RANK.get(r.reason, 9) < _REVIEW_RANK.get(held.reason, 9):
+            best[r.sale_id] = r
+    return best
+
+
 def _order_or_404(order_id: int) -> Order | None:
     o = db.session.scalar(_loaded().where(Order.id == order_id))
     return o if o and o.organization_id == g.u.organization_id else None
@@ -56,7 +79,11 @@ def list_orders():
     if buyer := (request.args.get("buyer") or "").strip().lower():
         q = q.where(func.lower(Order.buyer_username) == buyer)
     rows = db.session.scalars(q.order_by(Order.status, Order.id).limit(500)).all()
-    return jsonify({"orders": [serializers.order(o, with_sales=status != "all") for o in rows]})
+    with_sales = status != "all"
+    reviews = _open_reviews(rows) if with_sales else {}
+    return jsonify(
+        {"orders": [serializers.order(o, with_sales=with_sales, reviews=reviews) for o in rows]}
+    )
 
 
 @bp.get("/<int:order_id>")
@@ -65,7 +92,7 @@ def get_order(order_id: int):
     o = _order_or_404(order_id)
     if o is None:
         return jsonify({"error": "order not found"}), 404
-    return jsonify({"order": serializers.order(o, with_gifts=True)})
+    return jsonify({"order": serializers.order(o, with_gifts=True, reviews=_open_reviews([o]))})
 
 
 @bp.post("/<int:order_id>/status")
@@ -97,7 +124,8 @@ def set_status(order_id: int):
         details={"status": status.value},
     )
     db.session.commit()
-    return jsonify({"order": serializers.order(_order_or_404(o.id), with_gifts=True)})
+    o = _order_or_404(o.id)
+    return jsonify({"order": serializers.order(o, with_gifts=True, reviews=_open_reviews([o]))})
 
 
 @bp.patch("/<int:order_id>")
@@ -129,7 +157,7 @@ def update_order(order_id: int):
         },
     )
     db.session.commit()
-    return jsonify({"order": serializers.order(o, with_gifts=True)})
+    return jsonify({"order": serializers.order(o, with_gifts=True, reviews=_open_reviews([o]))})
 
 
 @bp.get("/buyers/<path:username>")
@@ -144,7 +172,10 @@ def buyer_history(username: str):
         .order_by(Order.id.desc())
         .limit(BUYER_HISTORY_LIMIT)
     ).all()
-    return jsonify({"buyer": username, "orders": [serializers.order(o) for o in rows]})
+    reviews = _open_reviews(rows)
+    return jsonify(
+        {"buyer": username, "orders": [serializers.order(o, reviews=reviews) for o in rows]}
+    )
 
 
 @bp.get("/shows/<int:show_id>/pick-list")

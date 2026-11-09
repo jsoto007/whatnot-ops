@@ -283,6 +283,15 @@ PLAYER_DECLINE_UNTIED = re.compile(r"^payment declined \(not tied to a win\): (?
 # full title, because the number can also be the product ("Charizard #4"). A product named
 # "Red bundle" still matches "Red bundle #752" (match_sku looks for the name inside the text).
 LOT = re.compile(r"\s*#\s?(?P<lot>[0-9]{1,6})$", re.ASCII)
+
+
+def item_title(item: str) -> str:
+    """The listing title without Whatnot's trailing lot number: what "$1 BEAUTY PULLS #520"
+    and "… #521" share. For grouping on screen only; a learned name keeps its lot number
+    (lot #761 may be another bottle)."""
+    return LOT.sub("", item or "").strip()
+
+
 # The payment-file import treats more than $100,000 per item as a misread; so does this.
 PLAYER_MAX_CENTS = 10_000_000
 

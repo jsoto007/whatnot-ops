@@ -1170,3 +1170,45 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
     item.resolved_by_id = user.id
     item.resolved_at = datetime.now(UTC)
     return item
+
+
+def similar_open_items(item: ReviewItem) -> list[ReviewItem]:
+    """The other open "item not recognised" decisions in the same show whose lot title is this
+    one's without the lot number ("$1 BEAUTY PULLS #521" next to "#520"). Only a person may
+    treat them as one product; the rules never assume it (lot #761 may be another bottle)."""
+    sale = item.sale
+    if sale is None or item.show_id is None or not sale.item_text:
+        return []
+    key = rules.item_title(sale.item_text).lower()
+    if not key:
+        return []
+    others = db.session.scalars(
+        select(ReviewItem)
+        .where(
+            ReviewItem.organization_id == item.organization_id,
+            ReviewItem.show_id == item.show_id,
+            ReviewItem.status == ReviewStatus.open,
+            ReviewItem.reason == "unmatched_item",
+            ReviewItem.id != item.id,
+        )
+        .order_by(ReviewItem.id)
+    ).all()
+    return [
+        o
+        for o in others
+        if o.sale is not None
+        and o.sale.sku_id is None
+        and o.sale.status in OPEN
+        and rules.item_title(o.sale.item_text or "").lower() == key
+    ]
+
+
+def resolve_similar(item: ReviewItem, sku_id: int, *, remember: bool, user) -> list[ReviewItem]:
+    """After `item` got its SKU: give the same SKU to every similar open lot of the show (each
+    through resolve(), so stock, payment and the order move exactly as for a single pick)."""
+    done = []
+    for other in similar_open_items(item):
+        done.append(
+            resolve(other, "assign_sku", {"skuId": sku_id, "remember": remember}, user=user)
+        )
+    return done

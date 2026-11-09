@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { api, apiGet, money, type BuyerSlip, type OrderSlips as Doc, type SlipRow } from '../../lib/api'
 import { fmtLongDate, sheetDate } from '../../lib/format'
+import { orderStatusLabel } from '../../lib/labels'
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
 const slipTitle = (b: Pick<BuyerSlip, 'username' | 'items' | 'gifts'>) =>
@@ -159,7 +160,7 @@ function Slip({ b, date, showId, canEdit }: { b: BuyerSlip; date: string; showId
       <h3 className="slips-buyer">{slipTitle(b)}</h3>
       <p className="no-print muted small">
         {b.orderId ? <Link to={`/app/orders/${b.orderId}`}>Order #{b.orderId}</Link> : 'Giveaway only'}
-        {b.orderStatus && ` · ${b.orderStatus === 'paid' ? 'ready' : b.orderStatus === 'open' ? 'needs review' : b.orderStatus}`}
+        {b.orderStatus && ` · ${orderStatusLabel(b.orderStatus).toLowerCase()}`}
         {b.whatnot && (
           <span data-testid="slip-whatnot">
             {' · Whatnot: '}

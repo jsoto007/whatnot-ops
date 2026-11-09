@@ -1,21 +1,22 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
+import { DeclineDialog } from '../../components/DeclineDialog'
+import { Icon } from '../../components/Icon'
+import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
 import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleStatus, type Show } from '../../lib/api'
-import { fmtLongDate } from '../../lib/format'
-import { lotLabel, orderStatusLabel, saleStatusLabel } from '../../lib/labels'
+import { SHOP_TZ, fmtDate, fmtLongDate, plural } from '../../lib/format'
+import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, orderStatusLabel, saleStatusLabel } from '../../lib/labels'
 
-const NEXT: Partial<Record<OrderStatus, { label: string; to: OrderStatus }>> = {
-  paid: { label: 'Start picking', to: 'picking' },
-  picking: { label: 'Packed', to: 'packed' },
-  packed: { label: 'Shipped', to: 'shipped' },
-}
+const NEXT = ORDER_NEXT_STEP
 
 /** Whatnot charges the winner at the win, so nothing waits for a payment: an order is ready to
  * pick at once. `open` only means an item still needs a person (not recognised); a declined
  * card shows on the order and in its own tab. */
 const declined = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'payment_failed')
+/** The lots a person still has to name: no product, and a decision open on them. */
+const unknown = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'detected' && !s.sku && s.review?.reason === 'unmatched_item')
 const VIEWS: { key: string; label: string; match: (o: Order) => boolean }[] = [
   { key: 'queue', label: 'Ready to pick', match: (o) => o.status === 'paid' },
   { key: 'progress', label: 'In progress', match: (o) => o.status === 'picking' || o.status === 'packed' },
@@ -25,154 +26,372 @@ const VIEWS: { key: string; label: string; match: (o: Order) => boolean }[] = [
   { key: 'all', label: 'All', match: () => true },
 ]
 const RANK: Record<OrderStatus, number> = { paid: 0, picking: 1, packed: 2, open: 3, shipped: 4, cancelled: 5 }
+const STANDING: SaleStatus[] = ['reserved', 'paid', 'fulfilled', 'detected']
 
-function itemSummary(o: Order): string {
-  const parts = (o.sales ?? [])
-    .filter((s) => ['reserved', 'paid', 'fulfilled', 'detected'].includes(s.status))
-    .map((s) => `${s.quantity}× ${s.sku ? s.sku.code : s.item || '?'}`)
-  return parts.join(', ')
-}
+const titleOf = (s: Sale) => (s.sku ? `${s.sku.productName}${s.sku.name ? ' ' + s.sku.name : ''}` : s.itemTitle || s.item || '?')
+/** Lots that are "the same item": one show, one title without the lot number. */
+const groupKey = (s: Sale) => `${s.showId}|${(s.itemTitle || s.item || '').toLowerCase()}`
+const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: SHOP_TZ })
 
-function paidAt(o: Order): number {
-  return Math.max(0, ...(o.sales ?? []).map((s) => (s.paidAt ? Date.parse(s.paidAt) : 0)))
+function wonAt(o: Order): number {
+  return Math.max(0, ...(o.sales ?? []).map((s) => (s.wonAt ? Date.parse(s.wonAt) : s.paidAt ? Date.parse(s.paidAt) : 0)))
 }
 
 export function Orders() {
   const { can } = useAuth()
+  const qc = useQueryClient()
   const [params, setParams] = useSearchParams()
   const view = params.get('view') ?? 'queue'
   const showId = params.get('show') ?? ''
+  const [find, setFind] = useState('')
+  const [picking, setPicking] = useState<PickerTarget | null>(null)
+  const [decline, setDecline] = useState<Sale | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
   const shows = useQuery({ queryKey: ['shows'], queryFn: () => apiGet<{ shows: Show[] }>('/api/shows') })
-  const q = useQuery({ queryKey: ['orders', 'all', showId], queryFn: () => apiGet<{ orders: Order[] }>(`/api/orders?status=queue${showId ? '&show=' + showId : ''}`) })
   const all = useQuery({ queryKey: ['orders', 'every', showId], queryFn: () => apiGet<{ orders: Order[] }>(`/api/orders${showId ? '?show=' + showId : ''}`) })
-  const set = (k: string, v: string) => {
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 4000)
+    return () => clearTimeout(t)
+  }, [toast])
+  const set = (changes: Record<string, string>) => {
     const next = new URLSearchParams(params)
-    if (v) next.set(k, v)
-    else next.delete(k)
+    for (const [k, v] of Object.entries(changes)) {
+      if (v) next.set(k, v)
+      else next.delete(k)
+    }
     setParams(next)
   }
-  const orders = (all.data?.orders ?? []).slice().sort((a, b) => RANK[a.status] - RANK[b.status] || paidAt(a) - paidAt(b) || a.id - b.id)
+  const orders = (all.data?.orders ?? []).slice().sort((a, b) => RANK[a.status] - RANK[b.status] || wonAt(a) - wonAt(b) || a.id - b.id)
   const current = VIEWS.find((v) => v.key === view) ?? VIEWS[0]!
-  const visible = orders.filter(current.match)
-  void q
+  const needle = find.trim().toLowerCase()
+  const visible = orders.filter(current.match).filter((o) => !needle || o.buyer.toLowerCase().includes(needle))
+
+  // Lots nobody has named yet, grouped by show and title: "$1 BEAUTY PULLS #520" and "#521" are one group.
+  const groups = new Map<string, Sale[]>()
+  for (const o of orders) for (const s of unknown(o)) groups.set(groupKey(s), [...(groups.get(groupKey(s)) ?? []), s])
+  const biggest = [...groups.values()].sort((a, b) => b.length - a.length)[0]
+  const stuck = biggest && biggest.length > 1 && can('review.act') ? biggest : null
+  const stuckOrders = stuck ? new Set(stuck.map((s) => s.orderId)).size : 0
+
+  const openPicker = (sale: Sale, applyToSimilar = false) => {
+    if (!sale.review) return
+    const similar = (groups.get(groupKey(sale)) ?? []).filter((s) => s.id !== sale.id)
+    setPicking({ sale, buyer: sale.buyer, showDate: sale.showDate, reviewId: sale.review.id, similar, applyToSimilar })
+  }
+  const done = (msg: string) => {
+    setPicking(null)
+    setDecline(null)
+    setToast(msg)
+    void qc.invalidateQueries()
+  }
+
   return (
-    <section>
+    <section className="orders">
       <div className="page-head">
         <div>
           <h2>Orders</h2>
           <div className="sub">One order per buyer per show. Whatnot charges the winner at the win, so orders are ready to pick right away; the oldest win is first.</div>
         </div>
-        {showId && (
-          <span className="row-actions">
-            <Link className="btn ghost" to={`/app/orders/slips/${showId}`}>
-              Order slips
-            </Link>
-            <Link className="btn ghost" to={`/app/orders/pick-list/${showId}`}>
-              Pick list for this show
-            </Link>
-          </span>
-        )}
+        <div className="head-actions">
+          <select className="show-select" value={showId} onChange={(e) => set({ show: e.target.value })} aria-label="Show">
+            <option value="">All shows</option>
+            {shows.data?.shows.map((s) => (
+              <option key={s.id} value={s.id}>
+                {fmtLongDate(s.date)}
+              </option>
+            ))}
+          </select>
+          {showId && (
+            <>
+              <Link className="btn ghost" to={`/app/orders/slips/${showId}`}>
+                <Icon name="print" size={16} />
+                Order slips
+              </Link>
+              <Link className="btn ghost" to={`/app/orders/pick-list/${showId}`}>
+                <Icon name="clipboard" size={16} />
+                Pick list
+              </Link>
+            </>
+          )}
+        </div>
       </div>
       <div className="toolbar">
         <div className="tabs" role="tablist" style={{ marginBottom: 0, borderBottom: 0 }}>
           {VIEWS.map((v) => {
             const n = orders.filter(v.match).length
             return (
-              <button key={v.key} role="tab" aria-selected={view === v.key} className={view === v.key ? 'active' : ''} onClick={() => set('view', v.key)}>
+              <button key={v.key} role="tab" aria-selected={view === v.key} className={(view === v.key ? 'active' : '') + (n === 0 && v.key !== 'all' ? ' zero' : '')} onClick={() => set({ view: v.key })}>
                 {v.label}
                 {v.key !== 'all' ? <span className="tab-count">{n}</span> : null}
               </button>
             )
           })}
         </div>
-        <select value={showId} onChange={(e) => set('show', e.target.value)} aria-label="Show">
-          <option value="">All shows</option>
-          {shows.data?.shows.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.date}
-            </option>
-          ))}
-        </select>
+        <label className="search">
+          <Icon name="search" size={16} />
+          <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a buyer" aria-label="Find a buyer" />
+        </label>
       </div>
+      {stuck && (
+        <section className="banner" aria-label="Orders waiting on one unknown item" data-testid="stuck-banner">
+          <div className="banner-main">
+            <span className="banner-icon" aria-hidden>
+              <Icon name="help" size={20} />
+            </span>
+            <div>
+              <b>
+                {plural(stuckOrders, 'order is', 'orders are')} waiting on one item the shop does not know yet.
+              </b>
+              <div className="small">
+                The chat called it “{stuck[0]!.itemTitle || stuck[0]!.item} #…”. Name the product once and every one of them moves to Ready to pick.
+              </div>
+            </div>
+          </div>
+          <div className="btns">
+            <button type="button" className="btn" onClick={() => set({ view: 'review', show: String(stuck[0]!.showId) })}>
+              See them
+            </button>
+            <button type="button" className="btn primary" onClick={() => openPicker(stuck[0]!, true)} data-testid="name-it-once">
+              Name it once
+            </button>
+          </div>
+        </section>
+      )}
       {all.isPending ? (
         <p className="muted">Loading…</p>
       ) : all.isError ? (
         <p className="form-error">Could not load orders.</p>
       ) : visible.length === 0 ? (
         <div className="empty">
-          <b>{view === 'queue' ? 'Nothing to pick' : view === 'review' ? 'Nothing needs review' : view === 'declined' ? 'No declined payments' : 'No orders here'}</b>
-          {view === 'queue' ? 'Orders arrive here as soon as a buyer wins.' : view === 'declined' ? 'A card Whatnot declines after a win shows here. The item goes back in stock unless picking had started.' : ''}
+          <b>{needle ? 'No buyer by that name here' : view === 'queue' ? 'Nothing to pick' : view === 'review' ? 'Nothing needs review' : view === 'declined' ? 'No declined payments' : 'No orders here'}</b>
+          {needle ? '' : view === 'queue' ? 'Orders arrive here as soon as a buyer wins.' : view === 'declined' ? 'A card Whatnot declines after a win shows here. The item goes back in stock unless picking had started.' : ''}
         </div>
       ) : (
-        <table className="table" data-testid="orders">
-          <thead>
-            <tr>
-              <th>Buyer</th>
-              <th>Items</th>
-              <th className="num">Total</th>
-              <th>Show</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((o) => (
-              <tr key={o.id} data-testid={`order-${o.buyer}`}>
-                <td>
-                  <Link to={`/app/orders/${o.id}`}>
-                    <b>{o.buyer}</b>
-                  </Link>
-                </td>
-                <td className="order-items">
-                  <b>{o.items}</b> · {itemSummary(o)}
-                </td>
-                <td className="num">{money(o.totalCents)}</td>
-                <td className="muted">{o.showDate}</td>
-                <td>
-                  <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
-                  {o.status === 'open' && (
-                    <div className="muted small">
-                      {(o.sales ?? []).some((s) => s.status === 'detected') ? (
-                        <Link to={`/app/review/${o.showId}`}>item not recognised — see Review</Link>
-                      ) : (
-                        'older sale, waiting for the payment file'
-                      )}
-                    </div>
-                  )}
-                  {declined(o).length > 0 && (
-                    <div className="small" data-testid={`declined-${o.buyer}`}>
-                      <span className="status payment_failed">payment declined</span> {declined(o).map((s) => `${s.quantity}× ${s.sku ? s.sku.code : s.item || '?'}`).join(', ')}
-                    </div>
-                  )}
-                  {o.tracking && <div className="muted small">{o.tracking}</div>}
-                </td>
-                <td>{can('orders.fulfill') && <Advance order={o} />}</td>
+        <div className="card flush">
+          <table className="table" data-testid="orders">
+            <thead>
+              <tr>
+                <th>Buyer</th>
+                <th>Items</th>
+                <th className="num">Total</th>
+                <th className="col-show">Show</th>
+                <th>Status</th>
+                <th>
+                  <span className="sr-only">Next step</span>
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {visible.map((o) => (
+                <tr key={o.id} data-testid={`order-${o.buyer}`}>
+                  <td className="c-buyer">
+                    <Link to={`/app/orders/${o.id}`} className="buyer">
+                      {o.buyer}
+                    </Link>
+                    <span className="show-inline">{fmtDate(o.showDate)}</span>
+                  </td>
+                  <td className="c-items">
+                    <Items o={o} />
+                  </td>
+                  <td className="num c-total">
+                    <b>{money(o.totalCents)}</b>
+                  </td>
+                  <td className="muted col-show">{fmtDate(o.showDate)}</td>
+                  <td className="c-status">
+                    <Status o={o} />
+                  </td>
+                  <td className="c-action">
+                    <Actions o={o} onPick={openPicker} onDecline={setDecline} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!all.isPending && !all.isError && visible.length > 0 && (
+        <div className="small faint foot">
+          <span>
+            {plural(visible.length, 'order', 'orders')}
+            {visible.length !== orders.length ? ` of ${orders.length}` : ''} · oldest win first
+          </span>
+        </div>
+      )}
+      {picking && <ProductPicker target={picking} onClose={() => setPicking(null)} onDone={done} />}
+      {decline && decline.review && <DeclineDialog sale={decline} buyer={decline.buyer} showDate={decline.showDate} reviewId={decline.review.id} onClose={() => setDecline(null)} onDone={done} />}
+      {toast && (
+        <div className="toast" role="status">
+          {toast}
+        </div>
       )}
     </section>
   )
 }
 
-function Advance({ order }: { order: Order }) {
+/** "10 × $1 Beauty Pulls" with the lot numbers under it, one line per product. */
+function Items({ o }: { o: Order }) {
+  const groups = new Map<string, { title: string; qty: number; lots: number[]; unknown: boolean }>()
+  for (const s of (o.sales ?? []).filter((s) => STANDING.includes(s.status))) {
+    const title = titleOf(s)
+    const g = groups.get(title) ?? { title, qty: 0, lots: [], unknown: !s.sku }
+    g.qty += s.quantity
+    if (s.lot != null) g.lots.push(s.lot)
+    groups.set(title, g)
+  }
+  return (
+    <div className="item-lines">
+      {[...groups.values()].map((g) => (
+        <div key={g.title} className="item-line">
+          <div>
+            <b>{g.qty} ×</b> {g.unknown ? <span className="unknown">“{g.title}”</span> : g.title}
+          </div>
+          {g.lots.length > 0 && <Lots lots={g.lots} />}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function Lots({ lots }: { lots: number[] }) {
+  const shown = lots.slice(0, 6)
+  return (
+    <span className="lots">
+      {shown.map((n, i) => (
+        <span className="lot" key={i}>
+          #{n}
+        </span>
+      ))}
+      {lots.length > shown.length && <span className="lot more">+{lots.length - shown.length} more</span>}
+    </span>
+  )
+}
+
+function Status({ o }: { o: Order }) {
+  const unk = unknown(o)
+  const dec = declined(o)
+  const won = wonAt(o)
+  return (
+    <>
+      <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
+      {o.status === 'open' && <div className="small sub unknown">{unk.length ? (unk.length === 1 ? 'item not recognised' : `${unk.length} items not recognised`) : 'older sale, waiting for the payment file'}</div>}
+      {o.status === 'paid' && won > 0 && <div className="small faint sub">won {time(new Date(won).toISOString())}</div>}
+      {o.status === 'picking' && o.pickedAt && <div className="small faint sub">since {time(o.pickedAt)}</div>}
+      {o.status === 'packed' && (
+        <div className="small faint sub">
+          {o.packedBy ? `by ${o.packedBy}` : 'packed'}
+          {o.packedAt ? ` · ${time(o.packedAt)}` : ''}
+        </div>
+      )}
+      {dec.length > 0 && (
+        <div className="small sub" data-testid={`declined-${o.buyer}`}>
+          <span className="status payment_failed">{saleStatusLabel('payment_failed')}</span> {dec.map((s) => `${s.quantity}× ${s.sku ? s.sku.code : s.item || '?'}`).join(', ')}
+        </div>
+      )}
+      {o.tracking && <div className="muted small sub">{o.tracking}</div>}
+    </>
+  )
+}
+
+/** One verb for the order's next step, and a menu for the rest. */
+function Actions({ o, onPick, onDecline }: { o: Order; onPick: (sale: Sale) => void; onDecline: (sale: Sale) => void }) {
+  const { can } = useAuth()
   const qc = useQueryClient()
-  const next = NEXT[order.status]
   const [error, setError] = useState<string | null>(null)
-  const m = useMutation({
-    mutationFn: () => api('POST', `/api/orders/${order.id}/status`, { status: next!.to }),
+  const move = useMutation({
+    mutationFn: (to: OrderStatus) => api('POST', `/api/orders/${o.id}/status`, { status: to }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['orders'] }),
     onError: (e) => setError(e instanceof ApiError ? e.message : 'failed'),
   })
-  if (!next) return null
-  return (
-    <>
-      <button className="btn small primary" onClick={() => m.mutate()} disabled={m.isPending}>
+  const canReview = can('review.act')
+  const canFulfil = can('orders.fulfill')
+  const next = NEXT[o.status]
+  const back = ORDER_STEP_BACK[o.status]
+  const unk = unknown(o)
+  const dec = declined(o).filter((s) => s.review?.reason === 'payment_declined')
+  let primary: ReactNode = null
+  let declineInMenu = dec.length > 0 && canReview
+  if (o.status === 'open' && unk.length > 0 && canReview) {
+    primary = (
+      <button type="button" className="btn small primary" onClick={() => onPick(unk[0]!)} data-testid="name-product">
+        Name the product
+      </button>
+    )
+  } else if (next && canFulfil) {
+    primary = (
+      <button type="button" className="btn small primary" onClick={() => move.mutate(next.to)} disabled={move.isPending}>
         {next.label}
       </button>
+    )
+  } else if (declineInMenu) {
+    primary = (
+      <button type="button" className="btn small" onClick={() => onDecline(dec[0]!)} data-testid="resolve-decline">
+        Resolve decline
+      </button>
+    )
+    declineInMenu = false
+  }
+  const more: ReactNode[] = [
+    <Link key="open" role="menuitem" to={`/app/orders/${o.id}`}>
+      <Icon name="print" size={16} />
+      Open the order and slip
+    </Link>,
+  ]
+  if (declineInMenu)
+    more.push(
+      <button key="decline" type="button" role="menuitem" onClick={() => onDecline(dec[0]!)}>
+        <Icon name="card" size={16} />
+        Resolve the declined payment
+      </button>,
+    )
+  if (back && canFulfil)
+    more.push(
+      <hr key="hr" />,
+      <button key="back" type="button" role="menuitem" onClick={() => move.mutate(back.to)}>
+        <Icon name="undo" size={16} />
+        {back.label}
+      </button>,
+    )
+  return (
+    <>
+      <div className="acts">
+        {primary}
+        <RowMenu label={`More for ${o.buyer}`}>{more}</RowMenu>
+      </div>
       {error && <div className="form-error small">{error}</div>}
     </>
+  )
+}
+
+function RowMenu({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+  return (
+    <div className="menu-wrap" ref={ref}>
+      <button type="button" className="icon-btn sm" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <Icon name="more" size={18} />
+      </button>
+      {open && (
+        <div className="menu" role="menu" aria-label={label} onClick={() => setOpen(false)}>
+          {children}
+        </div>
+      )}
+    </div>
   )
 }
 

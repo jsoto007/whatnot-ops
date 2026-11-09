@@ -1,4 +1,4 @@
-import type { OrderStatus, Role, SaleStatus } from './api'
+import type { OrderStatus, Role, Sale, SaleStatus } from './api'
 
 /**
  * The words the shop reads for the server's codes. A page never prints a raw
@@ -26,14 +26,28 @@ export const saleStatusLabel = (s: string): string => SALE_STATUS_LABEL[s as Sal
 
 /** Orders: `paid` means every item is paid, so the order is ready to pick. */
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
-  open: 'needs review',
-  paid: 'ready',
-  picking: 'picking',
-  packed: 'packed',
-  shipped: 'shipped',
-  cancelled: 'cancelled',
+  open: 'Needs review',
+  paid: 'Ready to pick',
+  picking: 'Picking',
+  packed: 'Packed',
+  shipped: 'Shipped',
+  cancelled: 'Cancelled',
+}
+/** The one verb that moves an order on from where it is. */
+export const ORDER_NEXT_STEP: Partial<Record<OrderStatus, { label: string; to: OrderStatus }>> = {
+  paid: { label: 'Start picking', to: 'picking' },
+  picking: { label: 'Mark packed', to: 'packed' },
+  packed: { label: 'Mark shipped', to: 'shipped' },
+}
+/** The one step back a person may take (the API allows no other). */
+export const ORDER_STEP_BACK: Partial<Record<OrderStatus, { label: string; to: OrderStatus }>> = {
+  picking: { label: 'Back to Ready to pick', to: 'paid' },
+  packed: { label: 'Back to Picking', to: 'picking' },
 }
 export const orderStatusLabel = (s: string): string => ORDER_STATUS_LABEL[s as OrderStatus] ?? 'other'
+
+/** "lot #520" for a sale whose title carries Whatnot's lot number, else "this lot". */
+export const lotText = (s: Pick<Sale, 'lot'>) => (s.lot != null ? `lot #${s.lot}` : 'this lot')
 
 /** Lot types read from the listing title (api `rules.AUCTION_TYPES` / `LOT_LABELS`). */
 const LOT_LABEL: Record<string, string> = { red: 'Red', mega: 'Mega', ultra: 'Ultra', bundle: 'Bundle', quick_hit: 'Quick Hit' }

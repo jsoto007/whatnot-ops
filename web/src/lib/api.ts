@@ -237,6 +237,10 @@ export interface Sale {
   buyer: string
   sku: { id: number; code: string; name: string; productName: string } | null
   item: string
+  /** The listing title without Whatnot's lot number ("$1 BEAUTY PULLS" for "… #520"). */
+  itemTitle?: string
+  /** Whatnot's lot number from the listing title, when it has one. */
+  lot?: number | null
   quantity: number
   priceCents: number | null
   auctionType: string
@@ -254,6 +258,8 @@ export interface Sale {
   source: 'chat' | 'player' | null
   /** When the win happened (the winning line's capture time). */
   wonAt: string | null
+  /** The decision waiting on this sale in Review, when there is one (orders routes only). */
+  review?: { id: number; reason: string } | null
   /** What the winner said around the win; only on a show's sales list. */
   chat?: SaleChatLine[]
   createdAt: string

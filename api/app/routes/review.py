@@ -73,14 +73,24 @@ def resolve(item_id: int):
     if item is None or item.organization_id != g.u.organization_id:
         return jsonify({"error": "review item not found"}), 404
     body = request.get_json(silent=True) or {}
-    pipeline.resolve(item, body.get("action", ""), body, user=g.u)
-    audit.record(
-        g.u.organization_id,
-        "review.resolved",
-        user=g.u,
-        target_type="review",
-        target_id=item.id,
-        details={"reason": item.reason, **(item.resolution or {})},
-    )
+    action = body.get("action", "")
+    pipeline.resolve(item, action, body, user=g.u)
+    also: list[ReviewItem] = []
+    if action == "assign_sku" and body.get("applyToSimilar"):
+        # The person asked for every lot with this title in the show to get the same product.
+        also = pipeline.resolve_similar(
+            item, item.resolution["skuId"], remember=bool(body.get("remember")), user=g.u
+        )
+    for r in (item, *also):
+        audit.record(
+            g.u.organization_id,
+            "review.resolved",
+            user=g.u,
+            target_type="review",
+            target_id=r.id,
+            details={"reason": r.reason, **(r.resolution or {})},
+        )
     db.session.commit()
-    return jsonify({"item": serializers.review_item(item, _context(item))})
+    return jsonify(
+        {"item": serializers.review_item(item, _context(item)), "alsoResolved": len(also)}
+    )

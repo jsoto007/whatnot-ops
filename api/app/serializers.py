@@ -1,5 +1,5 @@
 from .models import AuditLog, Device, Invite, Organization, Show, User
-from .services import activity
+from .services import activity, rules
 from .services.admin import is_protected
 from .services.permissions import allowed, permissions_for
 
@@ -158,7 +158,8 @@ def event(e) -> dict:
     }
 
 
-def sale(s, chat: list[dict] | None = None) -> dict:
+def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
+    """`review` is the open review item waiting on this sale, when the caller looked it up."""
     won = s.event.message.captured_at if s.event else None
     out = {
         "id": s.id,
@@ -174,6 +175,8 @@ def sale(s, chat: list[dict] | None = None) -> dict:
         if s.sku
         else None,
         "item": s.item_text,
+        "itemTitle": rules.item_title(s.item_text or ""),
+        "lot": rules.lot_number(s.item_text or ""),
         "quantity": s.quantity,
         "priceCents": s.price_cents,
         "auctionType": s.auction_type,
@@ -188,6 +191,7 @@ def sale(s, chat: list[dict] | None = None) -> dict:
         "rawText": s.event.message.raw_text if s.event else None,
         "source": s.event.message.source if s.event else None,
         "wonAt": won.isoformat() if won else None,
+        "review": {"id": review.id, "reason": review.reason} if review is not None else None,
         "createdAt": s.created_at.isoformat(),
     }
     if chat is not None:
@@ -225,8 +229,9 @@ def review_item(r, context) -> dict:
     }
 
 
-def order(o, *, with_sales: bool = True, with_gifts: bool = False) -> dict:
-    """`with_gifts` adds the buyer's gift lines for the show (one query; detail view only)."""
+def order(o, *, with_sales: bool = True, with_gifts: bool = False, reviews=None) -> dict:
+    """`with_gifts` adds the buyer's gift lines for the show (one query; detail view only).
+    `reviews` maps sale id → the open review item waiting on it (routes/orders looks them up)."""
     from .services.orders import gifts_for, verified
 
     standing = [
@@ -248,7 +253,9 @@ def order(o, *, with_sales: bool = True, with_gifts: bool = False) -> dict:
         "packedBy": o.packed_by,
         "shippedAt": o.shipped_at.isoformat() if o.shipped_at else None,
         "createdAt": o.created_at.isoformat(),
-        "sales": [sale(s) for s in o.sales] if with_sales else None,
+        "sales": [sale(s, review=(reviews or {}).get(s.id)) for s in o.sales]
+        if with_sales
+        else None,
         "gifts": gifts_for(o) if with_gifts else None,
     }
 
