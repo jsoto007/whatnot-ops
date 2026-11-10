@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Icon } from '../../../components/Icon'
 import { Sheet } from '../../../components/Sheet'
-import { ApiError, api, apiGet, money, type Activity, type StockLevel } from '../../../lib/api'
+import { WeightInput } from '../../../components/WeightInput'
+import { ApiError, api, apiGet, money, type Activity, type Product, type StockLevel } from '../../../lib/api'
 import { fmtWhen } from '../../../lib/format'
+import { fmtWeight, parseWeight, weightDraft, weightProblem } from '../../../lib/weight'
 import { describe, stateOf } from './ledger'
 
 type Dir = 'add' | 'remove'
@@ -36,6 +38,10 @@ export function ItemPanel({ sku, write, onClose, onChanged, onReceive }: { sku: 
   const [reason, setReason] = useState('')
   const [note, setNote] = useState('')
   const [lowAt, setLowAt] = useState(String(sku.lowStockAt))
+  const [name, setName] = useState(sku.productName)
+  const [nameError, setNameError] = useState<string | null>(null)
+  const [weight, setWeight] = useState(() => weightDraft(sku.weightOz))
+  const [weightError, setWeightError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const history = useQuery({ queryKey: ['movements', sku.id], queryFn: () => apiGet<{ movements: Activity[] }>(`/api/inventory/${sku.id}/movements`) })
@@ -50,6 +56,9 @@ export function ItemPanel({ sku, write, onClose, onChanged, onReceive }: { sku: 
   const owedAfter = dir === 'remove' && !tooMany && afterAvail < 0 && afterAvail < sku.available ? -afterAvail : 0
   const lowAtN = toN(lowAt)
   const lowChanged = lowAt.trim() !== '' && lowAtN !== sku.lowStockAt
+  const nameChanged = name.trim() !== sku.productName
+  const weightOz = parseWeight(weight.text, weight.unit)
+  const weightChanged = weightOz !== sku.weightOz
 
   const switchDir = (d: Dir) => {
     setDir(d)
@@ -79,6 +88,37 @@ export function ItemPanel({ sku, write, onClose, onChanged, onReceive }: { sku: 
       setReason('')
     }, `${dir === 'add' ? 'Added' : 'Removed'} ${n} ${sku.productName} · ${afterShelf} on shelf`)
   }
+  const saveName = async () => {
+    const next = name.trim()
+    if (!nameChanged || busy) return
+    if (!next) return setNameError('Give the item a name.')
+    setBusy(true)
+    setNameError(null)
+    try {
+      const r = await api<{ product: Product }>('PATCH', `/api/products/${sku.productId}`, { name: next })
+      setName(r.product.name) // as the server stored it
+      await onChanged(`Renamed ${sku.productName} to ${r.product.name}`)
+    } catch (e) {
+      setNameError(e instanceof ApiError ? e.message : 'Could not save. Try again.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const saveWeight = async () => {
+    if (!weightChanged || busy) return
+    const problem = weightProblem(weightOz)
+    if (problem) return setWeightError(problem)
+    setBusy(true)
+    setWeightError(null)
+    try {
+      await api('PATCH', `/api/skus/${sku.id}`, { weightOz })
+      await onChanged(weightOz === null ? `${sku.productName}: weight removed` : `${sku.productName} weighs ${fmtWeight(weightOz)}`)
+    } catch (e) {
+      setWeightError(e instanceof ApiError ? e.message : 'Could not save. Try again.')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <Sheet
@@ -87,6 +127,7 @@ export function ItemPanel({ sku, write, onClose, onChanged, onReceive }: { sku: 
         <>
           <code>{sku.code}</code>
           {sku.priceCents != null && <> · {money(sku.priceCents)}</>}
+          {sku.weightOz != null && <> · {fmtWeight(sku.weightOz)}</>}
           {sku.aliases.length > 0 && <> · chat calls it {sku.aliases.map((a) => `“${a.alias}”`).join(', ')}</>}
         </>
       }
@@ -210,6 +251,85 @@ export function ItemPanel({ sku, write, onClose, onChanged, onReceive }: { sku: 
             )}
           </form>
           <p className="muted small alert-hint">{sku.low ? `Showing now: ${sku.available} available.` : `${sku.available} available now; the alert shows on the dashboard at ${sku.lowStockAt} or fewer.`}</p>
+        </section>
+      )}
+
+      {write && (
+        <section className="item-section" aria-labelledby={`name-${sku.id}`}>
+          <h4 id={`name-${sku.id}`}>Name</h4>
+          <form
+            className="alert-row name-row"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void saveName()
+            }}
+          >
+            <input
+              value={name}
+              onChange={(e) => (setName(e.target.value), setNameError(null))}
+              onKeyDown={(e) => {
+                // Escape puts the name back; it closes the panel only when nothing was changed.
+                if (e.key === 'Escape' && nameChanged) {
+                  e.stopPropagation()
+                  setName(sku.productName)
+                  setNameError(null)
+                }
+              }}
+              maxLength={160}
+              aria-label="Item name"
+              aria-invalid={!!nameError || undefined}
+            />
+            {nameChanged && (
+              <button type="submit" className="btn small primary" disabled={busy}>
+                Save name
+              </button>
+            )}
+          </form>
+          {nameError ? (
+            <p className="form-error" role="alert">
+              {nameError}
+            </p>
+          ) : (
+            <p className="muted small alert-hint">{sku.name ? `Shown as “${name.trim() || sku.productName} ${sku.name}”. ` : ''}Renaming keeps chat and the stock sheet matching the old name.</p>
+          )}
+        </section>
+      )}
+
+      {write && (
+        <section className="item-section" aria-labelledby={`weight-${sku.id}`}>
+          <h4 id={`weight-${sku.id}`}>Weight</h4>
+          <form
+            className="alert-row"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void saveWeight()
+            }}
+          >
+            <label htmlFor={`wt-${sku.id}`}>One unit weighs</label>
+            <WeightInput
+              id={`wt-${sku.id}`}
+              text={weight.text}
+              unit={weight.unit}
+              onText={(text) => (setWeight((w) => ({ ...w, text })), setWeightError(null))}
+              onUnit={(unit) => (setWeight((w) => ({ ...w, unit })), setWeightError(null))}
+              label="One unit weighs"
+              invalid={!!weightError}
+            />
+            {weightChanged && (
+              <button type="submit" className={'btn small' + (weightOz === null ? '' : ' primary')} disabled={busy}>
+                {weightOz === null ? 'Remove weight' : 'Save weight'}
+              </button>
+            )}
+          </form>
+          {weightError ? (
+            <p className="form-error" role="alert">
+              {weightError}
+            </p>
+          ) : (
+            <p className="muted small alert-hint" data-testid="weight-hint">
+              {sku.weightOz == null ? 'Not weighed yet. Leave it blank if it doesn’t matter.' : `${fmtWeight(sku.weightOz)} per unit. Clear the box to remove it.`}
+            </p>
+          )}
         </section>
       )}
 

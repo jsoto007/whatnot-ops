@@ -144,6 +144,8 @@ export interface Sku {
   code: string
   name: string
   priceCents: number | null
+  /** One unit's weight in ounces (to 0.01 oz); null until someone weighs it. */
+  weightOz: number | null
   onHand: number
   reserved: number
   available: number

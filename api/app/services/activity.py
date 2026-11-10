@@ -11,6 +11,7 @@ the page shows them as plain text.
 """
 
 from collections.abc import Callable
+from decimal import Decimal
 
 from .permissions import role_label
 
@@ -134,6 +135,15 @@ def _money(cents) -> str:
     return "no price" if cents is None else f"${cents / 100:,.2f}"
 
 
+def _weight(oz) -> str:
+    """4.5 → "4.5 oz", 20 → "1 lb 4 oz", 32 → "2 lb" (how a US postal scale reads)."""
+    if oz is None:
+        return "not weighed"
+    lb, rest = divmod(Decimal(str(oz)), 16)
+    rest_text = f"{format(rest.normalize(), 'f')} oz" if rest else ""
+    return " ".join(p for p in (f"{int(lb)} lb" if lb else "", rest_text) if p)
+
+
 def _counts(summary: dict, words: dict[str, str]) -> str:
     parts = [f"{summary[k]} {w}" for k, w in words.items() if summary.get(k)]
     return ", ".join(parts)
@@ -176,6 +186,9 @@ def _sku_updated(d: dict, _target: str) -> str:
         parts.append(f"code {before['code']} → {after['code']}")
     if before["priceCents"] != after["priceCents"]:
         parts.append(f"price {_money(before['priceCents'])} → {_money(after['priceCents'])}")
+    # Entries written before weights existed have no "weightOz": both read as not weighed.
+    if before.get("weightOz") != after.get("weightOz"):
+        parts.append(f"weight {_weight(before.get('weightOz'))} → {_weight(after.get('weightOz'))}")
     if before["lowStockAt"] != after["lowStockAt"]:
         parts.append(f"low-stock level {before['lowStockAt']} → {after['lowStockAt']}")
     return f"Edited item {after['code']}" + (f": {', '.join(parts)}" if parts else "")

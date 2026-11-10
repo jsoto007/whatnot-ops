@@ -4,8 +4,9 @@ import csv
 import io
 import re
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..db import db
 from ..models import Product, ProductAlias, Sku
@@ -30,6 +31,30 @@ def norm_alias(text: str) -> str:
 
 def code_from_name(name: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "-", name.upper()).strip("-")[:48] or "SKU"
+
+
+# 150 lb, the heaviest parcel the big carriers take: anything over it is a typo.
+MAX_WEIGHT_OZ = Decimal(2400)
+
+
+def parse_weight_oz(value) -> Decimal | None:
+    """One unit's weight in ounces, rounded to 0.01 oz. None or "" means not weighed."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise CatalogError("weight must be a number of ounces")
+    try:
+        w = Decimal(str(value).strip())
+    except InvalidOperation:
+        raise CatalogError("weight must be a number of ounces") from None
+    if not w.is_finite():
+        raise CatalogError("weight must be a number of ounces")
+    if w > MAX_WEIGHT_OZ:
+        raise CatalogError("weight is over 150 lb; check the number")
+    w = w.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if w <= 0:
+        raise CatalogError("weight must be more than 0")
+    return w
 
 
 def get_product(org_id: int, product_id: int) -> Product:
@@ -66,18 +91,49 @@ def create_product(
             s.get("code") or code_from_name(name),
             s.get("name") or "",
             s.get("priceCents"),
+            weight_oz=s.get("weightOz"),
         )
     return p
 
 
+def rename_product(org_id: int, product: Product, name) -> None:
+    """Give a product a new name. Chat and the stock sheet find items by alias, so the new
+    name becomes an alias of each of its SKUs (unless another item already answers to it)
+    and the old aliases stay: a re-import of the sheet under the old name still updates
+    this item instead of creating a second one."""
+    name = typed(name, 160)
+    if not name:
+        raise CatalogError("product name is required")
+    if name == product.name:
+        return
+    if db.session.scalar(
+        select(Product.id).where(
+            Product.organization_id == org_id,
+            func.lower(Product.name) == name.lower(),
+            Product.id != product.id,
+        )
+    ):
+        raise CatalogError("a product with that name already exists", 409)
+    product.name = name
+    for sku in product.skus:
+        add_alias(org_id, sku, f"{name} {sku.name}" if sku.name else name, quiet=True)
+
+
 def add_sku(
-    org_id: int, product: Product, code: str, name: str = "", price_cents: int | None = None
+    org_id: int,
+    product: Product,
+    code: str,
+    name: str = "",
+    price_cents: int | None = None,
+    *,
+    weight_oz=None,
 ) -> Sku:
     code = typed(code, 64).upper()
     if not code:
         raise CatalogError("SKU code is required")
     if price_cents is not None and (not isinstance(price_cents, int) or price_cents < 0):
         raise CatalogError("price must be a whole number of cents")
+    weight = parse_weight_oz(weight_oz)
     if db.session.scalar(select(Sku.id).where(Sku.organization_id == org_id, Sku.code == code)):
         raise CatalogError(f"SKU code {code} already exists", 409)
     sku = Sku(
@@ -86,6 +142,7 @@ def add_sku(
         code=code,
         name=typed(name, 160),
         price_cents=price_cents,
+        weight_oz=weight,
     )
     db.session.add(sku)
     db.session.flush()
@@ -111,6 +168,8 @@ def update_sku(org_id: int, sku_id: int, **fields) -> Sku:
         if pc is not None and (not isinstance(pc, int) or pc < 0):
             raise CatalogError("price must be a whole number of cents")
         sku.price_cents = pc
+    if "weightOz" in fields:
+        sku.weight_oz = parse_weight_oz(fields["weightOz"])
     if "lowStockAt" in fields and fields["lowStockAt"] is not None:
         sku.low_stock_at = max(0, int(fields["lowStockAt"]))
     if "active" in fields and fields["active"] is not None:

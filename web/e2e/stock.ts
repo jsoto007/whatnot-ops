@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test'
 
-export const cell = (page: Page, code: string, col: 'on-hand' | 'held' | 'available') => page.getByTestId(`level-${code}`).getByTestId(col)
+export const cell = (page: Page, code: string, col: 'on-hand' | 'held' | 'available' | 'weight') => page.getByTestId(`level-${code}`).getByTestId(col)
 
 /** Put `qty` more of an existing SKU on the shelf with the Inventory row's − [n] + ✓ stepper. */
 export async function receive(page: Page, code: string, qty: number) {

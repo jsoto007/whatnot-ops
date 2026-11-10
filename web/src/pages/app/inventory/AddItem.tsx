@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { Modal } from '../../../components/Modal'
+import { WeightInput } from '../../../components/WeightInput'
 import { ApiError, api, type Product, type ReceiveResult } from '../../../lib/api'
 import { plural, requestId } from '../../../lib/format'
+import { parseWeight, weightProblem, type WeightUnit } from '../../../lib/weight'
 
 const toInt = (s: string) => (s.trim() === '' ? null : /^\s*\d+\s*$/.test(s) ? parseInt(s, 10) : NaN)
 /** "12.50" → 1250 cents; blank → null; anything else → NaN. */
@@ -19,6 +21,7 @@ export function AddItem({ onClose, onDone }: { onClose: () => void; onDone: (msg
   const [price, setPrice] = useState('')
   const [qty, setQty] = useState('')
   const [lowAt, setLowAt] = useState('')
+  const [weight, setWeight] = useState<{ text: string; unit: WeightUnit }>({ text: '', unit: 'oz' })
   const [aliases, setAliases] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -33,6 +36,9 @@ export function AddItem({ onClose, onDone }: { onClose: () => void; onDone: (msg
     if (Number.isNaN(n)) return setError('Quantity is a whole number, 0 or more.')
     const low = toInt(lowAt)
     if (Number.isNaN(low)) return setError('The low-stock mark is a whole number.')
+    const weightOz = parseWeight(weight.text, weight.unit)
+    const weightBad = weightProblem(weightOz)
+    if (weightBad) return setError(weightBad)
     const words = [...new Set(aliases.split(',').map((a) => a.trim().toLowerCase()).filter(Boolean))]
     setBusy(true)
     try {
@@ -41,11 +47,11 @@ export function AddItem({ onClose, onDone }: { onClose: () => void; onDone: (msg
         const r = await api<ReceiveResult>('POST', '/api/inventory/receive', {
           receiptId,
           note: 'new item',
-          lines: [{ new: { name: name.trim(), code: code.trim() || undefined, priceCents, lowStockAt: low ?? undefined }, quantity: n }],
+          lines: [{ new: { name: name.trim(), code: code.trim() || undefined, priceCents, weightOz, lowStockAt: low ?? undefined }, quantity: n }],
         })
         skuId = r.lines[0]!.skuId
       } else {
-        const r = await api<{ product: Product }>('POST', '/api/products', { name: name.trim(), skus: [{ code: code.trim() || undefined, priceCents }] })
+        const r = await api<{ product: Product }>('POST', '/api/products', { name: name.trim(), skus: [{ code: code.trim() || undefined, priceCents, weightOz }] })
         skuId = r.product.skus[0]!.id
         if (low != null) await api('PATCH', `/api/skus/${skuId}`, { lowStockAt: low })
       }
@@ -111,6 +117,17 @@ export function AddItem({ onClose, onDone }: { onClose: () => void; onDone: (msg
             Low-stock alert at
             <input value={lowAt} onChange={(e) => setLowAt(e.target.value)} placeholder="3" inputMode="numeric" />
           </label>
+          <div className="field">
+            <label htmlFor="add-weight">Weight of one unit (optional)</label>
+            <WeightInput
+              id="add-weight"
+              text={weight.text}
+              unit={weight.unit}
+              onText={(text) => setWeight((w) => ({ ...w, text }))}
+              onUnit={(unit) => setWeight((w) => ({ ...w, unit }))}
+              label="Weight of one unit (optional)"
+            />
+          </div>
         </div>
         <label className="field">
           Chat aliases (comma separated — what buyers type)
