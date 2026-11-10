@@ -229,3 +229,124 @@ def test_activity_route_and_viewer_cannot_receive(app, client):
     assert r.status_code == 403
     r = v.post("/api/inventory/count", json={"lines": [{"skuId": red, "counted": 1}]}, headers=hv)
     assert r.status_code == 403
+
+
+# ---------- weight ----------
+
+
+def test_weight_is_set_on_create_receive_and_edit_and_can_be_cleared(client, app):
+    h = owner_client(client)
+    r = client.post(
+        "/api/products",
+        json={"name": "Red bundle", "skus": [{"code": "RED", "priceCents": 2500, "weightOz": 4.5}]},
+        headers=h,
+    )
+    red = r.get_json()["product"]["skus"][0]
+    assert red["weightOz"] == 4.5
+
+    # A new item received in a delivery keeps the weight it was added with.
+    r = client.post(
+        "/api/inventory/receive",
+        json={"lines": [{"new": {"name": "Holo slab", "weightOz": "20"}, "quantity": 3}]},
+        headers=h,
+    )
+    assert r.status_code == 201, r.get_json()
+    lv = levels(client)
+    assert lv["RED"]["weightOz"] == 4.5 and lv["HOLO-SLAB"]["weightOz"] == 20.0
+
+    # Typed in pounds by the page (1.333 lb = 21.328 oz): kept to 0.01 oz.
+    r = client.patch(f"/api/skus/{red['id']}", json={"weightOz": 21.328}, headers=h)
+    assert r.status_code == 200 and r.get_json()["sku"]["weightOz"] == 21.33
+    # Other edits leave the weight alone; null clears it.
+    client.patch(f"/api/skus/{red['id']}", json={"lowStockAt": 2}, headers=h)
+    assert levels(client)["RED"]["weightOz"] == 21.33
+    r = client.patch(f"/api/skus/{red['id']}", json={"weightOz": None}, headers=h)
+    assert r.get_json()["sku"]["weightOz"] is None
+
+    said = [e["summary"] for e in client.get("/api/audit").get_json()["entries"]]
+    assert "Edited item RED: weight 1 lb 5.33 oz → not weighed" in said
+    assert "Edited item RED: weight 4.5 oz → 1 lb 5.33 oz" in said
+    with app.app_context():
+        entry = db.session.scalars(
+            select(AuditLog).where(AuditLog.action == "sku.updated").order_by(AuditLog.id)
+        ).first()
+        assert entry.details["after"]["weightOz"] == 21.33
+
+
+def test_a_bad_weight_is_refused_and_moves_nothing(client):
+    h = owner_client(client)
+    red = make_red(client, h, on_hand=2)
+    for bad, words in [
+        (0, "more than 0"),
+        (-3, "more than 0"),
+        (0.004, "more than 0"),
+        ("heavy", "number of ounces"),
+        ("NaN", "number of ounces"),
+        (True, "number of ounces"),
+        ([4], "number of ounces"),
+        (2400.5, "over 150 lb"),
+        ("1e30", "over 150 lb"),
+    ]:
+        r = client.patch(f"/api/skus/{red}", json={"weightOz": bad}, headers=h)
+        assert r.status_code == 400 and words in r.get_json()["error"], (bad, r.get_json())
+    assert levels(client)["RED"]["weightOz"] is None
+    assert client.patch(f"/api/skus/{red}", json={"weightOz": 2400}, headers=h).status_code == 200
+
+    # A delivery with a badly weighed new item is refused whole.
+    r = client.post(
+        "/api/inventory/receive",
+        json={
+            "lines": [
+                {"skuId": red, "quantity": 4},
+                {"new": {"name": "Holo slab", "weightOz": -1}, "quantity": 1},
+            ]
+        },
+        headers=h,
+    )
+    assert r.status_code == 400 and "more than 0" in r.get_json()["error"]
+    assert levels(client)["RED"]["onHand"] == 2 and "HOLO-SLAB" not in levels(client)
+    r = client.post("/api/products", json={"name": "Ultra", "skus": [{"weightOz": "x"}]}, headers=h)
+    assert r.status_code == 400
+
+
+# ---------- renaming ----------
+
+
+def test_renaming_a_product_keeps_chat_and_the_sheet_matching_the_old_name(client):
+    h = owner_client(client)
+    make_red(client, h, on_hand=2)
+    client.post("/api/products", json={"name": "Holo slab", "skus": [{"code": "HOLO"}]}, headers=h)
+    pid = levels(client)["RED"]["productId"]
+
+    r = client.patch(f"/api/products/{pid}", json={"name": "  Red mystery bundle "}, headers=h)
+    assert r.status_code == 200 and r.get_json()["product"]["name"] == "Red mystery bundle"
+    red = levels(client)["RED"]
+    assert red["productName"] == "Red mystery bundle" and red["code"] == "RED"  # code is kept
+    assert {a["alias"] for a in red["aliases"]} == {"red bundle", "red mystery bundle"}
+
+    # The stock sheet still says "Red bundle": it updates this item, it does not add a new one.
+    r = client.post(
+        "/api/inventory/import", json={"csv": "Item,Current Stock\nRed bundle,5\n"}, headers=h
+    )
+    assert r.get_json()["summary"] == {"set": 1} and r.get_json()["rows"][0]["before"] == 2
+
+    # Another item's name, in any case, is refused; so is a blank one. Nothing changes.
+    for bad, status in [("holo SLAB", 409), ("   ", 400), ("​", 400)]:
+        r = client.patch(f"/api/products/{pid}", json={"name": bad}, headers=h)
+        assert r.status_code == status, (bad, r.get_json())
+    assert levels(client)["RED"]["productName"] == "Red mystery bundle"
+    # Changing only the case of its own name is fine.
+    r = client.patch(f"/api/products/{pid}", json={"name": "Red Mystery Bundle"}, headers=h)
+    assert r.status_code == 200
+
+    # A new name that is already another item's chat name does not take it over.
+    client.post(
+        f"/api/skus/{levels(client)['HOLO']['id']}/aliases", json={"alias": "ultra"}, headers=h
+    )
+    client.patch(f"/api/products/{pid}", json={"name": "Ultra"}, headers=h)
+    lv = levels(client)
+    assert "ultra" in {a["alias"] for a in lv["HOLO"]["aliases"]}
+    assert "ultra" not in {a["alias"] for a in lv["RED"]["aliases"]}
+
+    said = [e["summary"] for e in client.get("/api/audit").get_json()["entries"]]
+    assert "Product: renamed “Red bundle” to “Red mystery bundle”" in said

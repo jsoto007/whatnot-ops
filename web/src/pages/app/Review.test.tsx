@@ -24,6 +24,7 @@ const sku = (id: number, productId: number, code: string, name: string, aliases:
   code,
   name,
   priceCents: null,
+  weightOz: null,
   onHand: 3,
   reserved: 0,
   available: 3,

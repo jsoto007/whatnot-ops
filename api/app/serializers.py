@@ -85,6 +85,11 @@ def alias(a) -> dict:
     return {"id": a.id, "alias": a.alias}
 
 
+def ounces(w) -> float | None:
+    """A SKU's weight (Decimal, 0.01 oz) as a JSON number; null when not weighed."""
+    return None if w is None else float(w)
+
+
 def sku(s) -> dict:
     return {
         "id": s.id,
@@ -92,6 +97,7 @@ def sku(s) -> dict:
         "code": s.code,
         "name": s.name,
         "priceCents": s.price_cents,
+        "weightOz": ounces(s.weight_oz),
         "onHand": s.on_hand,
         "reserved": s.reserved,
         "available": s.available,

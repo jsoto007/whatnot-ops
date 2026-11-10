@@ -224,7 +224,17 @@ def build(
     _sheet(
         wb,
         "Inventory remaining",
-        ["Product", "SKU", "On hand", "Reserved", "Available", "To buy", "Low at", "Price"],
+        [
+            "Product",
+            "SKU",
+            "On hand",
+            "Reserved",
+            "Available",
+            "To buy",
+            "Low at",
+            "Price",
+            "Weight (oz)",
+        ],
         [
             [
                 s.product.name,
@@ -235,6 +245,7 @@ def build(
                 s.short,
                 s.low_stock_at,
                 s.price_cents,
+                None if s.weight_oz is None else float(s.weight_oz),
             ]
             for s in skus
         ],

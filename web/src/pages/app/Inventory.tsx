@@ -5,6 +5,7 @@ import { useAuth } from '../../auth/useAuth'
 import { Icon } from '../../components/Icon'
 import { ApiError, api, apiGet, money, type Activity, type CountResult, type ReceiveResult, type StockLevel } from '../../lib/api'
 import { fmtWhen, plural, requestId } from '../../lib/format'
+import { fmtWeight } from '../../lib/weight'
 import { AddItem } from './inventory/AddItem'
 import { Import } from './inventory/Import'
 import { ItemPanel } from './inventory/ItemPanel'
@@ -349,6 +350,7 @@ function Row({ sku, write, onOpen, onSaved }: { sku: StockLevel; write: boolean;
         <div className="muted small">
           <code>{sku.code}</code>
           {sku.priceCents != null && <> · {money(sku.priceCents)}</>}
+          {sku.weightOz != null && <span data-testid="weight"> · {fmtWeight(sku.weightOz)}</span>}
         </div>
       </td>
       <td className={'num col-shelf' + (sku.onHand < 0 ? ' neg' : '')} data-testid="on-hand">

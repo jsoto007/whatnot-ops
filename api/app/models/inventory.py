@@ -1,5 +1,6 @@
 import enum
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
@@ -8,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -53,6 +55,9 @@ class Sku(db.Model):
     code: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False, default="")
     price_cents: Mapped[int | None] = mapped_column(Integer)
+    # One unit's weight in ounces, exact to 0.01 oz (what was typed, in oz or lb, comes back
+    # unchanged). NULL until someone weighs it.
+    weight_oz: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
     on_hand: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reserved: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     low_stock_at: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

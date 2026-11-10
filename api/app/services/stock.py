@@ -57,7 +57,7 @@ def _sku(org_id: int, value, label: str) -> Sku:
 
 def receive(org_id: int, lines: list, *, note: str | None, receipt_id, actor: Actor) -> dict:
     """Add a delivery to the shelf. A line is {skuId, quantity} for a known item or
-    {new: {name, code?, priceCents?, lowStockAt?}, quantity} to create the item too."""
+    {new: {name, code?, priceCents?, weightOz?, lowStockAt?}, quantity} to create the item too."""
     receipt_id = _client_id(receipt_id)
     note = (note or "").strip()[:200] or None
     if not isinstance(lines, list) or not lines:
@@ -88,6 +88,9 @@ def receive(org_id: int, lines: list, *, note: str | None, receipt_id, actor: Ac
         if new:
             if not isinstance(new, dict) or not (new.get("name") or "").strip():
                 raise InventoryError(f"line {i}: a new item needs a name", 400)
+            catalog.parse_weight_oz(
+                new.get("weightOz")
+            )  # refuse a bad weight before any stock moves
             plan.append((None, new, qty))
             continue
         sku = _sku(org_id, raw.get("skuId"), f"line {i}")
@@ -104,7 +107,13 @@ def receive(org_id: int, lines: list, *, note: str | None, receipt_id, actor: Ac
             p = catalog.create_product(
                 org_id,
                 new["name"],
-                skus=[{"code": (new.get("code") or "").strip() or None, "priceCents": price}],
+                skus=[
+                    {
+                        "code": (new.get("code") or "").strip() or None,
+                        "priceCents": price,
+                        "weightOz": new.get("weightOz"),
+                    }
+                ],
             )
             sku = p.skus[0]
             if new.get("lowStockAt") not in (None, ""):

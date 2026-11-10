@@ -120,8 +120,10 @@ def test_workbook_sheets_rows_and_currency_cells(app, world):
     assert [w[1:3] for w in walked[1:]] == [("kat.c", "Cancelled")]
     fulfil = list(wb["Fulfilment"].iter_rows(values_only=True))
     assert fulfil[1][1:6] == ("lani808", "ready", "RED", "Red bundle", 2)
-    inv = list(wb["Inventory remaining"].iter_rows(values_only=True))[1]
-    assert inv[:5] == ("Red bundle", "RED", 1, 0, 1)
+    inv_rows = list(wb["Inventory remaining"].iter_rows(values_only=True))
+    assert inv_rows[0][-1] == "Weight (oz)"
+    inv = inv_rows[1]
+    assert inv[:5] == ("Red bundle", "RED", 1, 0, 1) and inv[-1] is None  # not weighed
     moves = list(wb["Stock movements"].iter_rows(values_only=True))
     # every win is paid at once (reserve + commit); kat.c's cancelled win is restocked
     # in words, not ledger codes (reserve / commit / restock)

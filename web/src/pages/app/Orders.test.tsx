@@ -106,7 +106,7 @@ const orders: Order[] = [
     sales: [sale({ buyer: 'scrollstoppers', orderId: 6, sku: RED, item: '$1 BEAUTY PULLS #531', lot: 531, status: 'payment_failed', priceCents: 7900, review: { id: 14, reason: 'payment_declined' } })],
   }),
 ]
-const sku = (id: number, productId: number, code: string, name: string): Sku => ({ id, productId, code, name, priceCents: 100, onHand: 412, reserved: 0, available: 412, short: 0, lowStockAt: 0, low: false, active: true, aliases: [] })
+const sku = (id: number, productId: number, code: string, name: string): Sku => ({ id, productId, code, name, priceCents: 100, weightOz: null, onHand: 412, reserved: 0, available: 412, short: 0, lowStockAt: 0, low: false, active: true, aliases: [] })
 const products: Product[] = [
   { id: 1, name: '$1 Beauty Pulls', notes: null, active: true, skus: [sku(7, 1, 'BP-1', '')] },
   { id: 2, name: 'Beauty Blind Bag', notes: null, active: true, skus: [sku(8, 2, 'BB-01', '')] },

@@ -785,6 +785,20 @@ body.sheet-open, body.modal-open { overflow: hidden; }
 .alert-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: 14px; }
 .alert-row label { color: var(--text); flex: 1 1 auto; }
 .alert-hint { margin: 6px 0 0; }
+/* A weight and its unit (components/WeightInput). Inside a .field it takes the form's look. */
+.weight-input { display: inline-flex; align-items: stretch; gap: 6px; }
+.field .weight-input { display: flex; }
+:where(.weight-input, .name-row) input, :where(.weight-input) select {
+  min-height: 34px; border: 1px solid rgba(255, 255, 255, 0.9); border-radius: var(--pill); padding: 0 12px;
+  font: inherit; font-size: 14px; font-weight: 400; color: var(--text); background: rgba(255, 255, 255, 0.75);
+}
+:where(.weight-input, .name-row) input:focus, :where(.weight-input) select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-ring); }
+.name-row input { flex: 1 1 220px; min-width: 0; }
+.name-row input[aria-invalid="true"] { border-color: var(--red); }
+.weight-input input { width: 84px; font-variant-numeric: tabular-nums; }
+.field .weight-input input { flex: 1 1 auto; width: auto; min-width: 0; }
+.weight-input select { cursor: pointer; }
+.weight-input [aria-invalid="true"] { border-color: var(--red); }
 
 @media (max-width: 900px) {
   .inv-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }

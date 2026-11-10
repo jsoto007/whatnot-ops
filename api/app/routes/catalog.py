@@ -66,15 +66,8 @@ def update_product(product_id: int):
     p = catalog.get_product(g.u.organization_id, product_id)
     d = _body()
     before = {"name": p.name, "active": p.active}
-    name = catalog.typed(d.get("name"), 160)
-    if name and name != p.name:
-        if db.session.scalar(
-            select(Product.id).where(
-                Product.organization_id == g.u.organization_id, Product.name == name
-            )
-        ):
-            raise CatalogError("a product with that name already exists", 409)
-        p.name = name
+    if "name" in d:
+        catalog.rename_product(g.u.organization_id, p, d["name"])
     if "notes" in d:
         p.notes = d["notes"] if isinstance(d["notes"], str) else None
     if "active" in d:
@@ -97,7 +90,12 @@ def add_sku(product_id: int):
     p = catalog.get_product(g.u.organization_id, product_id)
     d = _body()
     s = catalog.add_sku(
-        g.u.organization_id, p, d.get("code", ""), d.get("name", ""), d.get("priceCents")
+        g.u.organization_id,
+        p,
+        d.get("code", ""),
+        d.get("name", ""),
+        d.get("priceCents"),
+        weight_oz=d.get("weightOz"),
     )
     db.session.commit()
     return jsonify({"sku": serializers.sku(s)}), 201
@@ -107,7 +105,8 @@ def add_sku(product_id: int):
 @require("inventory.write")
 def update_sku(sku_id: int):
     d = _body()
-    fields = {k: d[k] for k in ("code", "name", "priceCents", "lowStockAt", "active") if k in d}
+    keys = ("code", "name", "priceCents", "weightOz", "lowStockAt", "active")
+    fields = {k: d[k] for k in keys if k in d}
     for k in ("code", "name"):
         if k in fields and fields[k] is not None and not isinstance(fields[k], str):
             raise CatalogError(f"{k} must be text")
@@ -116,8 +115,16 @@ def update_sku(sku_id: int):
             fields["lowStockAt"] = int(fields["lowStockAt"])
         except (TypeError, ValueError):
             raise CatalogError("lowStockAt must be a whole number") from None
-    old = catalog.get_sku(g.u.organization_id, sku_id)
-    before = {"code": old.code, "priceCents": old.price_cents, "lowStockAt": old.low_stock_at}
+
+    def shown(s) -> dict:
+        return {
+            "code": s.code,
+            "priceCents": s.price_cents,
+            "weightOz": serializers.ounces(s.weight_oz),
+            "lowStockAt": s.low_stock_at,
+        }
+
+    before = shown(catalog.get_sku(g.u.organization_id, sku_id))
     s = catalog.update_sku(g.u.organization_id, sku_id, **fields)
     audit.record(
         g.u.organization_id,
@@ -125,10 +132,7 @@ def update_sku(sku_id: int):
         user=g.u,
         target_type="sku",
         target_id=s.id,
-        details={
-            "before": before,
-            "after": {"code": s.code, "priceCents": s.price_cents, "lowStockAt": s.low_stock_at},
-        },
+        details={"before": before, "after": shown(s)},
     )
     db.session.commit()
     return jsonify({"sku": serializers.sku(s)})
