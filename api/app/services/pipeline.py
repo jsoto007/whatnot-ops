@@ -305,6 +305,47 @@ def _recordings_of_the_same_show(show: Show) -> list[int]:
     ) or [show.id]
 
 
+def listed_sku(org_id: int, sku_id: int | None) -> Sku | None:
+    """The product a Whatnot listing is linked to, if it is (still) one of this shop's."""
+    if sku_id is None:
+        return None
+    sku = db.session.get(Sku, sku_id)
+    return sku if sku is not None and sku.organization_id == org_id and sku.active else None
+
+
+def name_from_listing(sale: Sale, sku_id: int | None, *, price_cents: int | None = None) -> bool:
+    """A win nobody has named a product for, whose Whatnot order is for a listing linked
+    to a product here: the listing names it. Done through the same decision a person
+    makes in Review (assign_sku: reserve, paid at the win, the order follows), with
+    Whatnot as the actor. False when there is nothing to do, no open decision to take,
+    or a person settled it a moment ago.
+
+    `price_cents` is what the order says was paid per item. A win whose line carried no
+    price takes it, not the product's list price: Whatnot knows what it charged."""
+    sku = listed_sku(sale.organization_id, sku_id)
+    if sku is None or sale.sku_id is not None or sale.status is not SaleStatus.detected:
+        return False
+    item = db.session.scalar(
+        select(ReviewItem)
+        .where(
+            ReviewItem.sale_id == sale.id,
+            ReviewItem.status == ReviewStatus.open,
+            ReviewItem.reason == "unmatched_item",
+        )
+        .order_by(ReviewItem.id)
+        .limit(1)
+    )
+    if item is None:
+        return False
+    if sale.price_cents is None and price_cents is not None:
+        sale.price_cents = price_cents
+    try:
+        resolve(item, "assign_sku", {"skuId": sku.id}, user=None, actor=WHATNOT_ACTOR)
+    except ReviewError:
+        return False  # a person decided this very item while the orders were being applied
+    return True
+
+
 def create_sale_from_order(
     show: Show,
     *,
@@ -315,6 +356,8 @@ def create_sale_from_order(
     external_order_id: str,
     ordered_at: datetime | None,
     settled: bool,
+    sku_id: int | None = None,
+    by_text: bool = True,
 ) -> Sale:
     """A sale the app learnt of from Whatnot's own order record, not from a chat line or
     the video player (nobody was recording, or the win was missed). Whatnot vouches that
@@ -324,7 +367,11 @@ def create_sale_from_order(
     The caller holds the buyer's lock (`_lock_buyer`) and has checked that no sale stands
     for this order already. `settled` says Whatnot has taken the payment; otherwise the
     sale is paid "at the win" like any other and a later decline closes it."""
-    sku = match_sku(show.organization_id, item_text) if item_text else None
+    # A listing linked to a product names it; otherwise its text may, unless a person
+    # said the listing is none of the shop's products (`by_text` False).
+    sku = listed_sku(show.organization_id, sku_id) or (
+        match_sku(show.organization_id, item_text) if item_text and by_text else None
+    )
     sale = Sale(
         organization_id=show.organization_id,
         show_id=show.id,
@@ -1272,7 +1319,9 @@ def record_sale_from_event(item: ReviewItem) -> Sale:
     return create_sale(show, ev, sku=sku)
 
 
-def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
+def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> ReviewItem:
+    """A decision on a review item. `actor` is given only when it is not a person's:
+    Whatnot's own listing naming a product (`name_from_listing`); `user` is then None."""
     # One decision at a time per item, taken on its committed state: two people settling the
     # same lot with different products must not both move stock. The item and its sale are
     # locked before anything is checked, so the second person gets a 409 and moves nothing.
@@ -1281,7 +1330,7 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
         raise ReviewError("already resolved", 409)
     if item.sale is not None:
         db.session.refresh(item.sale, with_for_update=True)
-    actor = Actor.user(user)
+    actor = actor or Actor.user(user)
     if action == "dismiss":
         item.status = ReviewStatus.dismissed
         item.resolution = {"action": "dismiss"}
@@ -1363,7 +1412,7 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user) -> ReviewItem:
         item.resolution = {"action": "set_status", "status": sale.status.value}
     else:
         raise ReviewError(f"unknown action {action!r}")
-    item.resolved_by_id = user.id
+    item.resolved_by_id = user.id if user is not None else None
     item.resolved_at = datetime.now(UTC)
     return item
 

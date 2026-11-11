@@ -629,6 +629,10 @@ def sync_job(payload: dict) -> None:
         results.schedule_results(org_id, whatnot_show_id)
     if results.ledger_due(org_id):
         results.schedule_ledger(org_id)
+    from . import catalog
+
+    if catalog.due(org_id):
+        catalog.schedule(org_id)
 
 
 def _open_by_show(org_id: int) -> dict:

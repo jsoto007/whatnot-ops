@@ -421,6 +421,14 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
             else "Whatnot's orders are now only compared until a person applies them"
         ),
     ),
+    "whatnot.listing_linked": (
+        "Linked a Whatnot listing",
+        lambda d, t: (
+            f"Linked the Whatnot listing {_q(d['listing'])} to {_q(d['product'])}"
+            if d.get("product")
+            else f"Said the Whatnot listing {_q(d['listing'])} is none of the shop's products"
+        ),
+    ),
     "whatnot.orders_shipped": (
         "Marked orders shipped",
         lambda d, t: (

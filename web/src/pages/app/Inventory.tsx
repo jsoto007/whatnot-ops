@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/useAuth'
 import { Icon } from '../../components/Icon'
@@ -145,6 +145,9 @@ export function Inventory() {
         </div>
         {write && (
           <div className="head-actions">
+            <Link className="btn ghost" to="/app/inventory/whatnot">
+              Whatnot listings
+            </Link>
             <button type="button" className="btn ghost" onClick={() => setPanel(panel?.kind === 'import' ? null : { kind: 'import' })} data-testid="toggle-import">
               <Icon name="upload" size={16} /> {panel?.kind === 'import' ? 'Hide import' : 'Import sheet'}
             </button>
@@ -362,6 +365,12 @@ function Row({ sku, write, onOpen, onSaved }: { sku: StockLevel; write: boolean;
       <td className="num" data-testid="available">
         <b className={sku.short ? 'neg' : undefined}>{sku.available}</b>
         {st.tone !== 'green' && <span className={`badge ${st.tone === 'red' ? 'danger' : 'warn'}`}>{sku.short ? `buy ${sku.short}` : st.label.toLowerCase()}</span>}
+        {sku.whatnot && (
+          <Link to="/app/inventory/whatnot" className={'on-whatnot' + (sku.whatnot.differs ? ' differs' : '')} data-testid="on-whatnot" title={sku.whatnot.listings > 1 ? `${sku.whatnot.listings} listings on Whatnot` : 'Its listing on Whatnot'}>
+            {sku.whatnot.onWhatnot === null ? 'on Whatnot' : `${sku.whatnot.onWhatnot} on Whatnot`}
+            {sku.whatnot.differs ? ' · differs' : ''}
+          </Link>
+        )}
       </td>
       <td className="hide-sm">
         <div className="avail" title={sku.short ? `${sku.short} owed to buyers` : `${sku.available} of ${sku.onHand} on the shelf free to sell`}>

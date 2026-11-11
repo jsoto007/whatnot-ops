@@ -64,6 +64,18 @@ def seed():
                 fake.finish_label(shipment_id)
     for change in d.get("setShipments") or []:
         fake.set_shipment(str(change["id"]), status=change["status"])
+    for spec in d.get("products") or []:  # the shop's Whatnot inventory
+        fake.add_product(
+            title=spec.get("title", "Product"),
+            variants=[
+                {
+                    "sku": v.get("sku"),
+                    "price_cents": v.get("priceCents"),
+                    "quantity": v.get("quantity", 0),
+                }
+                for v in spec.get("variants") or [{}]
+            ],
+        )
     for spec in d.get("results") or []:  # how Whatnot says a show did
         show = fake.shows[spec["showId"]]
         fake.analytics[show["id"]] = {

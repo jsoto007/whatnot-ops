@@ -146,6 +146,15 @@ nothing.
 for a show totals the quantities per SKU across those orders; an order page
 is the packing slip (print it) with the buyer's history in other shows.
 
+## Whatnot listings
+
+**Inventory → Whatnot listings** shows what the shop has listed on Whatnot next
+to its own products. A listing whose Whatnot SKU equals a product code links
+itself; the rest are linked by hand. Inventory then shows "N on Whatnot" beside
+what the shop can sell and says when the two differ, and an order for a linked
+listing names its product without a chat pick. The app only reads Whatnot's
+stock; it never changes it.
+
 ## Buyers
 
 **Buyers** (`/app/buyers`) lists everyone who has won: shows, items, what they

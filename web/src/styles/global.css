@@ -985,3 +985,8 @@ body.sheet-open, body.modal-open { overflow: hidden; }
 @media print {
   .buyer-flag { display: none !important; }
 }
+
+/* Inventory: what Whatnot offers for a product that has a listing there. */
+.on-whatnot { display: block; font-size: 12px; font-weight: 500; color: var(--text-muted); text-decoration: none; white-space: nowrap; }
+.on-whatnot.differs { color: var(--tint-amber-ink); }
+.link-pick { display: inline-flex; gap: var(--space-2); align-items: center; }

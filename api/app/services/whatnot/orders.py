@@ -38,7 +38,7 @@ from ...models import (
 from .. import jobs, pipeline, reconcile
 from ..orders import STANDING
 from ..reconcile import Plan, Row
-from . import connection, sync
+from . import catalog, connection, sync
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +85,7 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
     Giveaways are not sales (the order slips list them as gifts)."""
     rows: list[Row] = []
     info = {"orders": 0, "giveaways": 0, "noBuyer": 0}
+    sku_for = catalog.resolver(ws.organization_id)
     for order in _orders(ws):
         if order.transaction_type == GIVEAWAY:
             info["giveaways"] += 1
@@ -103,6 +104,7 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
                 sale_hint=item.sale_id,
                 ordered_at=order.ordered_at,
             )
+            row.sku_id, row.listing_off = sku_for(item)
             if not row.buyer:
                 info["noBuyer"] += 1
                 row.action, row.note = "skip", "Whatnot did not say who bought it"
@@ -168,9 +170,13 @@ def _plan(show: Show, ws: WhatnotShow) -> tuple[Plan, dict, list[Show]]:
             and sale.status is SaleStatus.detected
             and sale.sku_id is None
         ):
-            # Paid on Whatnot, but nobody has said which product it is: its own review item
-            # is already waiting, and naming the product is what marks it paid.
-            row.action, row.note = "unchanged", "waiting for its product to be named"
+            if pipeline.listed_sku(show.organization_id, row.sku_id) is not None:
+                # Its listing on Whatnot is linked to a product here: applying names it.
+                row.note = "its Whatnot listing names the product"
+            else:
+                # Paid on Whatnot, but nobody has said which product it is: its own review
+                # item is already waiting, and naming the product is what marks it paid.
+                row.action, row.note = "unchanged", "waiting for its product to be named"
     return plan, info, recordings
 
 
@@ -305,6 +311,8 @@ def apply(show: Show, *, user=None) -> dict:
                 external_order_id=row.external_id,
                 ordered_at=row.ordered_at,
                 settled=row.status == "paid",
+                sku_id=row.sku_id,
+                by_text=not row.listing_off,
             )
             created.append(sale.id)
             row.action = "recorded"
@@ -314,6 +322,22 @@ def apply(show: Show, *, user=None) -> dict:
         row.sale_id = sale.id
         taken.add(sale.id)
         return True
+
+    # A win still waiting for its product, whose listing is linked to one here: the listing
+    # names it (the decision a person makes in Review, taken by Whatnot's record), and the
+    # payment then applies as for any named sale.
+    for row in plan.rows:
+        if row.action != "mark_paid" or row.sale_id is None or row.sku_id is None:
+            continue
+        waiting = db.session.get(Sale, row.sale_id)
+        if waiting is None or waiting.sku_id is not None:
+            continue
+        if waiting.status is SaleStatus.detected and not pipeline.name_from_listing(
+            waiting, row.sku_id, price_cents=row.price_cents
+        ):
+            db.session.refresh(waiting)
+            if waiting.sku_id is None:  # not named by a person meanwhile either
+                row.action, row.note = "unchanged", "waiting for its product to be named"
 
     reconcile.apply(
         primary,

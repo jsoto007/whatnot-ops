@@ -18,7 +18,8 @@ which product it was, the gifts, and the picking and packing.**
    `read:orders`, `read:shows`, `read:shipments`, `read:customers`, `read:inventory`,
    `read:merchandising`, `read:reports`, `write:reports`. Add `write:shipments` later, by
    editing the token, if the shop wants to make labels from the app. Never tick
-   `write:orders` (cancel + refund) for this app.
+   `write:orders` (cancel + refund) or `write:inventory` for this app: nothing in it
+   changes an order or Whatnot's stock.
 2. **Server.** Set on the web service **and** the worker (Render → Environment; never in git):
    - `WHATNOT_API_TOKEN` — the `wn_pat_tk_…` token.
    - `WHATNOT_WEBHOOK_SECRET` — the `wn_wh_…` signing secret (web service only needs it; set
@@ -30,8 +31,8 @@ which product it was, the gifts, and the picking and packing.**
 4. **Webhooks** (after step 3, never before the app is deployed: a failing address is
    throttled, then unsubscribed). Seller Hub → Seller API → Webhooks → add the address
    Settings shows (`https://<app>/api/webhooks/whatnot`) and tick: Order created / updated,
-   all five Show topics, all eight Shipment topics (15 of the 20). The five Product topics
-   are not used yet: leave them unticked.
+   all five Show topics, all eight Shipment topics, and Product created / updated / deleted
+   (18 of the 20). "Product added to show" and "removed from show" are not used yet.
 5. **Probe** (once, from a shell that has the token):
    ```bash
    cd api && flask --app wsgi.py whatnot-probe
@@ -143,6 +144,30 @@ write the flag and the note):
   "Back again · 12 items over 5 shows", with the team's flag first. Counted before
   tonight's show date. No note and no money reach the laptop.
 
+**Listings and stock** (Inventory → Whatnot listings; everyone reads, owners and managers
+link):
+
+- **The shop's Whatnot listings next to its products.** The app reads the shop's Whatnot
+  inventory once a day (and on "Read from Whatnot now"): each listing's title, Whatnot's
+  SKU, price and how many Whatnot says are available. Reading changes nothing anywhere.
+- **Linking.** A listing whose Whatnot SKU equals a product code here links itself. The
+  rest are linked by a person, or marked "not one of ours" (which a later read never
+  undoes). Inventory then shows "N on Whatnot" under what the shop can sell, and says when
+  the two differ.
+- **An order names its product.** An order for a linked listing is recorded with that
+  product at once: no chat pick and no Review step. A win that was waiting for its product
+  is named the same way when its order arrives (the decision a person would make in
+  Review, recorded as made by Whatnot's record), at the price the order says was paid.
+  "Choose any" lots are not linked to a product, so the winner still names it in chat; a
+  listing marked "not one of ours" never names a product, not even by its title.
+- **The app never changes Whatnot's stock.** It shows both counts and says when they
+  differ; a person fixes the listing on Whatnot. A first version could set Whatnot's
+  count from the app and was removed after its review: Whatnot counts its own sales down,
+  and the app only learns of a sale when its order is read and applied (never, in
+  "Compare only", or for a sale made between shows), so setting a number would put sold
+  units back on sale. Doing it properly needs to be designed against how Whatnot's own
+  counts behave on the live shop.
+
 ## What is kept, and what is not
 
 - Kept: Whatnot's ids, statuses, listing titles, prices, the buyer's **id and usernames**
@@ -164,6 +189,7 @@ write the flag and the note):
 | Parcels, the one-label rule, label requests and printing, carrier status | `shipping.py`, `routes/shipping.py` |
 | A show's results and the financial ledger (request, download, import by transaction id, sums) | `results.py`; shown through `services/dashboard.py` |
 | Buyer profiles: names tied to Whatnot's account id (its own job after orders are read, one writer per shop), the team's flag and note, figures from the sales | `services/buyers.py`, `routes/buyers.py`, figures in `services/dashboard.py`; the laptop asks `POST /api/ingest/buyers` |
+| The shop's Whatnot listings (read-only), the link to products here, and an order naming its product | `catalog.py`; orders use it through `reconcile.Row.sku_id` and `pipeline.name_from_listing` |
 | Read-only look at the live shop | `probe.py` (`flask whatnot-probe`) |
 | In-memory Whatnot for tests | `fake.py` |
 
@@ -202,3 +228,7 @@ Rules that hold everywhere:
 10. Buyers: that an account's id stays the same when the buyer changes their username, and
     whether an old order shows the name used then or the name used now. The app handles
     both, but no renamed buyer has been seen.
+11. Listings: whether the shop's listings carry a SKU at all, how a "choose any" lot
+    appears in the catalog, and whether an order item names its variant. Also unknown,
+    and needed before the app could ever set Whatnot's stock: whether Whatnot counts a
+    listing down at each sale, and what it does to the count on a cancel or a decline.

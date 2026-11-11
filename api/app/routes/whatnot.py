@@ -8,7 +8,7 @@ from ..auth import require
 from ..db import db
 from ..models import WhatnotShow
 from ..services import audit, dashboard, ratelimit
-from ..services.whatnot import WhatnotError, connection, results
+from ..services.whatnot import WhatnotError, catalog, connection, results
 
 bp = Blueprint("whatnot", __name__)
 
@@ -21,6 +21,12 @@ def whatnot_error(e: WhatnotError):
     db.session.rollback()
     # A person reads this: the plain words only, never Whatnot's own text or a setting name.
     return jsonify({"error": e.words}), e.http_status
+
+
+@bp.errorhandler(catalog.CatalogError)
+def catalog_error(e):
+    db.session.rollback()
+    return jsonify({"error": str(e)}), e.status
 
 
 @bp.errorhandler(connection.ConnectionError)
@@ -135,3 +141,38 @@ def read_ledger():
     results.schedule_ledger(org_id, user_id=g.u.id)
     db.session.commit()
     return jsonify({"connected": True, **dashboard.whatnot_ledger(org_id)})
+
+
+CATALOG_READS_PER_HOUR = 12  # each reads the shop's whole Whatnot catalog
+
+
+@bp.get("/catalog")
+@require("inventory.view", heavy=True)
+def catalog_page():
+    """The shop's Whatnot listings next to its own products."""
+    return jsonify(catalog.listings(g.u.organization_id))
+
+
+@bp.post("/catalog/read")
+@require("inventory.write")
+def catalog_read():
+    """Read the catalog from Whatnot now (queued; the page asks again shortly)."""
+    if connection.active(g.u.organization_id) is None:
+        return jsonify({"error": "Connect the shop to Whatnot first."}), 409
+    ratelimit.per_org("whatnot-catalog", g.u.organization_id, CATALOG_READS_PER_HOUR, 3600)
+    catalog.schedule(g.u.organization_id)
+    db.session.commit()
+    return jsonify(catalog.listings(g.u.organization_id))
+
+
+@bp.patch("/catalog/<int:variant_id>/link")
+@require("inventory.write")
+def catalog_link(variant_id: int):
+    """Say which product a listing is ({"skuId": 12}), or that it is none of ours (null)."""
+    d = request.get_json(silent=True)
+    sku_id = d.get("skuId") if isinstance(d, dict) else None
+    if sku_id is not None and (isinstance(sku_id, bool) or not isinstance(sku_id, int)):
+        return jsonify({"error": "pick a product"}), 400
+    catalog.link(g.u.organization_id, variant_id, sku_id, user=g.u)
+    db.session.commit()
+    return jsonify(catalog.listings(g.u.organization_id))

@@ -182,6 +182,18 @@ commands.
   lines are stored once by Whatnot's transaction id; the "net" is the sum of Whatnot's
   own signed lines in the shop's currency, and the app never derives one from the fee
   columns.
+- **Whatnot listings** (`services/whatnot/catalog.py`, `/app/inventory/whatnot`). The
+  shop's Whatnot inventory is mirrored (`whatnot_variants`) and each listing linked to a
+  SKU: by an exact code match, or by a person ("off" = none of ours, never re-linked).
+  An order item for a linked listing carries its product (`reconcile.Row.sku_id`): a new
+  sale gets it, and a win waiting for its product is named through `pipeline.resolve`
+  (`name_from_listing`, actor `whatnot`), never by writing `Sale.sku` directly; a listing
+  marked "off" never names a product, not even by its title (`Row.listing_off`). **The
+  app never changes Whatnot's stock**: a push was built and removed after review
+  (Whatnot counts its own sales down, and the app learns of a sale only when its order
+  is applied, so setting a count puts sold units back). Do not add an inventory write
+  without a design checked against the live shop. The daily catalog read waits while a
+  show is on air (it shares the request budget the orders need).
 - **Buyers** (`services/buyers.py`, `/app/buyers`). A profile row holds only who a buyer
   is (Whatnot's user id, every username they used) and what the team says (a note, a
   `vip` / `watch` flag, audited). What they bought is never stored: it comes from the

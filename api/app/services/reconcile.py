@@ -64,6 +64,12 @@ class Row:
     ref: int | None = None
     sale_hint: int | None = None
     ordered_at: datetime | None = None
+    # The product the listing itself names (a Whatnot listing linked to a product here).
+    # None lets the listing's text decide, as for a payment file.
+    sku_id: int | None = None
+    # A person said the listing is none of the shop's products: its title must not name
+    # one either (the winner says what they want, as for a "choose any" lot).
+    listing_off: bool = False
 
 
 @dataclass(frozen=True)
@@ -304,7 +310,9 @@ def plan(
 
 def _match(show: Show, row: Row, sales: list[Sale], taken: set[int]) -> Sale | None:
     buyer = row.buyer.lower()
-    sku = pipeline.match_sku(show.organization_id, row.item)
+    sku = pipeline.listed_sku(show.organization_id, row.sku_id) or (
+        None if row.listing_off else pipeline.match_sku(show.organization_id, row.item)
+    )
     key = catalog.norm_alias(row.item)
     candidates = [s for s in sales if s.id not in taken and s.buyer_username.lower() == buyer]
     if row.sale_hint is not None:

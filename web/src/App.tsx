@@ -20,6 +20,7 @@ import { Review } from './pages/app/Review'
 import { ShowDetail } from './pages/app/ShowDetail'
 import { Shows } from './pages/app/Shows'
 import { Team } from './pages/app/Team'
+import { WhatnotListings } from './pages/app/WhatnotListings'
 
 function PublicShell({ children }: { children: React.ReactNode }) {
   return (
@@ -83,6 +84,7 @@ export function App() {
               <Route path="buyers" element={<Buyers />} />
               <Route path="buyers/:name" element={<BuyerPage />} />
               <Route path="inventory" element={<Inventory />} />
+              <Route path="inventory/whatnot" element={<WhatnotListings />} />
               <Route path="products" element={<Products />} />
               <Route element={<RequirePermission permission="review.act" />}>
                 <Route path="review" element={<Review />} />
