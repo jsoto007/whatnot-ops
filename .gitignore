@@ -24,3 +24,6 @@ extension/playwright-report/
 web/*.tsbuildinfo
 
 extension/chat-scraper-*.zip
+
+# local reports and data pulls can hold client data: never commit them
+claude-reports/

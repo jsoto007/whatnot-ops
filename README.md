@@ -283,3 +283,15 @@ enables Reload once the new files are on disk and confirms the new version
 came back. Developer mode must stay on, because Chrome disables a reloaded
 unpacked extension without it. Laptops on 1.4.x and older need one manual
 update (↻ in `chrome://extensions`) before the button works.
+
+## License
+
+Proprietary. Copyright © 2026 SotoDev. All rights reserved. See
+[`LICENSE.md`](LICENSE.md): the shop's data belongs to the shop; the software
+(code, database design, data structures, algorithms, rules and prompts)
+belongs to SotoDev. This repository being visible grants no right to use,
+copy or deploy it. Third-party components and their licences:
+[`NOTICE.md`](NOTICE.md), with the full texts of everything sent to browsers
+in [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) (`make licenses`
+rewrites it after a dependency change). Both builds ship these files beside
+their code.
