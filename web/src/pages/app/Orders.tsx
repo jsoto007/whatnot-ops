@@ -54,7 +54,7 @@ export function Orders() {
   const [decline, setDecline] = useState<Sale | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const shows = useQuery({ queryKey: ['shows'], queryFn: () => apiGet<{ shows: Show[] }>('/api/shows') })
-  const all = useQuery({ queryKey: ['orders', 'every', showId], queryFn: () => apiGet<{ orders: Order[] }>(`/api/orders${showId ? '?show=' + showId : ''}`) })
+  const all = useQuery({ queryKey: ['orders', 'every', showId], queryFn: () => apiGet<{ orders: Order[]; truncated?: boolean }>(`/api/orders${showId ? '?show=' + showId : ''}`) })
   useEffect(() => {
     if (!toast) return
     const t = setTimeout(() => setToast(null), 4000)
@@ -145,6 +145,11 @@ export function Orders() {
           <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a buyer" aria-label="Find a buyer" />
         </label>
       </div>
+      {all.data?.truncated && (
+        <p className="muted small" role="status" data-testid="orders-truncated">
+          Showing the newest {all.data.orders.length} orders. Older ones are left out: pick a show above to see all of its orders.
+        </p>
+      )}
       {stuck && (
         <section className="banner" aria-label="Orders waiting on one unknown item" data-testid="stuck-banner">
           <div className="banner-main">

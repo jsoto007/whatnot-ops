@@ -293,3 +293,67 @@ def test_quick_hit_is_tallied_like_the_other_auction_types(app, world):
         t = dashboard.show_tiles(db.session.get(Show, world["show"]))
     assert (t["quickHit"], t["red"], t["itemsSold"]) == (1, 1, 2)
     assert "quickHit" in dashboard.totals([t])
+
+
+def test_overview_report_defaults_to_recent_shows_and_refuses_a_range_too_wide(
+    client, app, world, monkeypatch
+):
+    """No dates = the last 30 days; an explicit range past the cap is refused in words (the
+    workbook is built in memory inside the request: all history once took 518 MB)."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    from app.models import AuditLog, Show, User
+    from app.routes import reports as reports_routes
+    from app.services import showdate
+
+    monkeypatch.setattr(reports_routes, "MAX_OVERVIEW_SHOWS", 2)
+    client.get("/api/auth/me")
+    h = {"X-CSRF-Token": client.get("/api/auth/csrf").get_json()["token"]}
+    client.post(
+        "/api/auth/signup",
+        json={
+            "email": "rng@x.test",
+            "name": "O",
+            "organization": "Rng",
+            "password": "correct-horse-battery",
+        },
+        headers=h,
+    )
+    today = showdate.show_date(datetime.now(UTC))
+    with app.app_context():
+        u = db.session.scalar(select(User).where(User.email == "rng@x.test"))
+        u.organization_id = world["org"]
+        db.session.get(Show, world["show"]).show_date = today
+        for i, back in enumerate((3, 10, 400)):
+            db.session.add(
+                Show(
+                    organization_id=world["org"],
+                    show_key=f"old-{i}",
+                    started_at=datetime.now(UTC) - timedelta(days=back),
+                    show_date=today - timedelta(days=back),
+                )
+            )
+        db.session.commit()
+
+    def last_range():
+        with app.app_context():
+            row = db.session.scalar(
+                select(AuditLog)
+                .where(AuditLog.action == "report.downloaded")
+                .order_by(AuditLog.id.desc())
+            )
+            return row.details
+
+    # No dates: three shows fall in the last 30 days, the cap is two, so the newest two.
+    r = client.get("/api/reports/overview.xlsx")
+    assert r.status_code == 200 and r.data[:2] == b"PK"
+    assert last_range() == {"from": str(today - timedelta(days=3)), "to": "None"}
+    # Asked for everything: refused, with a count and what to do, and no setting named.
+    r = client.get("/api/reports/overview.xlsx?from=2020-01-01")
+    assert r.status_code == 400
+    assert "4 shows" in r.get_json()["error"] and "shorter range" in r.get_json()["error"]
+    # A range that fits is built as asked.
+    r = client.get(f"/api/reports/overview.xlsx?from={today - timedelta(days=5)}")
+    assert r.status_code == 200 and last_range()["from"] == str(today - timedelta(days=5))

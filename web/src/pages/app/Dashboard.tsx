@@ -528,7 +528,7 @@ export function Dashboard() {
           </div>
         </div>
         {can('reports.view') && (
-          <a className="btn ghost" href="/api/reports/overview.xlsx">
+          <a className="btn ghost" href="/api/reports/overview.xlsx" title="The last 30 days of shows, as an Excel workbook">
             <Icon name="download" size={16} /> Download report
           </a>
         )}

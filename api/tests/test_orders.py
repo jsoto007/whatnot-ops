@@ -328,3 +328,57 @@ def test_packing_slip_gets_packer_name_and_the_buyer_gift_lines(app, world):
         orders.advance(o, OrderStatus.packed, actor_label="o", packed_by="Someone Else")
         assert o.packed_by == "Olive Owner"
         db.session.rollback()
+
+
+def test_order_list_keeps_the_newest_and_says_when_it_is_cut(client, app, world, monkeypatch):
+    """Past the cap the list drops the oldest orders, never the latest show, and says so
+    (it used to take the 500 oldest in silence: the newest show vanished from Orders)."""
+    from datetime import UTC, date, datetime
+
+    from sqlalchemy import select
+
+    from app.models import Order, OrderStatus, Show, User
+    from app.routes import orders as orders_routes
+
+    monkeypatch.setattr(orders_routes, "ORDER_LIST_LIMIT", 4)
+    client.get("/api/auth/me")
+    h = {"X-CSRF-Token": client.get("/api/auth/csrf").get_json()["token"]}
+    client.post(
+        "/api/auth/signup",
+        json={
+            "email": "cut@x.test",
+            "name": "O",
+            "organization": "Cut",
+            "password": "correct-horse-battery",
+        },
+        headers=h,
+    )
+    with app.app_context():
+        u = db.session.scalar(select(User).where(User.email == "cut@x.test"))
+        u.organization_id = world["org"]
+        shows = []
+        for day in (1, 2, 3):
+            show = Show(
+                organization_id=world["org"],
+                show_key=f"2026-11-0{day}T20:00:00.000Z",
+                started_at=datetime(2026, 11, day, 20, tzinfo=UTC),
+                show_date=date(2026, 11, day),
+            )
+            db.session.add(show)
+            db.session.flush()
+            shows.append(show.id)
+            for n in range(2):
+                db.session.add(
+                    Order(
+                        organization_id=world["org"],
+                        show_id=show.id,
+                        buyer_username=f"buyer{day}{n}",
+                        status=OrderStatus.paid,
+                    )
+                )
+        db.session.commit()
+    body = client.get("/api/orders").get_json()
+    assert body["truncated"] is True and len(body["orders"]) == 4
+    assert {o["showId"] for o in body["orders"]} == set(shows[1:])  # the oldest show fell off
+    one = client.get(f"/api/orders?show={shows[0]}").get_json()
+    assert one["truncated"] is False and len(one["orders"]) == 2
