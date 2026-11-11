@@ -27,3 +27,33 @@ def test_app_env_test_selects_the_test_database(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/dev")
     monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://localhost/testdb")
     assert Config().SQLALCHEMY_DATABASE_URI.endswith("/testdb")
+
+
+def test_whatnot_secrets_come_from_the_environment_and_never_into_a_test_run(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/dev")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://localhost/testdb")
+    monkeypatch.setenv("WHATNOT_API_TOKEN", " wn_pat_tk_live ")
+    monkeypatch.setenv("WHATNOT_WEBHOOK_SECRET", "wn_wh_abc")
+    monkeypatch.setenv("APP_ENV", "development")
+    c = Config()
+    assert (c.WHATNOT_API_TOKEN, c.WHATNOT_WEBHOOK_SECRET) == ("wn_pat_tk_live", "wn_wh_abc")
+    # There is no sandbox: a test process never holds the live shop's token.
+    monkeypatch.setenv("APP_ENV", "test")
+    c = Config()
+    assert (c.WHATNOT_API_TOKEN, c.WHATNOT_WEBHOOK_SECRET) == ("", "")
+    assert Config(testing=True).WHATNOT_API_TOKEN == ""
+
+
+def test_the_fake_whatnot_is_refused_in_production(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/dev")
+    monkeypatch.setenv("SECRET_KEY", "x" * 32)
+    monkeypatch.setenv("WHATNOT_API", "fake")
+    monkeypatch.delenv("JOBS_INLINE", raising=False)  # refused in production on its own
+    monkeypatch.setenv("APP_ENV", "development")
+    assert Config().WHATNOT_FAKE is True
+    monkeypatch.setenv("APP_ENV", "production")
+    with pytest.raises(ConfigError, match="WHATNOT_API=fake"):
+        Config()
+    monkeypatch.delenv("APP_ENV")  # a missing APP_ENV is production too
+    with pytest.raises(ConfigError, match="WHATNOT_API=fake"):
+        Config()

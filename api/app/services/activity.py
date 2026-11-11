@@ -112,7 +112,7 @@ WHO = {
 
 def who(action: str, actor_type: str | None, label: str | None) -> str:
     """The activity log's "Who" column."""
-    if actor_type not in ("user", "device", "ai") and action in WHO:
+    if actor_type not in ("user", "device", "ai", "whatnot") and action in WHO:
         return WHO[action]
     return actor(actor_type, label)
 
@@ -124,6 +124,8 @@ def actor(actor_type: str | None, label: str | None) -> str:
         return label
     if actor_type == "ai":
         return "AI"
+    if actor_type == "whatnot":
+        return "Whatnot"  # what Whatnot's own records said (an order paid, a parcel sent)
     return "Automatic"
 
 
@@ -336,6 +338,17 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "payments.reconciled": ("Matched the payment file", _reconciled),
     "organization.updated": ("Changed the shop settings", _org_updated),
     "report.downloaded": ("Downloaded a show report", _report),
+    "whatnot.connected": (
+        "Connected the shop to Whatnot",
+        lambda d, t: (
+            f"Connected the shop to Whatnot as @{d['username']}"
+            + (" and set it as the host's username" if d.get("hostUsernameSet") else "")
+        ),
+    ),
+    "whatnot.disconnected": (
+        "Disconnected the shop from Whatnot",
+        lambda d, t: f"Disconnected the shop from Whatnot (@{d['username']})",
+    ),
     "ai.sale_confirmed": ("Confirmed a sale", None),
     "ai.applied": ("Applied a suggestion", None),
 }

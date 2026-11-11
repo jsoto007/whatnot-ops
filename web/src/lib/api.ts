@@ -490,6 +490,23 @@ export interface NavCounts {
   openReviews: number
   toFulfil: number
   live: boolean
+  /** The Whatnot connection needs a person (rejected token, missing permission). */
+  whatnotProblem?: boolean
+}
+
+// ---------- Whatnot Seller API connection ----------
+/** Why calls to Whatnot are failing, as a code the page turns into words (labels.ts). */
+export type WhatnotProblem = 'token_rejected' | 'no_permission' | 'unreachable'
+export interface WhatnotStatus {
+  /** The server has an access token at all (the developer sets it; it is never shown). */
+  configured: boolean
+  connected: boolean
+  username: string | null
+  connectedAt: string | null
+  lastCheckedAt: string | null
+  problem: WhatnotProblem | null
+  webhooks: { configured: boolean; url: string | null; lastEventAt: string | null; waiting?: number }
+  sync: { resource: string; lastOkAt: string | null; failing: boolean }[]
 }
 export interface Overview {
   shows: ShowTiles[]

@@ -129,3 +129,51 @@ def shop(app, world):
         _, key = create_device(org, "packing laptop")
         db.session.commit()
     return {**world, "auth": {"Authorization": "Bearer " + key}}
+
+
+@pytest.fixture
+def fake_whatnot(app):
+    """An in-memory Whatnot behind the real client. Without this fixture a call to Whatnot
+    from a test raises: no test may reach the live shop. Retries do not sleep; the waits
+    they asked for are in `fake.sleeps`."""
+    from app.services.whatnot.fake import TOKEN, FakeWhatnot
+
+    fake = FakeWhatnot()
+    fake.sleeps = []
+    app.config.update(
+        WHATNOT_TRANSPORT=fake.transport,
+        WHATNOT_API_TOKEN=TOKEN,
+        WHATNOT_SLEEP=fake.sleeps.append,
+    )
+    yield fake
+    app.config.pop("WHATNOT_TRANSPORT", None)
+    app.config.pop("WHATNOT_SLEEP", None)
+    app.config["WHATNOT_API_TOKEN"] = ""
+    app.config["WHATNOT_WEBHOOK_SECRET"] = ""
+
+
+@pytest.fixture
+def sign_in(app, client):
+    """sign_in(org_id, role="owner") -> CSRF header for a person signed in to that shop."""
+    from app.models import Role, User
+
+    def go(org_id: int, role: str = "owner", email: str = "o@x.test") -> dict:
+        h = {"X-CSRF-Token": client.get("/api/auth/csrf").get_json()["token"]}
+        client.post(
+            "/api/auth/signup",
+            json={
+                "organization": "O",
+                "name": "Olive",
+                "email": email,
+                "password": "correct-horse-battery",
+            },
+            headers=h,
+        )
+        with app.app_context():
+            u = db.session.scalar(select(User).where(User.email == email))
+            u.organization_id = org_id
+            u.role = Role(role)
+            db.session.commit()
+        return h
+
+    return go

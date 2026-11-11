@@ -86,6 +86,19 @@ class Config:
         # `__Host-` in production: the browser only accepts it from this exact host over
         # HTTPS with Path=/ and no Domain, so no sibling subdomain can plant a session (and
         # with it a CSRF token) for this one. Plain http://localhost cannot use the prefix.
+        # Whatnot Seller API (services/whatnot). Both are secrets: environment only, never
+        # logged. Without the token the Whatnot features stay hidden; without the signing
+        # secret the webhook address answers 404. There is no sandbox: the token is the
+        # live shop, so it is never read from a test environment's variables.
+        self.WHATNOT_API_TOKEN = "" if testing else os.environ.get("WHATNOT_API_TOKEN", "").strip()
+        self.WHATNOT_WEBHOOK_SECRET = (
+            "" if testing else os.environ.get("WHATNOT_WEBHOOK_SECRET", "").strip()
+        )
+        # WHATNOT_API=fake: an in-memory Whatnot (services/whatnot/fake.py) for local work
+        # and the browser tests, like AI_PROVIDER=fake. Never in production.
+        self.WHATNOT_FAKE = os.environ.get("WHATNOT_API", "").strip().lower() == "fake"
+        if self.WHATNOT_FAKE and not is_dev(self.APP_ENV):
+            raise ConfigError("WHATNOT_API=fake is for development and tests, not production")
         self.SESSION_COOKIE_NAME = (
             "__Host-wn_session" if self.APP_ENV == "production" else "wn_session"
         )

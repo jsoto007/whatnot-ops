@@ -13,6 +13,8 @@ PERMISSIONS: dict[str, frozenset[Role]] = {
     "devices.manage": MANAGERS,
     "audit.view": MANAGERS,
     "settings.manage": OWNER,
+    "whatnot.view": MANAGERS,  # connection health; nothing secret is ever shown
+    "whatnot.manage": OWNER,  # connect / disconnect the shop's Whatnot seller account
     "shows.view": ALL,
     "inventory.view": ALL,
     "inventory.write": MANAGERS,

@@ -23,6 +23,8 @@ from .routes.reports import bp as reports_bp
 from .routes.review import bp as review_bp
 from .routes.shows import bp as shows_bp
 from .routes.team import bp as team_bp
+from .routes.webhooks import bp as webhooks_bp
+from .routes.whatnot import bp as whatnot_bp
 from .spa import register_spa
 
 log = logging.getLogger(__name__)
@@ -160,6 +162,14 @@ def create_app(config: Config | None = None) -> Flask:
 
     from . import models  # noqa: F401 - register tables with SQLAlchemy/Alembic
     from .services import pipeline, supervisor  # noqa: F401 - registers job handlers
+    from .services.whatnot import webhooks  # noqa: F401 - registers the whatnot_event job
+
+    if config.WHATNOT_FAKE:
+        # Local work and the browser tests: an in-memory Whatnot instead of the live shop.
+        from .services.whatnot import fake
+
+        app.extensions["whatnot_fake"] = shop = fake.FakeWhatnot()
+        app.config.update(WHATNOT_TRANSPORT=shop.transport, WHATNOT_API_TOKEN=fake.TOKEN)
 
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(ingest_bp, url_prefix="/api")
@@ -174,6 +184,8 @@ def create_app(config: Config | None = None) -> Flask:
     app.register_blueprint(review_bp, url_prefix="/api/review")
     app.register_blueprint(orders_bp, url_prefix="/api/orders")
     app.register_blueprint(reports_bp, url_prefix="/api")
+    app.register_blueprint(whatnot_bp, url_prefix="/api/whatnot")
+    app.register_blueprint(webhooks_bp, url_prefix="/api/webhooks")
     register_spa(app)
     register_cli(app)
 

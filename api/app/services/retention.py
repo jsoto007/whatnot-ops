@@ -11,12 +11,15 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete
 
 from ..db import db
-from ..models import DevicePairing, Job, JobStatus, PasswordReset
+from ..models import DevicePairing, Job, JobStatus, PasswordReset, WhatnotEvent
 from . import ratelimit
 
 DONE_JOBS = timedelta(days=7)
 FAILED_JOBS = timedelta(days=90)  # long enough to read why a parse kept failing
 DEAD_TOKENS = timedelta(days=30)  # expired pairing codes and reset links (hashes only)
+# Webhook deliveries already acted on. Whatnot retries one for about 2.5 days, and the
+# unique webhook id has to outlive that; a month also leaves time to read what happened.
+WHATNOT_EVENTS = timedelta(days=30)
 
 
 def sweep() -> dict[str, int]:
@@ -34,6 +37,11 @@ def sweep() -> dict[str, int]:
         ).rowcount,
         "password_resets": db.session.execute(
             delete(PasswordReset).where(PasswordReset.expires_at < now - DEAD_TOKENS)
+        ).rowcount,
+        "whatnot_events": db.session.execute(
+            delete(WhatnotEvent).where(
+                WhatnotEvent.status != "queued", WhatnotEvent.received_at < now - WHATNOT_EVENTS
+            )
         ).rowcount,
         "rate_limits": ratelimit.prune(),
     }

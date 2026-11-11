@@ -206,7 +206,7 @@ def test_attention_details_and_live_chat_pace(app, world):
     assert (
         len(pace) == 30 and sum(pace) == 6 and pace[-1] == 6
     )  # all six lines landed in the last minute
-    assert c == {"openReviews": 0, "toFulfil": 1, "live": True}
+    assert c == {"openReviews": 0, "toFulfil": 1, "live": True, "whatnotProblem": False}
 
 
 def test_low_stock_carries_threshold_and_sold(app, world):

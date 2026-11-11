@@ -18,6 +18,7 @@ from ..models import (
     SaleStatus,
     Show,
     Sku,
+    WhatnotConnection,
 )
 
 STANDING = (SaleStatus.detected, SaleStatus.reserved, SaleStatus.paid, SaleStatus.fulfilled)
@@ -383,7 +384,23 @@ def counts(org_id: int) -> dict:
         .select_from(Show)
         .where(Show.organization_id == org_id, Show.updated_at >= cutoff)
     )
-    return {"openReviews": reviews or 0, "toFulfil": to_fulfil or 0, "live": bool(live)}
+    # The Whatnot connection stopped working (a rejected token, a missing permission):
+    # every page says so, because sales and shipments then stop arriving on their own.
+    whatnot_problem = db.session.scalar(
+        select(func.count())
+        .select_from(WhatnotConnection)
+        .where(
+            WhatnotConnection.organization_id == org_id,
+            WhatnotConnection.disconnected_at.is_(None),
+            WhatnotConnection.problem.in_(("token_rejected", "no_permission")),
+        )
+    )
+    return {
+        "openReviews": reviews or 0,
+        "toFulfil": to_fulfil or 0,
+        "live": bool(live),
+        "whatnotProblem": bool(whatnot_problem),
+    }
 
 
 def review_reasons(org_id: int) -> dict[str, int]:

@@ -79,3 +79,22 @@ export const summaryWords = (summary: Record<string, number>, label: (code: stri
 
 /** Where a review item came from. */
 export const reviewSourceLabel = (s: string): string => (s === 'ai' ? 'AI suggestion' : 'from the chat')
+
+/** Why the Whatnot connection is not working, in the shop's words. */
+const WHATNOT_PROBLEM: Record<string, string> = {
+  token_rejected: 'Whatnot no longer accepts the access token. The account owner needs to make a new one in Seller Hub.',
+  no_permission: 'The access token is missing a permission. The account owner can add it to the token in Seller Hub.',
+  unreachable: 'Whatnot could not be reached the last time we tried.',
+}
+export const whatnotProblemLabel = (p: string): string => WHATNOT_PROBLEM[p] ?? 'Something is wrong with the connection.'
+
+/** What each kind of reading from Whatnot is called. */
+const WHATNOT_SYNC: Record<string, string> = {
+  shows: 'Shows',
+  orders: 'Orders and payments',
+  shipments: 'Shipments and tracking',
+  catalog: 'Products and stock',
+  analytics: 'Show results',
+  ledger: 'Fees and payouts',
+}
+export const whatnotSyncLabel = (r: string): string => WHATNOT_SYNC[r] ?? 'Other'
