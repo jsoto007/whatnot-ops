@@ -52,12 +52,20 @@ test('phone: top bar, drawer navigation, and no page wider than the screen', asy
   await page.getByRole('link', { name: 'Inventory' }).click()
   await expect(page).toHaveURL(/\/app\/inventory$/)
   await expect(page.locator('.sidebar')).not.toHaveClass(/open/)
-  for (const path of ['/app', '/app/shows', '/app/orders', '/app/inventory', '/app/products', '/app/review', '/app/reports', '/app/team', '/app/settings']) {
+  for (const path of ['/app', '/app/shows', '/app/orders', '/app/inventory', '/app/products', '/app/review', '/app/reports', '/app/team', '/app/settings', '/terms', '/privacy']) {
     await page.goto(path)
     const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, viewport: window.innerWidth }))
     expect(widths.page, path).toBeLessThanOrEqual(widths.viewport)
   }
   await page.goto('/app')
+  // Signed in, the footer closes the page too, below everything else.
+  const footer = page.getByRole('contentinfo')
+  await expect(footer.getByRole('link', { name: 'User agreement' })).toBeVisible()
+  const below = await page.evaluate(() => {
+    const bottom = (sel: string) => document.querySelector(sel)!.getBoundingClientRect().bottom
+    return bottom('footer.site-footer') >= bottom('main.content')
+  })
+  expect(below).toBe(true)
   await page.getByTestId('open-menu').click()
   await page.getByTestId('scrim').click()
   await expect(page.locator('.sidebar')).not.toHaveClass(/open/)

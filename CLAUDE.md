@@ -220,6 +220,14 @@ commands.
   functions as a human action, actor `ai`, audited. Never call a provider
   outside `supervisor.ask()` (it logs `ai_calls`). Tests use `FakeProvider`;
   no test may reach a real vendor.
+- **Footer and legal pages** (`web/src/components/Footer.tsx`, `pages/Legal.tsx`:
+  `/terms` and `/privacy`, open to everyone). The footer closes every page and is
+  never printed. It says Sales Ops is *built to follow* Whatnot's policies and may
+  change with them; never word that as a guarantee or as Whatnot's endorsement.
+  Privacy lists what is really stored and who really receives it: change it, and
+  `LEGAL_UPDATED` in `lib/legal.ts`, in the same PR that starts storing a new kind of
+  data or sends data to a new service. The wording is a plain-language draft, not
+  reviewed by a lawyer.
 - Commits only when asked, on a feature branch; stage by path.
 
 ## Commands
