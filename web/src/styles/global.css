@@ -377,7 +377,9 @@ tr.short td { background: rgba(255, 59, 48, 0.06); }
 @media print {
   body { background: #fff; }
   .sidebar, .topbar, .toolbar, .btn, .app-header, .site-footer, .legal-back, .tabs, .no-print, .page-head .head-actions { display: none !important; }
-  .app { grid-template-columns: 1fr; padding: 0; } .content { padding: 0; max-width: none; }
+  /* Both selectors: `.app.collapsed` (the default) outranks `.app`, and would keep the 76px sidebar
+     column on landscape paper and the phone padding on portrait. */
+  .app, .app.collapsed { grid-template-columns: 1fr; padding: 0; } .content { padding: 0; max-width: none; }
   .card, .page-head, .table { background: #fff; box-shadow: none; border-color: #ccc; -webkit-backdrop-filter: none; backdrop-filter: none; }
   /* A printed page is narrower than the phone breakpoint: keep tables tables, not scrollers. */
   .table { display: table; white-space: normal; overflow: visible; }
