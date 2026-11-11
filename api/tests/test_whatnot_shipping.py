@@ -248,6 +248,7 @@ def test_while_the_show_is_live_no_label_is_made(app, shop, sign_in, client):
     assert shop["fake"].labels_requested == []
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_a_buyer_split_over_two_open_packages_is_called_out_and_gets_no_label(
     app, shop, sign_in, client
 ):
@@ -320,6 +321,7 @@ def labels(client, shop, h, **body):
     )
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_labels_are_asked_for_once_per_package_and_arrive_later(app, client, shop, sign_in):
     app.config["WHATNOT_WEBHOOK_SECRET"] = SECRET
     s = parcel(
@@ -355,6 +357,7 @@ def test_labels_are_asked_for_once_per_package_and_arrive_later(app, client, sho
     assert v["buyers"][0]["packages"][0]["tracking"] == "9400111899223344556677"
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_a_refused_label_says_why_and_the_others_still_go(app, client, shop, sign_in):
     a = parcel(
         shop,
@@ -385,6 +388,7 @@ def test_a_refused_label_says_why_and_the_others_still_go(app, client, shop, sig
     assert labels(client, shop, h).get_json()["requested"] == 2
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_a_later_win_after_the_label_is_a_second_package_with_its_own_label(
     app, client, shop, sign_in
 ):
@@ -512,6 +516,7 @@ def test_when_the_carrier_has_every_package_a_person_can_mark_the_orders_shipped
     assert sa["id"]
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_in_auto_mode_carrier_news_marks_the_order_shipped_on_its_own(app, client, shop):
     app.config["WHATNOT_WEBHOOK_SECRET"] = SECRET
     with app.app_context():
@@ -571,6 +576,7 @@ def test_an_order_with_an_item_still_in_review_is_not_marked_shipped(app, shop):
         assert db.session.scalar(select(Order)).status.value == "open"
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_a_replaced_shipment_is_followed_to_the_one_that_has_its_items(app, client, shop):
     app.config["WHATNOT_WEBHOOK_SECRET"] = SECRET
     a = order(shop, "lani808", "Red bundle")
@@ -642,6 +648,7 @@ def test_another_shop_sees_none_of_it(app, client, shop, sign_in, pdfs):
     )
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_refresh_reads_again_and_a_show_ending_reads_its_shipments(app, client, shop, sign_in):
     app.config["WHATNOT_WEBHOOK_SECRET"] = SECRET
     a = order(shop, "lani808", "Red bundle")
@@ -682,6 +689,7 @@ def ready(app, shop, buyer="lani808"):
     return s
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_two_people_pressing_make_labels_together_ask_whatnot_once(app, shop):
     """A label cannot be undone. Both presses used to pass the "already asked?" check and
     each sent its own request."""
@@ -731,6 +739,7 @@ def test_a_label_job_run_again_sends_nothing_a_second_time(app, shop):
     assert sorted(shop["fake"].labels_requested) == sorted([a["id"], b["id"]])
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_a_request_that_may_or_may_not_have_reached_whatnot_is_not_sent_again(
     app, client, shop, sign_in
 ):
@@ -781,6 +790,7 @@ def test_a_pickup_is_never_offered_or_sent_for_a_label(app, client, shop, sign_i
     assert shop["fake"].labels_requested == []
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_no_label_until_the_shows_final_orders_and_parcels_were_read(app, client, shop, sign_in):
     """The show has ended, but a last win may not be here yet: it could be sitting in a
     second open package. Nobody is "ready" on old data."""
@@ -806,6 +816,7 @@ def test_no_label_until_the_shows_final_orders_and_parcels_were_read(app, client
     assert (r["buyers"][0]["state"], r["labelsToMake"], r["show"]["complete"]) == ("ready", 1, True)
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_the_count_on_the_button_is_exactly_what_is_sent(app, client, shop, sign_in):
     ready(app, shop, "one")
     ready(app, shop, "two")

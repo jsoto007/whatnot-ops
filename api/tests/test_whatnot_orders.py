@@ -569,6 +569,7 @@ def set_mode(app, shop, mode):
         db.session.commit()
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_in_shadow_mode_an_order_webhook_only_updates_the_copy(app, client, shop):
     app.config["WHATNOT_WEBHOOK_SECRET"] = SECRET
     read(app, shop)
@@ -584,6 +585,7 @@ def test_in_shadow_mode_an_order_webhook_only_updates_the_copy(app, client, shop
     assert snapshot(app) == before
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_the_webhook_body_is_never_trusted_the_order_is_read_again(app, client, shop):
     app.config["WHATNOT_WEBHOOK_SECRET"] = SECRET
     read(app, shop)
@@ -600,6 +602,7 @@ def test_the_webhook_body_is_never_trusted_the_order_is_read_again(app, client, 
         assert (row.status, row.buyer_username) == ("pending_fulfillment", "lani808")
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_in_auto_mode_orders_become_sales_and_payment_changes_as_they_arrive(app, client, shop):
     app.config["WHATNOT_WEBHOOK_SECRET"] = SECRET
     set_mode(app, shop, "auto")
@@ -629,6 +632,7 @@ def test_in_auto_mode_orders_become_sales_and_payment_changes_as_they_arrive(app
         )
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_a_show_ending_reads_every_order_and_in_auto_mode_calls_out_a_sale_with_none(
     app, client, shop
 ):
@@ -645,6 +649,7 @@ def test_a_show_ending_reads_every_order_and_in_auto_mode_calls_out_a_sale_with_
         assert ws.orders_synced_at >= ws.ended_at
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_a_show_nobody_recorded_gets_its_own_show_once_it_has_been_live_a_while(app, client, shop):
     app.config["WHATNOT_WEBHOOK_SECRET"] = SECRET
     set_mode(app, shop, "auto")
@@ -741,6 +746,7 @@ def test_a_failed_read_is_recorded_and_a_rejected_token_flags_the_connection(
 # ---------- the routes ----------
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_the_show_page_compares_refreshes_links_and_applies(app, client, shop, sign_in):
     h = sign_in(shop["org"], role="manager")
     shop["say"](app, [win("lani808", "Red bundle")])

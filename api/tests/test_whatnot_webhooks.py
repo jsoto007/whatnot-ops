@@ -221,6 +221,7 @@ def test_only_the_ids_an_event_names_are_kept(
         assert "label_url" not in stored and "username" not in stored
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_the_job_hands_an_event_to_its_topic_and_ignores_topics_nobody_handles(
     app, client, connected, monkeypatch
 ):
@@ -255,6 +256,7 @@ def test_a_handler_that_fails_is_retried_by_the_queue_and_then_done(
     assert events(app)[0][2] == "done" and len(calls) == 2
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_a_rejected_token_settles_the_event_and_flags_the_connection(
     app, client, connected, monkeypatch
 ):

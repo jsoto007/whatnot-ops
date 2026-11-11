@@ -49,6 +49,21 @@ def clean_tables(app):
         db.session.remove()
 
 
+@pytest.fixture(autouse=True)
+def _jobs_as_in_ci(monkeypatch):
+    """A developer's .env sets JOBS_INLINE=1 (jobs run the moment they are queued); CI and
+    production do not. Every test starts without it, so the suite behaves here as it does
+    in CI: a test that needs a job to have run by the next line asks for `inline_jobs`.
+    Twenty Whatnot tests once passed on a laptop and failed in CI for want of this."""
+    monkeypatch.delenv("JOBS_INLINE", raising=False)
+
+
+@pytest.fixture
+def inline_jobs(monkeypatch, _jobs_as_in_ci):
+    """Jobs run synchronously at enqueue time, as in local development and the browser tests."""
+    monkeypatch.setenv("JOBS_INLINE", "1")
+
+
 @pytest.fixture
 def client(app):
     return app.test_client()

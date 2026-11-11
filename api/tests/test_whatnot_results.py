@@ -392,6 +392,7 @@ def test_a_report_is_asked_for_once_while_one_is_being_built(app, shop):
         assert results.ledger_due(shop["org"]) is True  # one is being built: keep looking
 
 
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
 def test_the_ledger_pages_and_who_may_see_them(app, client, shop, sign_in):
     read(app, shop, orders=False)
     show = shop["wshow"]
