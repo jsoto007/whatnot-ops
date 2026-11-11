@@ -128,6 +128,24 @@ def register_cli(app: Flask) -> None:
         db.session.commit()
         click.echo(f"owner {email} created for '{organization.name}'")
 
+    @app.cli.command("whatnot-probe")
+    def whatnot_probe():
+        """Look at the live shop through Whatnot's Seller API: reads only, a few dozen
+        slow calls, and a report of what shape the data has (no names, amounts, ids, links
+        or the token). Needs WHATNOT_API_TOKEN; touches no database row."""
+        from ..services.whatnot import NotConfigured, WhatnotClient, probe
+        from ..services.whatnot.client import http_transport
+
+        token = app.config.get("WHATNOT_API_TOKEN") or ""
+        if not token:
+            raise click.ClickException(str(NotConfigured().words))
+        seen: dict = {}
+        transport = app.config.get("WHATNOT_TRANSPORT") or http_transport()
+        client = WhatnotClient(token, transport=probe.read_only(transport, seen=seen))
+        click.echo("Whatnot Seller API probe: read-only, redacted. This is the LIVE shop.")
+        for line in probe.run(client, seen):
+            click.echo(line)
+
     @app.cli.command("ensure-support")
     def ensure_support():
         """Create or repair the IT_SUPPORT account (run at every start, before gunicorn)."""
