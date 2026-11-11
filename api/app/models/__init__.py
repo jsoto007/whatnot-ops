@@ -15,7 +15,14 @@ from .sales import (
     SaleStatus,
 )
 from .shipments import WhatnotLot, WhatnotShipment
-from .whatnot import WhatnotConnection, WhatnotEvent, WhatnotSyncState
+from .whatnot import (
+    WhatnotConnection,
+    WhatnotEvent,
+    WhatnotOrder,
+    WhatnotOrderItem,
+    WhatnotShow,
+    WhatnotSyncState,
+)
 
 __all__ = [
     "AiCall",
@@ -48,6 +55,9 @@ __all__ = [
     "WhatnotConnection",
     "WhatnotEvent",
     "WhatnotLot",
+    "WhatnotOrder",
+    "WhatnotOrderItem",
     "WhatnotShipment",
+    "WhatnotShow",
     "WhatnotSyncState",
 ]

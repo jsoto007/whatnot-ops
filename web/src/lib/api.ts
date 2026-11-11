@@ -123,6 +123,10 @@ export interface Show {
   updatedAt: string
   sourceUrl: string | null
   messageCount: number
+  /** The show's title on Whatnot, once the recording is matched to it. */
+  title?: string | null
+  /** false: no laptop recorded it; the app made the show from Whatnot's own record. */
+  recorded?: boolean
 }
 export interface ChatMessage {
   id: number
@@ -257,7 +261,8 @@ export interface Sale {
   seq: number | null
   rawText: string | null
   /** "player" when the win was read from Whatnot's video player, "chat" for a chat line. */
-  source: 'chat' | 'player' | null
+  /** Where the win was read from: the chat, Whatnot's video player, or (no win line at all) Whatnot's own order. */
+  source: 'chat' | 'player' | 'whatnot' | null
   /** When the win happened (the winning line's capture time). */
   wonAt: string | null
   /** The decision waiting on this sale in Review, when there is one (orders routes only). */
@@ -405,7 +410,7 @@ export interface ReconcileRow {
   priceCents: number | null
   status: string
   externalId: string | null
-  action: 'mark_paid' | 'cancel' | 'unchanged' | 'unmatched' | 'skip'
+  action: 'mark_paid' | 'cancel' | 'decline' | 'unchanged' | 'unmatched' | 'skip' | 'record' | 'recorded'
   saleId: number | null
   note: string | null
 }
@@ -505,6 +510,8 @@ export interface WhatnotStatus {
   connectedAt: string | null
   lastCheckedAt: string | null
   problem: WhatnotProblem | null
+  /** 'shadow': orders are compared and a person applies them; 'auto': applied as they arrive. */
+  ordersMode: 'shadow' | 'auto'
   webhooks: { configured: boolean; url: string | null; lastEventAt: string | null; waiting?: number }
   sync: { resource: string; lastOkAt: string | null; failing: boolean }[]
 }
@@ -515,4 +522,32 @@ export interface Overview {
   topSkus: TopSku[]
   lowStock: LowStockItem[]
   attention: Attention
+}
+
+/** A show as Whatnot has it. `id` is this app's id for it. */
+export interface WhatnotShowInfo {
+  id: number
+  title: string
+  status: string
+  startsAt: string | null
+  endedAt: string | null
+  url: string | null
+  ordersReadAt: string | null
+}
+/** Whatnot's orders for a show next to the app's sales (GET /api/shows/:id/whatnot). */
+export interface WhatnotCompare {
+  connected: boolean
+  mode?: 'shadow' | 'auto'
+  /** Who matched the recording to the Whatnot show: by time, a person, or made from Whatnot's record. */
+  link?: 'auto' | 'manual' | 'made' | null
+  show?: WhatnotShowInfo | null
+  choices?: WhatnotShowInfo[]
+  /** The show ended and every order was read since: only then is a sale with no order called out. */
+  complete?: boolean
+  info?: { orders: number; giveaways: number; noBuyer: number } | null
+  summary?: Record<string, number>
+  rows?: ReconcileRow[]
+  uncovered?: { saleId: number; buyer: string; item: string; quantity: number; priceCents: number | null; status: string }[]
+  queued?: boolean
+  applied?: Record<string, number>
 }

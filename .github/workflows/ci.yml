@@ -116,6 +116,7 @@ jobs:
       SECRET_KEY: ci
       JOBS_INLINE: "1"
       AI_PROVIDER: fake
+      WHATNOT_API: fake  # an in-memory Whatnot; CI never holds a real token
       # The suite signs up many shops from 127.0.0.1; honoured only outside production.
       RATE_LIMITS: "off"
       DATABASE_URL: postgresql+psycopg://postgres@localhost:5432/whatnot_ops

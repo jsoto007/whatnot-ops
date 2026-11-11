@@ -1,10 +1,13 @@
 """Settings → Whatnot: connect the shop to its Whatnot seller account and see how it is doing."""
 
-from flask import Blueprint, g, jsonify
+from flask import Blueprint, g, jsonify, request
+from sqlalchemy import select
 
+from .. import serializers
 from ..auth import require
 from ..db import db
-from ..services import ratelimit
+from ..models import WhatnotShow
+from ..services import audit, ratelimit
 from ..services.whatnot import WhatnotError, connection
 
 bp = Blueprint("whatnot", __name__)
@@ -56,3 +59,51 @@ def check():
     connection.check(g.u.organization_id)
     db.session.commit()
     return jsonify(connection.status(g.u.organization_id))
+
+
+@bp.patch("/settings")
+@require("whatnot.manage")
+def settings():
+    """ordersMode: "shadow" (compare; a person applies) or "auto" (apply as they arrive)."""
+    conn = connection.active(g.u.organization_id)
+    if conn is None:
+        return jsonify({"error": "Connect the shop to Whatnot first."}), 409
+    mode = (request.get_json(silent=True) or {}).get("ordersMode")
+    if mode not in ("shadow", "auto"):
+        return jsonify({"error": "choose how Whatnot's orders are used"}), 400
+    if conn.orders_mode != mode:
+        conn.orders_mode = mode
+        audit.record(
+            g.u.organization_id,
+            "whatnot.mode",
+            user=g.u,
+            target_type="organization",
+            target_id=g.u.organization_id,
+            details={"mode": mode},
+        )
+    db.session.commit()
+    return jsonify(connection.status(g.u.organization_id))
+
+
+@bp.get("/shows")
+@require("shows.view")
+def shows():
+    """What is live on Whatnot now and what is scheduled next."""
+    if connection.active(g.u.organization_id) is None:
+        return jsonify({"connected": False, "live": [], "upcoming": []})
+    rows = db.session.scalars(
+        select(WhatnotShow)
+        .where(
+            WhatnotShow.organization_id == g.u.organization_id,
+            WhatnotShow.status.in_(("live", "stopped", "scheduled")),
+        )
+        .order_by(WhatnotShow.scheduled_start_at.asc().nulls_last(), WhatnotShow.id)
+        .limit(50)
+    ).all()
+    return jsonify(
+        {
+            "connected": True,
+            "live": [serializers.whatnot_show(w) for w in rows if w.status != "scheduled"],
+            "upcoming": [serializers.whatnot_show(w) for w in rows if w.status == "scheduled"],
+        }
+    )

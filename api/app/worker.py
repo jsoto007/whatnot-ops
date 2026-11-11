@@ -120,6 +120,10 @@ def _housekeeping() -> None:
         pruned = {k: n for k, n in retention.sweep().items() if n}
         if pruned:
             log.info("pruned %s", pruned)
+        # The timer's read of Whatnot for each connected shop (one queued job per shop).
+        from .services.whatnot import sync as whatnot_sync
+
+        whatnot_sync.schedule_all()
     except Exception:  # noqa: BLE001 - housekeeping must never stop the queue
         _forget_connection()
         log.exception("housekeeping failed; next try in %ss", SWEEP_SECONDS)

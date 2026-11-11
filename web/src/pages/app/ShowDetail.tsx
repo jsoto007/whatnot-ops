@@ -8,6 +8,7 @@ import { lotLabel, saleStatusLabel } from '../../lib/labels'
 import { useDebounced } from '../../lib/useDebounced'
 import { Kpis, Tally, TopLists } from './Dashboard'
 import { Reconcile } from './Reconcile'
+import { WhatnotOrders } from './WhatnotOrders'
 
 const KIND_LABEL: Record<string, string> = { sale: 'Sale', claim: 'Claim', gift: 'Gift', cancel: 'Cancel', payment_failed: 'Payment failed', no_pick: 'No winner', listing: 'Listing', chatter: 'Chatter' }
 const TABS = ['sales', 'walkaways', 'payments', 'events', 'messages', 'analytics'] as const
@@ -50,6 +51,12 @@ export function ShowDetail() {
           <h2>
             {s ? fmtLongDate(s.date) : 'Show'} {t?.live && <span className="live-pill">Live</span>}
           </h2>
+          {s?.title && (
+            <div className="sub" data-testid="show-title">
+              {s.title}
+              {s.recorded === false ? ' · not recorded on a laptop; its sales come from Whatnot’s orders' : ''}
+            </div>
+          )}
           {s && (
             <div className="sub">
               Started {started!.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · {t?.live ? `${mins} min so far` : `${mins} min of chat`} · {s.messageCount} messages
@@ -99,7 +106,12 @@ export function ShowDetail() {
       </div>
       {tab === 'sales' && <SalesTab sales={list} loading={sales.isPending} />}
       {tab === 'walkaways' && <WalkawaysTab rows={walkaways} loading={dash.isPending} canReview={can('review.act')} showId={id} onTab={setTab} />}
-      {tab === 'payments' && (can('orders.reconcile') ? <Reconcile showId={id} /> : <p className="card muted">Only owners and managers can reconcile payments.</p>)}
+      {tab === 'payments' && (
+        <>
+          {can('orders.view') && <WhatnotOrders showId={id} canApply={can('orders.reconcile')} />}
+          {can('orders.reconcile') ? <Reconcile showId={id} /> : <p className="card muted">Only owners and managers can reconcile payments.</p>}
+        </>
+      )}
       {tab === 'events' && <EventsTab showId={id} />}
       {tab === 'messages' && <MessagesTab showId={id} />}
       {tab === 'analytics' && dash.data && (

@@ -219,6 +219,124 @@ def create_sale(show: Show, ev: ParsedEvent, *, sku: Sku | None) -> Sale:
     return sale
 
 
+WHATNOT_ACTOR = Actor("whatnot", None, "Whatnot")
+ORDER_PAID_REASON = "paid on Whatnot"
+
+
+def _titles_match(a: str | None, b: str | None) -> bool:
+    """Two listing titles for the same lot: equal once case, spacing and punctuation are
+    set aside. An empty title matches nothing."""
+    ka, kb = catalog.norm_alias(a or ""), catalog.norm_alias(b or "")
+    return bool(ka) and ka == kb
+
+
+def _recordings_of_the_same_show(show: Show) -> list[int]:
+    """This show and every other recording of the same Whatnot show."""
+    if show.whatnot_show_id is None:
+        return [show.id]
+    return list(
+        db.session.scalars(
+            select(Show.id).where(
+                Show.organization_id == show.organization_id,
+                Show.whatnot_show_id == show.whatnot_show_id,
+            )
+        )
+    ) or [show.id]
+
+
+def create_sale_from_order(
+    show: Show,
+    *,
+    buyer: str,
+    item_text: str,
+    quantity: int,
+    price_cents: int | None,
+    external_order_id: str,
+    ordered_at: datetime | None,
+    settled: bool,
+) -> Sale:
+    """A sale the app learnt of from Whatnot's own order record, not from a chat line or
+    the video player (nobody was recording, or the win was missed). Whatnot vouches that
+    it was sold: the same path as a win (SKU match, reserve, paid at the win), or an
+    unmatched_item review when the listing does not name a product the shop knows.
+
+    The caller holds the buyer's lock (`_lock_buyer`) and has checked that no sale stands
+    for this order already. `settled` says Whatnot has taken the payment; otherwise the
+    sale is paid "at the win" like any other and a later decline closes it."""
+    sku = match_sku(show.organization_id, item_text) if item_text else None
+    sale = Sale(
+        organization_id=show.organization_id,
+        show_id=show.id,
+        event_id=None,
+        buyer_username=buyer,
+        sku=sku,
+        item_text=item_text[:240],
+        quantity=quantity,
+        price_cents=price_cents if price_cents is not None else (sku.price_cents if sku else None),
+        auction_type=rules.auction_type(item_text or ""),
+        status=SaleStatus.detected,
+        external_order_id=external_order_id,
+        ordered_at=ordered_at,
+    )
+    db.session.add(sale)
+    db.session.flush()
+    from . import orders
+
+    orders.attach(sale)
+    if sku is None:
+        sale.flagged = True
+        sale.status_reason = "item not recognised"
+        open_review(
+            show.organization_id,
+            "unmatched_item",
+            f'{buyer} bought "{item_text or "(no item named)"}" — which product is that?',
+            show_id=show.id,
+            sale_id=sale.id,
+        )
+        return sale
+    _reserve(sale)
+    if settled:
+        set_sale_status(sale, SaleStatus.paid, reason=ORDER_PAID_REASON, actor=WHATNOT_ACTOR)
+        sale.paid_at = sale.paid_at or ordered_at or datetime.now(UTC)
+    else:
+        autopay(sale, at=ordered_at)
+    return sale
+
+
+def claim_order_sale(show: Show, ev: ParsedEvent) -> Sale | None:
+    """The win a chat or video-player line is about, when Whatnot's order for it already
+    made the sale (create_sale_from_order): the same buyer, the same listing title and the
+    same price, in any recording of this Whatnot show, with no line tied to it yet. The
+    line becomes that sale's evidence instead of a second sale. The oldest such sale goes
+    first, so three wins of one listing claim three sales. Caller holds the buyer's lock."""
+    if not ev.buyer_username:
+        return None
+    candidates = db.session.scalars(
+        select(Sale)
+        .where(
+            Sale.organization_id == show.organization_id,
+            Sale.show_id.in_(_recordings_of_the_same_show(show)),
+            Sale.event_id.is_(None),
+            Sale.external_order_id.is_not(None),
+            func.lower(Sale.buyer_username) == ev.buyer_username.lower(),
+        )
+        .order_by(Sale.id)
+        .with_for_update()
+    ).all()
+    for sale in candidates:
+        if not _titles_match(sale.item_text, ev.item_text):
+            continue
+        if None not in (sale.price_cents, ev.price_cents) and sale.price_cents != ev.price_cents:
+            continue
+        if sale.quantity != ev.quantity:
+            continue
+        sale.event_id = ev.id
+        if sale.price_cents is None:
+            sale.price_cents = ev.price_cents
+        return sale
+    return None
+
+
 def close_sale(show: Show, ev: ParsedEvent, new_status: SaleStatus) -> Sale | None:
     """A cancel / payment-failed line: close the buyer's matching sale (release or restock)."""
     q = select(Sale).where(Sale.show_id == show.id, Sale.status.in_(CLOSABLE))
@@ -760,6 +878,8 @@ def process_show(
                 )
                 stats.reviews += 1
                 continue
+            if claim_order_sale(show, ev) is not None:
+                continue  # Whatnot's order already made this sale; the line is its evidence
             sku = match_sku(show.organization_id, ev.item_text) if ev.item_text else None
             sale = create_sale(show, ev, sku=sku)
             stats.sales += 1

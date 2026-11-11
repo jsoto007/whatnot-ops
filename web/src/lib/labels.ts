@@ -98,3 +98,25 @@ const WHATNOT_SYNC: Record<string, string> = {
   ledger: 'Fees and payouts',
 }
 export const whatnotSyncLabel = (r: string): string => WHATNOT_SYNC[r] ?? 'Other'
+
+/** A show's state on Whatnot. */
+const WHATNOT_SHOW_STATUS: Record<string, string> = { scheduled: 'Scheduled', live: 'Live', stopped: 'Paused', ended: 'Ended', cancelled: 'Cancelled' }
+export const whatnotShowStatusLabel = (s: string): string => WHATNOT_SHOW_STATUS[s] ?? 'Other'
+
+/** What Whatnot says about an order's payment. */
+const WHATNOT_PAYMENT: Record<string, string> = { paid: 'paid', pending: 'payment pending', void: 'cancelled', failed: 'payment failed' }
+export const whatnotPaymentLabel = (s: string): string => WHATNOT_PAYMENT[s] ?? 'other'
+
+/** What applying Whatnot's order does to the app's sale. */
+const WHATNOT_ORDER_ACTION: Record<string, string> = {
+  unchanged: 'nothing to change',
+  mark_paid: 'mark the sale paid',
+  cancel: 'cancel the sale',
+  decline: 'mark the payment declined',
+  record: 'record the sale',
+  recorded: 'sale recorded',
+  unmatched: 'needs a person',
+  skip: 'left alone',
+  uncovered: 'with no order on Whatnot',
+}
+export const whatnotOrderActionLabel = (a: string): string => WHATNOT_ORDER_ACTION[a] ?? 'left alone'

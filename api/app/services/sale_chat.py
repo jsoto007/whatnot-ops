@@ -36,7 +36,9 @@ MAX_LINES = 20  # per sale on the show page and in the workbook: the ones neares
 
 
 def won_at(sale: Sale) -> datetime | None:
-    return sale.event.message.captured_at if sale.event else None
+    """When the lot was won: the win line's own time, else (a sale the app learnt of from
+    Whatnot's order) when Whatnot says it was ordered."""
+    return sale.event.message.captured_at if sale.event else sale.ordered_at
 
 
 def lot_of(sale: Sale) -> int | None:
@@ -171,7 +173,8 @@ def _fill(show: Show, sales: list[Sale], out: dict[int, list[dict]]) -> None:
     for w in wins.values():
         w.sort(key=lambda x: (x[0], x[1].id))
     lots = {s.id: lot_of(s) for s in sales}
-    own = {s.event.message_id for s in sales}
+    # A sale the app learnt of from Whatnot's order has no win line of its own.
+    own = {s.event.message_id for s in sales if s.event is not None}
     # No product and no word from the buyer since the win: their next line may be its pick.
     waiting = {s.id for s in sales if s.sku_id is None}
     since = min(won_at(s) for s in sales) - BEFORE

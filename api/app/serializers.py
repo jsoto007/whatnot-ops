@@ -78,6 +78,10 @@ def show(s: Show, message_count: int) -> dict:
         "updatedAt": s.updated_at.isoformat(),
         "sourceUrl": s.source_url,
         "messageCount": message_count,
+        # The show's title on Whatnot, once the recording is matched to it; and whether a
+        # laptop recorded it at all (False: the app made the show from Whatnot's own record).
+        "title": s.whatnot_show.title if s.whatnot_show is not None else None,
+        "recorded": s.whatnot_link != "made",
     }
 
 
@@ -166,7 +170,8 @@ def event(e) -> dict:
 
 def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
     """`review` is the open review item waiting on this sale, when the caller looked it up."""
-    won = s.event.message.captured_at if s.event else None
+    # A sale the app learnt of from Whatnot's order has no chat line: its order time.
+    won = s.event.message.captured_at if s.event else s.ordered_at
     out = {
         "id": s.id,
         "showId": s.show_id,
@@ -195,7 +200,9 @@ def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
         "paidAt": s.paid_at.isoformat() if s.paid_at else None,
         "seq": s.event.message.seq if s.event else None,
         "rawText": s.event.message.raw_text if s.event else None,
-        "source": s.event.message.source if s.event else None,
+        "source": s.event.message.source
+        if s.event
+        else ("whatnot" if s.external_order_id and s.ordered_at else None),
         "wonAt": won.isoformat() if won else None,
         "review": {"id": review.id, "reason": review.reason} if review is not None else None,
         "createdAt": s.created_at.isoformat(),
@@ -277,4 +284,18 @@ def reconcile_row(r) -> dict:
         "action": r.action,
         "saleId": r.sale_id,
         "note": r.note,
+    }
+
+
+def whatnot_show(ws) -> dict:
+    """A show as Whatnot has it. `id` is the app's row id (never Whatnot's own)."""
+    start = ws.started_at or ws.scheduled_start_at
+    return {
+        "id": ws.id,
+        "title": ws.title,
+        "status": ws.status,
+        "startsAt": start.isoformat() if start else None,
+        "endedAt": ws.ended_at.isoformat() if ws.ended_at else None,
+        "url": ws.url,
+        "ordersReadAt": ws.orders_synced_at.isoformat() if ws.orders_synced_at else None,
     }

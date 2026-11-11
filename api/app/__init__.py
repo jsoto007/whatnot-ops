@@ -162,7 +162,11 @@ def create_app(config: Config | None = None) -> Flask:
 
     from . import models  # noqa: F401 - register tables with SQLAlchemy/Alembic
     from .services import pipeline, supervisor  # noqa: F401 - registers job handlers
-    from .services.whatnot import webhooks  # noqa: F401 - registers the whatnot_event job
+    from .services.whatnot import (  # noqa: F401 - register their jobs and webhook topics
+        orders as _whatnot_orders,
+    )
+    from .services.whatnot import sync as _whatnot_sync  # noqa: F401
+    from .services.whatnot import webhooks  # noqa: F401
 
     if config.WHATNOT_FAKE:
         # Local work and the browser tests: an in-memory Whatnot instead of the live shop.
@@ -170,6 +174,9 @@ def create_app(config: Config | None = None) -> Flask:
 
         app.extensions["whatnot_fake"] = shop = fake.FakeWhatnot()
         app.config.update(WHATNOT_TRANSPORT=shop.transport, WHATNOT_API_TOKEN=fake.TOKEN)
+        from .routes.whatnot_fake import bp as whatnot_fake_bp
+
+        app.register_blueprint(whatnot_fake_bp, url_prefix="/api/whatnot/fake")
 
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(ingest_bp, url_prefix="/api")

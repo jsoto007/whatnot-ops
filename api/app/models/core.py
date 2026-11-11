@@ -107,6 +107,14 @@ class Show(db.Model):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     show_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     source_url: Mapped[str | None] = mapped_column(String(512))
+    # The Whatnot show this is a recording of (models/whatnot.py), once known. Several
+    # recordings can be of one show (two laptops, or recording restarted). `whatnot_link`
+    # says who decided: "auto" (matched by time) may be re-decided, "manual" is a person's.
+    whatnot_show_id: Mapped[int | None] = mapped_column(
+        ForeignKey("whatnot_shows.id", ondelete="SET NULL", name="fk_shows_whatnot_show_id"),
+        index=True,
+    )
+    whatnot_link: Mapped[str | None] = mapped_column(String(8))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
@@ -116,6 +124,7 @@ class Show(db.Model):
 
     organization: Mapped[Organization] = relationship(back_populates="shows")
     messages: Mapped[list["ChatMessage"]] = relationship(back_populates="show")
+    whatnot_show: Mapped["WhatnotShow | None"] = relationship()  # noqa: F821 (models/whatnot.py)
 
 
 class ChatMessage(db.Model):

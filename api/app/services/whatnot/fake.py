@@ -77,7 +77,9 @@ class FakeWhatnot:
         return str(next(self._ids))
 
     def tick(self, seconds: int = 1) -> datetime:
-        self._clock += timedelta(seconds=seconds)
+        """The fake's clock: never behind the real one, and it only moves forward, so
+        whatever changes later also carries a later `updated_at`."""
+        self._clock = max(self._clock, datetime.now(UTC)) + timedelta(seconds=seconds)
         return self._clock
 
     def fail_next(self, status: int, problem: str = "", *, retry_after: str | None = None, **extra):

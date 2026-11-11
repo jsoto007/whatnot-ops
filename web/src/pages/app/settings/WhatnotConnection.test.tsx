@@ -11,6 +11,7 @@ const base: WhatnotStatus = {
   connectedAt: null,
   lastCheckedAt: null,
   problem: null,
+  ordersMode: 'shadow',
   webhooks: { configured: false, url: null, lastEventAt: null },
   sync: [],
 }
@@ -35,7 +36,7 @@ function open(status: WhatnotStatus, manage: boolean, after?: WhatnotStatus) {
     vi.fn(async (url: string, init?: RequestInit) => {
       if (url === '/api/auth/csrf') return new Response(JSON.stringify({ token: 't' }))
       calls.push(`${init?.method ?? 'GET'} ${url}`)
-      const body = init?.method === 'POST' ? (after ?? status) : status
+      const body = init?.method && init.method !== 'GET' ? (after ?? status) : status
       return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }),
   )
@@ -97,4 +98,20 @@ test('the banner shows only when the connection needs a person', () => {
   expect(screen.queryByTestId('whatnot-banner')).toBeNull()
   rerender(<WhatnotBanner show />)
   expect(screen.getByTestId('whatnot-banner').textContent).toContain('stopped working')
+})
+
+test('the owner chooses compare-only or apply-as-they-arrive; a manager only reads it', async () => {
+  const calls = open(connected, true, { ...connected, ordersMode: 'auto' })
+  const group = await screen.findByTestId('whatnot-mode')
+  const [compare, auto] = Array.from(group.querySelectorAll('input')) as HTMLInputElement[]
+  expect(compare!.checked).toBe(true)
+  fireEvent.click(auto!)
+  await waitFor(() => expect((screen.getByTestId('whatnot-mode').querySelectorAll('input')[1] as HTMLInputElement).checked).toBe(true))
+  expect(calls).toContain('PATCH /api/whatnot/settings')
+})
+
+test('a manager cannot change how orders are used', async () => {
+  open(connected, false)
+  const group = await screen.findByTestId('whatnot-mode')
+  expect(Array.from(group.querySelectorAll('input')).every((i) => (i as HTMLInputElement).disabled)).toBe(true)
 })

@@ -152,6 +152,12 @@ def connect(org: Organization, user: User) -> WhatnotConnection:
         details={"username": who["username"], "hostUsernameSet": filled_host},
     )
     db.session.flush()
+    # The first read (shows, any unsettled orders) right away rather than at the next timer.
+    from .. import jobs
+
+    jobs.enqueue(
+        "whatnot_sync", {"org_id": org.id}, org_id=org.id, dedupe_key=f"whatnot_sync:{org.id}"
+    )
     return conn
 
 
@@ -227,6 +233,7 @@ def status(org_id: int) -> dict:
         if connected and conn.last_checked_at
         else None,
         "problem": conn.problem if connected else None,
+        "ordersMode": conn.orders_mode if connected else "shadow",
         "webhooks": {
             "configured": webhooks_configured(),
             "url": webhook_url(),

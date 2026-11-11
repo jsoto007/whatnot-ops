@@ -32,6 +32,18 @@ RECONCILE_ACTION = {
     "unmatched": "no matching sale",
     "skip": "skipped",
     "uncovered": "not in the file",
+    "record": "sale to record",
+    "recorded": "sale recorded",
+}
+
+
+WHATNOT_ORDER_ACTION = {
+    "mark_paid": "marked paid",
+    "cancel": "cancelled",
+    "decline": "payment declined",
+    "recorded": "sales recorded",
+    "unmatched": "for a person to check",
+    "uncovered": "with no order on Whatnot",
 }
 
 
@@ -348,6 +360,29 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "whatnot.disconnected": (
         "Disconnected the shop from Whatnot",
         lambda d, t: f"Disconnected the shop from Whatnot (@{d['username']})",
+    ),
+    "whatnot.orders_applied": (
+        "Applied Whatnot's orders to a show",
+        lambda d, t: (
+            "Applied Whatnot's orders to a show"
+            + (f": {c}" if (c := _counts(d, WHATNOT_ORDER_ACTION)) else ": nothing to change")
+        ),
+    ),
+    "whatnot.show_linked": (
+        "Matched a show to Whatnot",
+        lambda d, t: (
+            f"Matched a show to the Whatnot show {_q(d['title'])}"
+            if d.get("title")
+            else "Unmatched a show from Whatnot"
+        ),
+    ),
+    "whatnot.mode": (
+        "Changed how Whatnot's orders are used",
+        lambda d, t: (
+            "Whatnot's orders are now applied as they arrive"
+            if d["mode"] == "auto"
+            else "Whatnot's orders are now only compared until a person applies them"
+        ),
     ),
     "ai.sale_confirmed": ("Confirmed a sale", None),
     "ai.applied": ("Applied a suggestion", None),

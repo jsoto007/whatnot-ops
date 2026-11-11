@@ -30,6 +30,7 @@ def test_the_owner_connects_the_shop_and_sees_who_it_is(app, client, world, sign
         "connectedAt": None,
         "lastCheckedAt": None,
         "problem": None,
+        "ordersMode": "shadow",
         "webhooks": {"configured": False, "url": None, "lastEventAt": None},
         "sync": [],
     }

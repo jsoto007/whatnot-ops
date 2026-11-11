@@ -18,9 +18,14 @@ export function WhatnotConnection({ manage }: { manage: boolean }) {
       void qc.invalidateQueries({ queryKey: ['nav-counts'] })
     },
   })
+  const mode = useMutation({
+    mutationFn: (ordersMode: 'shadow' | 'auto') => api<WhatnotStatus>('PATCH', '/api/whatnot/settings', { ordersMode }),
+    onSuccess: (s) => qc.setQueryData(['whatnot'], s),
+  })
   const s = q.data
   if (!s) return null
-  const error = act.error instanceof ApiError ? act.error.message : act.error ? 'That did not work. Try again.' : null
+  const failed = act.error ?? mode.error
+  const error = failed instanceof ApiError ? failed.message : failed ? 'That did not work. Try again.' : null
   const url = s.webhooks.url
 
   return (
@@ -77,6 +82,26 @@ export function WhatnotConnection({ manage }: { manage: boolean }) {
               </button>
             )}
           </div>
+
+          <h3>Orders</h3>
+          <p className="muted small">Whatnot's orders say what was sold, to whom, and whether it was paid.</p>
+          <div className="radio-list" role="radiogroup" aria-label="How Whatnot's orders are used" data-testid="whatnot-mode">
+            {(
+              [
+                ['shadow', 'Compare only', "Each show's Payments tab shows what Whatnot's orders would change. A person presses Apply."],
+                ['auto', 'Apply as they arrive', 'A paid order the app missed becomes a sale, a failed or cancelled one closes its sale and returns the stock.'],
+              ] as const
+            ).map(([value, label, hint]) => (
+              <label key={value} className="radio-row">
+                <input type="radio" name="whatnot-mode" value={value} checked={s.ordersMode === value} disabled={!manage || mode.isPending} onChange={() => mode.mutate(value)} />
+                <span>
+                  <b>{label}</b>
+                  <span className="muted small"> {hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {!manage && <p className="muted small">The shop's owner can change this.</p>}
 
           <h3>Live updates</h3>
           {!s.webhooks.configured ? (
