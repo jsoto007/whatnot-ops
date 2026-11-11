@@ -228,6 +228,16 @@ commands.
   `LEGAL_UPDATED` in `lib/legal.ts`, in the same PR that starts storing a new kind of
   data or sends data to a new service. The wording is a plain-language draft, not
   reviewed by a lawyer.
+- **Licence.** Proprietary (`LICENSE.md`): the shop owns its data, SotoDev owns
+  the software. Its promises are product rules: no client data in the repo
+  (fixtures stay synthetic; `claude-reports/` is gitignored), no Client Data to
+  an AI provider or tool not listed in §7.2/§7.4, and a new service that receives
+  Client Data is a subprocessor (update §7.4, keep "Who else handles it" on the
+  Privacy page saying the same, and tell Javier). After changing a runtime
+  dependency of `web/` or `extension/`, run `make licenses` (`make lint` and CI
+  fail while `THIRD_PARTY_LICENSES.txt` is out of date) and update
+  `NOTICE.md`; keep the copyright banners in `web/vite.config.ts` and
+  `extension/build.mjs`.
 - Commits only when asked, on a feature branch; stage by path.
 
 ## Commands

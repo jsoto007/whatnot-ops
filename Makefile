@@ -3,7 +3,7 @@ SHELL := /bin/bash
 PY := .venv/bin
 E2E_PORT ?= 5055
 
-.PHONY: install db-create db-url api web worker check test lint e2e build-web migrate ext-e2e smoke seed-demo
+.PHONY: install db-create db-url api web worker check test lint e2e build-web migrate ext-e2e smoke seed-demo licenses
 
 install:
 	cd api && python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt
@@ -39,6 +39,7 @@ lint:
 	cd api && $(PY)/ruff check . && $(PY)/ruff format --check .
 	cd web && npm run lint && npm run typecheck
 	cd extension && npm run lint && npm run typecheck
+	node scripts/third-party-licenses.mjs --check
 
 test: db-url
 	cd api && $(PY)/pytest
@@ -54,6 +55,11 @@ check: lint test
 
 build-web:
 	cd web && npm run build
+
+# Rewrite THIRD_PARTY_LICENSES.txt after changing web/ or extension/ dependencies
+# (`make lint` and CI fail while it is out of date).
+licenses:
+	node scripts/third-party-licenses.mjs
 
 # Production-like: Flask serves web/dist, Playwright drives the installed Chrome.
 e2e: build-web db-url
