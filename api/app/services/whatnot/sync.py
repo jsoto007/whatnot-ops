@@ -447,7 +447,11 @@ def refresh_open_orders(org_id: int, client: WhatnotClient) -> int:
 
 
 def _after_orders(org_id: int, show_ids: set[str | None]) -> None:
-    """Orders of these Whatnot shows changed: in "auto" mode, apply them (soon, once)."""
+    """Orders of these Whatnot shows changed: the buyer profiles catch up with who placed
+    them (soon, once, in a job of their own), and in "auto" mode the orders are applied."""
+    from .. import buyers
+
+    buyers.schedule_link(org_id)
     conn = connection.active(org_id)
     if conn is None or conn.orders_mode != "auto":
         return

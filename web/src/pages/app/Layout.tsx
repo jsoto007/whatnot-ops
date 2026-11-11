@@ -15,6 +15,7 @@ const GROUPS: { title: string; items: { to: string; label: string; permission: s
       { to: '/app', label: 'Dashboard', permission: 'shows.view', icon: 'dashboard', end: true },
       { to: '/app/shows', label: 'Shows', permission: 'shows.view', icon: 'shows' },
       { to: '/app/orders', label: 'Orders', permission: 'orders.view', icon: 'orders' },
+      { to: '/app/buyers', label: 'Buyers', permission: 'buyers.view', icon: 'buyers' },
       { to: '/app/review', label: 'Review', permission: 'review.act', icon: 'review' },
     ],
   },

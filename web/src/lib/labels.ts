@@ -212,3 +212,6 @@ const RESULTS_STATUS: Record<string, string> = {
   WILL_NOT_BE_CALCULATED: 'Whatnot does not work out results for this show (cancelled, private or a rehearsal).',
 }
 export const resultsStatusLabel = (s: string | null): string => (s ? (RESULTS_STATUS[s] ?? 'Whatnot has no results for this show yet.') : 'Whatnot’s results for this show have not been read yet.')
+
+const BUYER_FLAG: Record<string, string> = { vip: 'VIP', watch: 'Watch list' }
+export const buyerFlagLabel = (f: string | null | undefined): string => (f ? (BUYER_FLAG[f] ?? 'Flagged') : 'No flag')

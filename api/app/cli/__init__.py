@@ -248,6 +248,37 @@ def register_cli(app: Flask) -> None:
             spare = spare.skus[0]
         if spare.available < 1:
             inventory.move(spare.id, MovementKind.restock, 1 - spare.available, source_type="e2e")
+        # A regular the team flagged as a VIP, who bought in a show long before today: the
+        # scraper panel must say "VIP · back again" when they win (extension e2e/buyers.spec.ts).
+        from datetime import UTC, date, datetime
+
+        from ..models import Sale, SaleStatus, Show
+        from ..services import buyers
+
+        earlier = db.session.scalar(
+            select(Show).where(Show.organization_id == org.id, Show.show_key == "e2e-earlier")
+        )
+        if earlier is None:
+            earlier = Show(
+                organization_id=org.id,
+                show_key="e2e-earlier",
+                started_at=datetime(2026, 1, 5, 20, tzinfo=UTC),
+                show_date=date(2026, 1, 5),
+            )
+            db.session.add(earlier)
+            db.session.flush()
+            db.session.add(
+                Sale(
+                    organization_id=org.id,
+                    show_id=earlier.id,
+                    buyer_username="e2e_regular",
+                    item_text="E2E Mug",
+                    quantity=2,
+                    price_cents=1000,
+                    status=SaleStatus.paid,
+                )
+            )
+        buyers.ensure(org.id, "e2e_regular").flag = "vip"
         db.session.commit()
         code = os.environ.get("E2E_PAIRING_CODE")
         if code:

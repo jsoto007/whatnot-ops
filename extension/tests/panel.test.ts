@@ -58,6 +58,27 @@ describe('panel notifications', () => {
     expect(notices(p)).toHaveLength(0)
   })
 
+  it('a line learnt a moment later joins the notice while it shows, and not once it is going', () => {
+    const p = new Panel(document)
+    const n = p.notify({ kind: 'win', title: 'lani808 won · $25.00', detail: 'Lot #7' })
+    p.amend(n, 'Back again · 12 items over 5 shows')
+    expect(n.textContent).toBe('lani808 won · $25.00Lot #7Back again · 12 items over 5 shows')
+    expect(n.querySelector('.more')!.textContent).toBe('Back again · 12 items over 5 shows')
+    vi.advanceTimersByTime(NOTICE_MS)
+    p.amend(n, 'too late')
+    expect(n.textContent).not.toContain('too late')
+  })
+
+  it("the panel's own line about the latest winner hides when there is nothing to say", () => {
+    const p = new Panel(document)
+    expect(p.el('who').hidden).toBe(true)
+    p.setBuyer('lani808: VIP · back again · 12 items over 5 shows')
+    expect(p.el('who').hidden).toBe(false)
+    expect(p.el('who').textContent).toBe('lani808: VIP · back again · 12 items over 5 shows')
+    p.setBuyer('')
+    expect(p.el('who').hidden).toBe(true)
+  })
+
   it('a click takes a notice away; beyond three the oldest goes first', () => {
     const p = new Panel(document)
     for (let i = 0; i < NOTICE_MAX + 1; i++) p.notify({ kind: 'low', title: `${i} left`, detail: 'Mug' })

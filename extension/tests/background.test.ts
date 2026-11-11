@@ -147,6 +147,22 @@ describe('background uploads', () => {
     expect(posted).toEqual([SERVER + '/api/ingest/shipments'])
   })
 
+  it('who just won: the names are checked here and asked with the device key, which never leaves the background', async () => {
+    const asked: { url: string; auth: string; body: unknown }[] = []
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+      asked.push({ url, auth: (init.headers as Record<string, string>).Authorization!, body: JSON.parse(init.body as string) })
+      return new Response(JSON.stringify({ buyers: [{ name: 'lani808', flag: 'vip', firstTime: false, shows: 5, items: 12 }] }), { status: 200 })
+    })
+    const sender = { id: 'ext', url: 'https://www.whatnot.com/live/x', origin: 'https://www.whatnot.com', tab: { id: 1 } }
+    const reply = await ask({ cmd: 'getBuyers', showId: SHOW, names: ['lani808', '', 7, 'x'.repeat(81)] }, sender)
+    expect(reply).toEqual({ buyers: [{ name: 'lani808', flag: 'vip', firstTime: false, shows: 5, items: 12 }] })
+    expect(JSON.stringify(reply)).not.toContain('device-key')
+    expect(asked).toEqual([{ url: SERVER + '/api/ingest/buyers', auth: 'Bearer device-key', body: { show: SHOW, names: ['lani808'] } }])
+    // Nothing worth asking: no request at all.
+    expect(await ask({ cmd: 'getBuyers', names: 'lani808' }, sender)).toBeNull()
+    expect(asked).toHaveLength(1)
+  })
+
   it('shipments from an extension page, another site, or a read that is too big are refused with a reason', async () => {
     const posted: string[] = []
     vi.stubGlobal('fetch', async (url: string) => {

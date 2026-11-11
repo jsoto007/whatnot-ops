@@ -12,6 +12,7 @@ from .db import db, migrate
 from .logsafe import error_line
 from .routes.audit import bp as audit_bp
 from .routes.auth import bp as auth_bp
+from .routes.buyers import bp as buyers_bp
 from .routes.catalog import bp as catalog_bp
 from .routes.devices import bp as devices_bp
 from .routes.extension import bp as extension_bp
@@ -197,6 +198,7 @@ def create_app(config: Config | None = None) -> Flask:
     app.register_blueprint(catalog_bp, url_prefix="/api")
     app.register_blueprint(review_bp, url_prefix="/api/review")
     app.register_blueprint(orders_bp, url_prefix="/api/orders")
+    app.register_blueprint(buyers_bp, url_prefix="/api/buyers")
     app.register_blueprint(reports_bp, url_prefix="/api")
     app.register_blueprint(whatnot_bp, url_prefix="/api/whatnot")
     app.register_blueprint(shipping_bp, url_prefix="/api/shipping")

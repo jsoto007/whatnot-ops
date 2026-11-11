@@ -182,6 +182,20 @@ commands.
   lines are stored once by Whatnot's transaction id; the "net" is the sum of Whatnot's
   own signed lines in the shop's currency, and the app never derives one from the fee
   columns.
+- **Buyers** (`services/buyers.py`, `/app/buyers`). A profile row holds only who a buyer
+  is (Whatnot's user id, every username they used) and what the team says (a note, a
+  `vip` / `watch` flag, audited). What they bought is never stored: it comes from the
+  sales by name through `dashboard.buyer_figures` (a "show" is a show date), with a
+  person's names added up. Everything that changes who holds a name runs under the
+  shop's buyers lock in a short transaction of its own: `link()` is a job queued after
+  Whatnot's orders are read (never inside the order sync), `annotate()` is the team's
+  save. A name moves to another Whatnot account only on a strictly newer, dated order (a
+  tie or an undated order changes nothing, so reading everything again settles); a flag
+  never follows a name to a different account, and `BuyerName.since_date` keeps what the
+  earlier account won out of the new holder's figures (`dashboard.held_since`: use it in
+  any new query that reads sales or orders by buyer name). The flag is shown beside the name on screen,
+  never printed; the laptop (`POST /api/ingest/buyers`) gets the flag and counts, no note
+  and no money.
 - **Numbers.** Dashboard tiles and the Excel sheets both read
   `services/dashboard.py`; add a metric there, never inline in a route or
   the workbook builder. Reports are built synchronously with openpyxl

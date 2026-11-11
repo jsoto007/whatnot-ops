@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
+import { BuyerFlagChip } from '../../components/BuyerFlag'
 import { DeclineDialog } from '../../components/DeclineDialog'
 import { Icon } from '../../components/Icon'
 import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
@@ -209,6 +210,7 @@ export function Orders() {
                     <Link to={`/app/orders/${o.id}`} className="buyer">
                       {o.buyer}
                     </Link>
+                    <BuyerFlagChip name={o.buyer} />
                     <span className="show-inline">{fmtDate(o.showDate)}</span>
                   </td>
                   <td className="c-items">
@@ -453,9 +455,13 @@ export function OrderDetail() {
       <div className="product-head">
         <h2>
           {o.buyer} · {o.showDate}
+          <BuyerFlagChip name={o.buyer} />
         </h2>
         <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
       </div>
+      <p className="small no-print">
+        <Link to={`/app/buyers/${encodeURIComponent(o.buyer)}`}>About {o.buyer}: everything they have bought, and the team's notes</Link>
+      </p>
       <PackingSlip o={o} />
       {can('orders.fulfill') && (
         <div className="card no-print">

@@ -1,8 +1,10 @@
+from datetime import UTC, datetime
+
 from flask import Blueprint, g, jsonify, request
 
 from ..db import db
 from ..models import Show
-from ..services import ratelimit, shipments, stock, text
+from ..services import buyers, ratelimit, shipments, showdate, stock, text
 from ..services.devices import device_for_key, touch
 from ..services.ingest import BatchInvalid, ingest, message_count
 from ..services.pipeline import schedule_parse
@@ -141,6 +143,38 @@ def running_low():
             "items": stock.running_low(g.device.organization_id, show_key=show_key),
         }
     )
+
+
+@bp.post("/ingest/buyers")
+def known_buyers():
+    """Who just won, for the host: the team's flag, and whether they have bought before
+    tonight (how many items, over how many shows). Asked with the winner's name as the
+    video player shows it. Read-only; no note text, no money."""
+    db.session.commit()  # persists last_seen_at
+    d = request.get_json(silent=True)
+    names = d.get("names") if isinstance(d, dict) else None
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        return jsonify({"error": "names must be a list of usernames"}), 400
+    if len(names) > buyers.MAX_LOOKUP:
+        return jsonify({"error": "too many names"}), 400
+    show_key = d.get("show")
+    show = None
+    if isinstance(show_key, str) and 0 < len(show_key) <= 64 and not text.has_hidden(show_key):
+        show = (
+            db.session.query(Show)
+            .filter_by(organization_id=g.device.organization_id, show_key=show_key)
+            .first()
+        )
+    # "Before tonight": the show's own date, or today's for a show whose first lines
+    # are still on their way up.
+    before = show.show_date if show is not None else showdate.show_date(datetime.now(UTC))
+    found = buyers.badges(g.device.organization_id, names, before=before)
+    out = []
+    for n in names:
+        name = buyers.name_of(n)
+        if name.lower() in found:
+            out.append({"name": name, **found[name.lower()]})
+    return jsonify({"buyers": out})
 
 
 @bp.get("/ingest/shows/<path:show_key>")

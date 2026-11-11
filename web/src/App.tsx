@@ -6,6 +6,7 @@ import { AcceptInvite } from './pages/AcceptInvite'
 import { Login } from './pages/Login'
 import { Forgot, Reset } from './pages/Password'
 import { Signup } from './pages/Signup'
+import { BuyerPage, Buyers } from './pages/app/Buyers'
 import { Dashboard } from './pages/app/Dashboard'
 import { Inventory } from './pages/app/Inventory'
 import { AppLayout } from './pages/app/Layout'
@@ -79,6 +80,8 @@ export function App() {
               <Route path="orders/slips/:showId" element={<OrderSlips />} />
               <Route path="orders/shipping/:showId" element={<Shipping />} />
               <Route path="orders/:id" element={<OrderDetail />} />
+              <Route path="buyers" element={<Buyers />} />
+              <Route path="buyers/:name" element={<BuyerPage />} />
               <Route path="inventory" element={<Inventory />} />
               <Route path="products" element={<Products />} />
               <Route element={<RequirePermission permission="review.act" />}>

@@ -21,6 +21,7 @@ import {
 } from './storage/db'
 import { cleanShipments, cleanShowLabel, MAX_ROWS, postShipments } from './shipments/upload'
 import { fetchStock } from './stock/fetch'
+import { fetchBuyers, MAX_NAMES, NAME_MAX } from './buyers/known'
 import { migrateLegacyStorage } from './storage/migrate'
 import { type Tabs, claimRecording, endRecording, forgetRecording, resumeFor } from './storage/recording'
 import { clampRow, clampUrl } from './upload/limits'
@@ -202,7 +203,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 /** Commands only the extension's own pages (Settings, Chat Search) may send; content scripts may not. */
 const PAGE_ONLY = new Set<Request['cmd']>(['settingsChanged', 'parkPending'])
-const CMDS = new Set<Request['cmd']>(['rows', 'recording', 'getSession', 'clearSession', 'openSearch', 'openOptions', 'getUploadStatus', 'flushUploads', 'getStock', 'settingsChanged', 'parkPending', 'shipments'])
+const CMDS = new Set<Request['cmd']>(['rows', 'recording', 'getSession', 'clearSession', 'openSearch', 'openOptions', 'getUploadStatus', 'flushUploads', 'getStock', 'getBuyers', 'settingsChanged', 'parkPending', 'shipments'])
 
 /** A content-script batch, cut to the server's limits so one bad line cannot stall uploads. */
 function cleanRows(msg: Extract<Request, { cmd: 'rows' }>): Extract<Request, { cmd: 'rows' }> | null {
@@ -267,6 +268,11 @@ async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promi
     case 'getStock':
       // The key never reaches the content script; it only gets the stock rows.
       return fetchStock(await loadSettings(), typeof msg.showId === 'string' && msg.showId.length <= 64 ? msg.showId : undefined)
+    case 'getBuyers': {
+      // The key never reaches the content script; it only gets what the shop says about the winners.
+      const names = Array.isArray(msg.names) ? msg.names.filter((n) => typeof n === 'string' && n.length > 0 && n.length <= NAME_MAX).slice(0, MAX_NAMES) : []
+      return fetchBuyers(await loadSettings(), typeof msg.showId === 'string' && msg.showId.length <= 64 ? msg.showId : undefined, names)
+    }
     case 'shipments': {
       // Only from the content script on a Whatnot page; the key never reaches it. The page is
       // known by its origin, not its path: Seller Hub moves between its pages without reloading

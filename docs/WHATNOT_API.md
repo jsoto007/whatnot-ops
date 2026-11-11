@@ -30,7 +30,8 @@ which product it was, the gifts, and the picking and packing.**
 4. **Webhooks** (after step 3, never before the app is deployed: a failing address is
    throttled, then unsubscribed). Seller Hub → Seller API → Webhooks → add the address
    Settings shows (`https://<app>/api/webhooks/whatnot`) and tick: Order created / updated,
-   all five Show topics, all nine Shipment topics. Product topics are not used yet.
+   all five Show topics, all eight Shipment topics (15 of the 20). The five Product topics
+   are not used yet: leave them unticked.
 5. **Probe** (once, from a shell that has the token):
    ```bash
    cd api && flask --app wsgi.py whatnot-probe
@@ -119,9 +120,33 @@ placed. Each recording is matched on its own to the Whatnot show that was live w
   shop's own currency is summed; lines in any other are counted and said.
   Refunds and carrier adjustments can arrive days later: a show's net can still move.
 
+**Buyers** (the Buyers page; every role reads it, owners, managers and the packing table
+write the flag and the note):
+
+- One row per person: shows, items, what they paid, what fell through (cancelled wins and
+  failed payments), giveaways won. Counted from the shop's own sales, so it works with or
+  without Whatnot connected. A "show" is a show date.
+- **A flag and a note from the team.** "VIP" (look after them) or "Watch list" (check
+  before you ship). The flag shows beside the buyer's name on Orders, the order page and
+  Shipping (never on a printed slip: a slip can end up in the parcel) and on the show
+  laptop when they win. The note stays on the buyer's page.
+- **A buyer who renames themselves keeps everything.** Whatnot's orders carry the buyer's
+  account id, which does not change with the name. After orders are read, the app ties
+  each name to its account: a new name joins the same person (history, flag and note
+  follow), and a profile the team made for a bare name is tied to the account that uses
+  it (the one that used the name most recently). A name that a *different* account
+  starts using moves to that account only on a strictly newer, dated order; the earlier
+  account's flag and note stay with the earlier account, and what was won under the name
+  before that show date is not counted for the new holder. (Sales are filed by name, so
+  those earlier wins are then on no buyer's page; the orders themselves are untouched.)
+- **On the show laptop** (Chat Scraper 1.9.0): each win's notice says "New buyer" or
+  "Back again · 12 items over 5 shows", with the team's flag first. Counted before
+  tonight's show date. No note and no money reach the laptop.
+
 ## What is kept, and what is not
 
-- Kept: Whatnot's ids, statuses, listing titles, prices, the buyer's **id and username**,
+- Kept: Whatnot's ids, statuses, listing titles, prices, the buyer's **id and usernames**
+  (every name an account has used, so a rename is still the same person),
   tracking numbers, whether a label exists, each show's results, and the ledger's lines
   (amounts, fees, the buyer's username; not the buyer's state or country).
 - Never kept: addresses, emails, phone numbers, label PDFs, label links, the webhook body
@@ -138,6 +163,7 @@ placed. Each recording is matched on its own to the Whatnot show that was live w
 | Orders against sales: compare, apply, "auto" | `orders.py` (through `services/reconcile.py` and `pipeline.py`) |
 | Parcels, the one-label rule, label requests and printing, carrier status | `shipping.py`, `routes/shipping.py` |
 | A show's results and the financial ledger (request, download, import by transaction id, sums) | `results.py`; shown through `services/dashboard.py` |
+| Buyer profiles: names tied to Whatnot's account id (its own job after orders are read, one writer per shop), the team's flag and note, figures from the sales | `services/buyers.py`, `routes/buyers.py`, figures in `services/dashboard.py`; the laptop asks `POST /api/ingest/buyers` |
 | Read-only look at the live shop | `probe.py` (`flask whatnot-probe`) |
 | In-memory Whatnot for tests | `fake.py` |
 
@@ -173,3 +199,6 @@ Rules that hold everywhere:
 9. The financial report's real file: its columns are the documented ones, but no report has
    been downloaded. In particular whether an ORDER_EARNINGS amount is before or after its
    fees (compare one order's line with Seller Hub the first time).
+10. Buyers: that an account's id stays the same when the buyer changes their username, and
+    whether an old order shows the name used then or the name used now. The app handles
+    both, but no renamed buyer has been seen.

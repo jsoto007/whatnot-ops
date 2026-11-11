@@ -8,7 +8,8 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import Order, OrderStatus, ParsedEvent, ReviewItem, ReviewStatus, Sale, Show, Sku
-from ..services import audit, order_slips, orders, ratelimit, reconcile
+from ..services import audit, buyers, dashboard, order_slips, orders, ratelimit, reconcile
+from ..services.buyers import BuyerError
 from ..services.inventory import Actor, InventoryError
 from ..services.orders import OrderError
 from ..services.reconcile import ReconcileError
@@ -20,6 +21,7 @@ BUYER_HISTORY_LIMIT = 200  # newest orders; a regular buyer's full history is no
 ORDER_LIST_LIMIT = 500
 
 
+@bp.errorhandler(BuyerError)
 @bp.errorhandler(OrderError)
 @bp.errorhandler(ReconcileError)
 @bp.errorhandler(InventoryError)
@@ -176,11 +178,15 @@ def update_order(order_id: int):
 @bp.get("/buyers/<path:username>")
 @require("orders.view", heavy=True)
 def buyer_history(username: str):
+    # Every name the buyer has used: someone who renamed themselves has one history.
+    names = buyers.names_for(g.u.organization_id, username)
     rows = db.session.scalars(
         _loaded()
+        .join(Show, Show.id == Order.show_id)
         .where(
             Order.organization_id == g.u.organization_id,
-            func.lower(Order.buyer_username) == username.lower(),
+            func.lower(Order.buyer_username).in_(names),
+            dashboard.held_since(g.u.organization_id, Order.buyer_username, Show.show_date),
         )
         .order_by(Order.id.desc())
         .limit(BUYER_HISTORY_LIMIT)

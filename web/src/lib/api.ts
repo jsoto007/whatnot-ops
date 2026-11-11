@@ -649,3 +649,57 @@ export interface WhatnotLedger {
   recent?: WhatnotFigures | null
   shows?: { showId: number | null; title: string; startedAt: string | null; netCents: number; lines: number }[]
 }
+
+/** What the team says about a buyer: someone to look after, or someone to keep an eye on. */
+export type BuyerFlag = 'vip' | 'watch'
+/** What a buyer bought, from the shop's sales. A "show" is a show date. */
+export interface BuyerFigures {
+  /** Items that still stand (not cancelled, payment not failed). */
+  items: number
+  /** What was paid for. */
+  paidCents: number
+  shows: number
+  firstShow: string | null
+  lastShow: string | null
+  cancelled: number
+  failed: number
+}
+export interface BuyerRow extends BuyerFigures {
+  username: string
+  /** Names they have also bought under. */
+  names: string[]
+  flag: BuyerFlag | null
+  hasNote: boolean
+}
+export interface BuyerList {
+  buyers: BuyerRow[]
+  total: number
+  counts: { all: number; vip: number; watch: number; noted: number }
+  limit: number
+  offset: number
+}
+export interface BuyerProblem {
+  saleId: number
+  showId: number
+  showDate: string
+  item: string
+  quantity: number
+  priceCents: number | null
+  status: SaleStatus
+}
+export interface BuyerProfile extends BuyerFigures {
+  username: string
+  names: string[]
+  /** False for a name nobody has won under or said anything about. */
+  known: boolean
+  /** Whatnot named the account: a new username lands on this page by itself. */
+  followed: boolean
+  flag: BuyerFlag | null
+  note: string | null
+  notedBy: string | null
+  notedAt: string | null
+  gifts: number
+  problems: BuyerProblem[]
+}
+/** lower-case name → the team's flag and whether there is a note, for every flagged or noted buyer. */
+export type BuyerFlags = Record<string, { flag: BuyerFlag | null; note: boolean }>

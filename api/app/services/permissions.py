@@ -24,6 +24,9 @@ PERMISSIONS: dict[str, frozenset[Role]] = {
     # Asking Whatnot to make labels closes each buyer's bundle and cannot be undone.
     "orders.labels": MANAGERS,
     "review.act": MANAGERS,
+    # Every role sees who a buyer is (the packing table needs the flag); a viewer only reads.
+    "buyers.view": ALL,
+    "buyers.manage": frozenset({Role.owner, Role.manager, Role.fulfillment}),
     "reports.view": frozenset({Role.owner, Role.manager, Role.viewer}),
 }
 

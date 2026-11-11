@@ -86,6 +86,18 @@ retries until the connection changes; rows stay queued. A batch the server
 refuses (400) is set aside (`uploaded = 2`) so it can never stall the queue;
 Settings shows how many lines were set aside and why.
 
+## Who just won (1.9.0)
+
+When the video player shows a win, the panel asks the web app about the winner
+(`src/buyers/known.ts` → `POST /api/ingest/buyers`, through the background
+worker, which holds the key). The answer joins the win's notice and stays in
+the Live tab until the next win: "New buyer", or "Back again · 12 items over
+5 shows", with the team's flag first ("VIP", "Watch list"). "Before tonight"
+is counted by show date, so tonight's own wins never make someone a regular.
+No note text and no money reach the laptop. Not connected, offline, or a web
+app older than this: the panel says nothing about the buyer and the win is
+recorded as always.
+
 ## Connection security
 
 - The server address must be `https://` (plain `http://` only for

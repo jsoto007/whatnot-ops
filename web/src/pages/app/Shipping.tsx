@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { Icon } from '../../components/Icon'
+import { BuyerFlagChip } from '../../components/BuyerFlag'
 import { ApiError, api, apiGet, type Shipping as Doc, type ShippingBuyer, type ShippingPackage } from '../../lib/api'
 import { fmtLongDate, fmtWhen, plural } from '../../lib/format'
 import { labelProblemLabel, orderStatusLabel, packageHoldLabel, packageStatusLabel, shippingStateLabel } from '../../lib/labels'
@@ -161,7 +162,10 @@ function BuyerRow({ b, canPrint }: { b: ShippingBuyer; canPrint: boolean }) {
   const warn = b.state === 'split' || b.state === 'hold' || b.state === 'failed' || b.state === 'other'
   return (
     <tr data-testid={`ship-${b.buyer}`} className={b.state === 'shipped' ? 'low' : ''}>
-      <td className="c-buyer">{b.buyer ?? '—'}</td>
+      <td className="c-buyer">
+        {b.buyer ?? '—'}
+        <BuyerFlagChip name={b.buyer} />
+      </td>
       <td className="num">{b.items}</td>
       <td>
         <span className={warn ? 'form-error' : ''} data-testid="ship-state">
