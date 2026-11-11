@@ -6,9 +6,11 @@ import type { OrderStatus, Role, Sale, SaleStatus } from './api'
  * these, and an unknown code reads as a neutral word, not as itself.
  */
 
-/** The licence the shop accepts (LICENSE.md at the repo root; the web build serves it at the site root). */
+/** The licence the shop accepts: LICENSE.md at the repo root. The web build serves that file at
+ *  the site root, and /license shows it as a page people can read (pages/LicenceTerms.tsx). */
 export const LICENCE_TITLE = 'Sales Ops License and Data Terms'
-export const LICENCE_URL = '/LICENSE.md'
+export const LICENCE_URL = '/license'
+export const LICENCE_FILE_URL = '/LICENSE.md'
 /** The words of the box ticked at sign-up and the banner's button: the same promise in both. */
 export const LICENCE_ACCEPT_LEAD = 'I have read and accept the'
 export const LICENCE_ACCEPT = `${LICENCE_ACCEPT_LEAD} ${LICENCE_TITLE}`

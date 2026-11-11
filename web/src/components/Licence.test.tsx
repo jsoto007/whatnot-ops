@@ -75,7 +75,7 @@ test('asks the owner, links the terms, and accepting the version shown records i
   expect(banner).toHaveTextContent('Please read and accept the Sales Ops License and Data Terms.')
   expect(banner).toHaveTextContent('Version 1.0')
   const read = screen.getByRole('link', { name: 'Read the terms' })
-  expect(read).toHaveAttribute('href', '/LICENSE.md')
+  expect(read).toHaveAttribute('href', '/license')
   expect(read).toHaveAttribute('target', '_blank')
   expect(read).toHaveAttribute('rel', 'noopener noreferrer')
 
@@ -102,7 +102,7 @@ test('sign-up has the licence box, unticked and required, linking the terms', ()
   expect(box).not.toBeChecked()
   expect(box).toBeRequired()
   const link = screen.getByRole('link', { name: 'Sales Ops License and Data Terms' })
-  expect(link).toHaveAttribute('href', '/LICENSE.md')
+  expect(link).toHaveAttribute('href', '/license')
   expect(link).toHaveAttribute('target', '_blank')
 })
 

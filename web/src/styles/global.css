@@ -57,6 +57,14 @@ code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background
 .legal p, .legal li { max-width: 68ch; }
 .legal ul { margin: var(--space-2) 0; padding-left: 20px; }
 .legal li { margin-bottom: var(--space-2); }
+/* The licence itself (/license): the same card, plus what a long numbered document uses. */
+.legal ol { margin: var(--space-2) 0; padding-left: 28px; }
+.legal blockquote { margin: var(--space-4) 0; padding: var(--space-3) var(--space-4); border-left: 3px solid var(--border-strong); border-radius: var(--radius-s); background: var(--fill); }
+.legal blockquote p:first-child { margin-top: 0; }
+.legal blockquote p:last-child { margin-bottom: 0; }
+.legal hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-6) 0; }
+.legal code { overflow-wrap: anywhere; }
+.legal-doc h2 { margin-bottom: var(--space-3); }
 .legal-back { display: inline-block; margin-bottom: var(--space-4); font-size: 14px; font-weight: 500; text-decoration: none; }
 .legal-back::before { content: '\2190\00a0'; }
 

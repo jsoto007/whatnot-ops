@@ -245,7 +245,10 @@ commands.
   owners (never staff, never the IT support account) with a banner until one accepts
   (`POST /api/auth/licence`, the version the page showed). Publishing a new
   `LICENSE.md` version means changing `LICENCE_VERSION` beside it (a test keeps them
-  equal); every shop is then asked again.
+  equal); every shop is then asked again. People read the terms at `/license`
+  (`pages/LicenceTerms.tsx` draws the served `LICENSE.md` with `components/Markdown.tsx`,
+  as text, never HTML): keep the file to the Markdown `lib/markdown.ts` knows, or the
+  sign-up browser test fails. The Privacy page lists this record.
 - Commits only when asked, on a feature branch; stage by path.
 
 ## Commands

@@ -33,6 +33,8 @@ test("the user agreement gives way to the shop's own written agreement", () => {
   mount(<Terms />)
   expect(screen.getByRole('heading', { name: "The shop's own agreement" })).toBeInTheDocument()
   expect(screen.getByRole('article')).toHaveTextContent("Where that agreement and this page say different things, the shop's agreement applies")
+  // That agreement is the licence the shop's owner accepted: one click away, as a readable page.
+  expect(screen.getByRole('link', { name: 'Sales Ops License and Data Terms' })).toHaveAttribute('href', '/license')
 })
 
 test('privacy says what is kept about buyers and what is not', () => {
@@ -51,8 +53,14 @@ test('privacy says sign-ins keep the network address, for how long, and who carr
   mount(<Privacy />)
   const page = screen.getByRole('article')
   expect(page).toHaveTextContent('Each sign-in, and each failed attempt to sign in to an account, is recorded with the network address it came from')
-  expect(page).toHaveTextContent('is kept with the record of sign-ins described above')
-  expect(page).toHaveTextContent('the record of changes and sign-ins, with the network addresses in it, are kept for as long as the shop uses Sales Ops')
+  expect(page).toHaveTextContent('is kept with the records of sign-ins and of accepting the license described above')
+  expect(page).toHaveTextContent(
+    'the record of changes and sign-ins, with the network addresses in it, and the record that the shop accepted its license are kept for as long as the shop uses Sales Ops',
+  )
+  // api services/licence.py: version, who, when and the client address, once per shop per version.
+  expect(page).toHaveTextContent(
+    "is recorded with the network address it came from. So is the shop's acceptance of its license for Sales Ops: which version, who accepted it and when",
+  )
   expect(page).toHaveTextContent('The counts used to block abuse are deleted after about a day')
   expect(page).toHaveTextContent('the network service in front of the hosting that carries every request to it and guards it against attacks')
 })

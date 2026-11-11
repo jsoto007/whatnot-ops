@@ -4,7 +4,7 @@ import { ApiError, api, type Me } from '../lib/api'
 import { LICENCE_ACCEPT, LICENCE_TITLE, LICENCE_URL } from '../lib/labels'
 import { Icon } from './Icon'
 
-/** The licence's name, opening LICENSE.md in a new tab (the page behind it keeps what was typed). */
+/** The licence's name, opening the terms page (/license) in a new tab: the page behind it keeps what was typed. */
 export function LicenceLink({ children = LICENCE_TITLE }: { children?: string }) {
   return (
     <a href={LICENCE_URL} target="_blank" rel="noopener noreferrer">

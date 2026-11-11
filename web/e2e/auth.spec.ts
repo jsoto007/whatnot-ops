@@ -94,15 +94,28 @@ test('the shop is created only with the licence ticked; the terms open beside th
   await expect(page).toHaveURL(/\/signup$/)
   expect(await box.evaluate((el) => (el as HTMLInputElement).validity.valueMissing)).toBe(true)
 
-  // The terms open in a new tab, served with the app, readable as text; the form keeps what was typed.
+  // The terms open in a new tab as a page set out to be read (headings and lists, not the
+  // file's raw text); the form keeps what was typed.
   const [terms] = await Promise.all([
     context.waitForEvent('page'),
     page.getByRole('link', { name: 'Sales Ops License and Data Terms' }).click(),
   ])
   await terms.waitForLoadState()
-  expect(new URL(terms.url()).pathname).toBe('/LICENSE.md')
-  await expect(terms.locator('body')).toContainText('Version 1.0')
-  await expect(terms.locator('body')).toContainText('Copyright © 2026 SotoDev')
+  expect(new URL(terms.url()).pathname).toBe('/license')
+  await expect(terms.getByRole('heading', { level: 2, name: 'Sales Ops — Proprietary Software License and Data Terms' })).toBeVisible()
+  await expect(terms.getByRole('heading', { level: 3, name: '7. How SotoDev handles Client Data' })).toBeVisible()
+  const document = terms.getByRole('article')
+  await expect(document).toContainText('Version 1.0')
+  await expect(document).toContainText('Copyright © 2026 SotoDev')
+  // The whole of LICENSE.md is drawn: its 22 sections, the 11 numbered restrictions, and none
+  // of the file's own Markdown marks (fails when the file starts using something the page cannot draw).
+  await expect(document.getByRole('heading', { level: 3 })).toHaveCount(22)
+  await expect(document.locator('ol > li')).toHaveCount(11)
+  expect(await document.innerText()).not.toMatch(/\*\*|`|(^|\n)\s*#{1,6} |(^|\n)\s*> |<https?:/)
+  // The file itself is still served beside the app, for anyone who wants a copy.
+  const file = await terms.request.get('/LICENSE.md')
+  expect(file.ok()).toBe(true)
+  expect(await file.text()).toContain('Version 1.0 · Effective')
   await terms.close()
   await expect(page.getByLabel('Email')).toHaveValue(email)
 

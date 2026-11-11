@@ -5,6 +5,7 @@ import { RedirectIfAuthed, RequireAuth, RequirePermission } from './auth/guards'
 import { Footer } from './components/Footer'
 import { AcceptInvite } from './pages/AcceptInvite'
 import { Privacy, Terms } from './pages/Legal'
+import { LicenceTerms } from './pages/LicenceTerms'
 import { Login } from './pages/Login'
 import { Forgot, Reset } from './pages/Password'
 import { Signup } from './pages/Signup'
@@ -75,6 +76,7 @@ export function App() {
             <Route path="/reset/:token" element={<Reset />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/privacy" element={<Privacy />} />
+            <Route path="/license" element={<LicenceTerms />} />
           </Route>
           <Route path="/app" element={<RequireAuth />}>
             <Route element={<AppLayout />}>
