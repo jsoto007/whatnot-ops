@@ -232,6 +232,43 @@ class WhatnotOrderItem(db.Model):
     order: Mapped[WhatnotOrder] = relationship(back_populates="items")
 
 
+class WhatnotVariant(db.Model):
+    """One variant of a product in the shop's Whatnot inventory (a listing as it can be
+    bought), and the product here it is the same thing as (`sku_id`), when known.
+
+    `link` says who decided: "code" (Whatnot's SKU equals a product code here), "person",
+    or "off" (a person said it is none of ours: never linked again by code, and its title
+    names no product either). `available` is Whatnot's own count as last read. The app
+    never changes it."""
+
+    __tablename__ = "whatnot_variants"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "whatnot_id", name="uq_whatnot_variants_org_id"),
+        Index("ix_whatnot_variants_org_sku", "organization_id", "sku_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    whatnot_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    product_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    options: Mapped[str] = mapped_column(String(240), nullable=False, default="")  # "Red / L"
+    sku_code: Mapped[str | None] = mapped_column(String(80))
+    external_id: Mapped[str | None] = mapped_column(String(120))
+    price_cents: Mapped[int | None] = mapped_column(Integer)
+    currency: Mapped[str | None] = mapped_column(String(3))
+    available: Mapped[int | None] = mapped_column(Integer)
+    url: Mapped[str | None] = mapped_column(String(512))
+    sku_id: Mapped[int | None] = mapped_column(ForeignKey("skus.id", ondelete="SET NULL"))
+    link: Mapped[str | None] = mapped_column(String(8))  # code | person | off
+    linked_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    # Set when a full read of the catalog no longer finds it (deleted on Whatnot).
+    gone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
 class WhatnotReport(db.Model):
     """A report the app asked Whatnot to build (it is made in the background and then
     offers a CSV to download). Today: the financial ledger for a span of days."""

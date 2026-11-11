@@ -236,11 +236,15 @@ def levels(org_id: int) -> list[dict]:
         found = [last[(sku_id, s)] for s in sources if (sku_id, s) in last]
         return max(found).isoformat() if found else None
 
+    from .whatnot import catalog
+
+    on_whatnot = catalog.for_skus(org_id)  # listings linked to each product, if any
     return [
         {
             **serializers.sku(s),
             "productName": pname,
             "sold": int(sold.get(s.id, 0)),
+            "whatnot": on_whatnot.get(s.id),
             "lastReceivedAt": latest(s.id, "receive"),
             "lastCountedAt": latest(s.id, "count", "import"),
         }

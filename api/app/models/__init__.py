@@ -25,6 +25,7 @@ from .whatnot import (
     WhatnotReport,
     WhatnotShow,
     WhatnotSyncState,
+    WhatnotVariant,
 )
 
 __all__ = [
@@ -67,4 +68,5 @@ __all__ = [
     "WhatnotShipment",
     "WhatnotShow",
     "WhatnotSyncState",
+    "WhatnotVariant",
 ]

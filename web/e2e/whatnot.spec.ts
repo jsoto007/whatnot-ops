@@ -189,8 +189,36 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   await expect(page.getByTestId('wn-ledger-fees')).toContainText('Commission $2.00 · Payment processing $1.03')
   await shot(page, '6-show-on-whatnot')
 
+  // The shop's Whatnot listings next to its own products. One carries the product's code and
+  // links itself; the other names nothing the shop knows.
+  await request.post('/api/whatnot/fake', {
+    data: {
+      products: [
+        { title: 'Red bundle (live)', variants: [{ sku: 'red', priceCents: 2500, quantity: 9 }] },
+        { title: 'Mystery crate', variants: [{ quantity: 2 }] },
+      ],
+    },
+  })
+  await page.getByLabel('Sections').getByRole('link', { name: 'Inventory' }).click()
+  await page.getByRole('link', { name: 'Whatnot listings' }).click()
+  await page.getByRole('button', { name: 'Read from Whatnot now' }).click()
+  const listed = page.getByTestId('listing-red')
+  await expect(listed).toContainText('matched by its code')
+  await expect(listed).toContainText('differs') // Whatnot offers 9; the shop cannot sell that many
+  const crate = page.getByTestId('listing-Mystery crate')
+  await expect(crate).toContainText('Not linked yet')
+  await crate.getByRole('button', { name: 'Not one of ours' }).click()
+  await expect(crate).toContainText('Not one of ours')
+  await expect(page.getByTestId('catalog-state')).toContainText('It never changes anything on Whatnot')
+  await shot(page, '10-whatnot-listings')
+  // Inventory shows Whatnot's count beside the shop's own.
+  await page.getByRole('link', { name: '← Inventory' }).click()
+  await expect(cell(page, 'RED', 'available').getByTestId('on-whatnot')).toHaveText('9 on Whatnot · differs')
+  await shot(page, '11-inventory-on-whatnot')
+
   // The activity log says what happened, in words, with nothing internal.
   await page.getByRole('link', { name: 'Settings' }).click()
+  await expect(page.getByText('Said the Whatnot listing “Mystery crate” is none of the shop\'s products')).toBeVisible()
   await expect(page.getByText("Applied Whatnot's orders to a show: 1 payment declined, 3 sales recorded")).toBeVisible()
   await expect(page.getByText('Asked Whatnot to make 2 shipping labels')).toBeVisible()
   await expect(page.getByText('Marked 1 order shipped: the carrier has them')).toBeVisible()

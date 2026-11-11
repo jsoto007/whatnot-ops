@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
@@ -40,20 +40,28 @@ export function Buyers() {
   const q = params.get('q') ?? ''
   // The box is typed into freely; the list is asked for once the typing pauses.
   const [typed, setTyped] = useState(q)
+  // The address as it is right now. The search fires a moment after the typing, from a
+  // timer made during an earlier render: it must build on the filter and order chosen
+  // since, not on the ones it saw when the typing began (that undid a filter just picked).
+  const latest = useRef(params)
+  useEffect(() => {
+    latest.current = params
+  }, [params])
   const set = (changes: Record<string, string>) => {
-    const next = new URLSearchParams(params)
+    const next = new URLSearchParams(latest.current)
     for (const [k, v] of Object.entries(changes)) {
       if (v) next.set(k, v)
       else next.delete(k)
     }
     if (!('offset' in changes)) next.delete('offset')
+    latest.current = next
     setParams(next, { replace: true })
   }
   useEffect(() => {
-    if (typed === q) return
+    if (typed === (latest.current.get('q') ?? '')) return
     const t = setTimeout(() => set({ q: typed.trim() }), 300)
     return () => clearTimeout(t)
-    // Only the typing starts the timer; `set` and `q` are read when it fires.
+    // Only the typing starts the timer; what it changes is read from `latest` when it fires.
   }, [typed])
 
   const query = new URLSearchParams({ sort, ...(q ? { q } : {}), ...(flag ? { flag } : {}), ...(offset ? { offset: String(offset) } : {}) })

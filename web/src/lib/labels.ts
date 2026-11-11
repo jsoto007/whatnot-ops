@@ -215,3 +215,6 @@ export const resultsStatusLabel = (s: string | null): string => (s ? (RESULTS_ST
 
 const BUYER_FLAG: Record<string, string> = { vip: 'VIP', watch: 'Watch list' }
 export const buyerFlagLabel = (f: string | null | undefined): string => (f ? (BUYER_FLAG[f] ?? 'Flagged') : 'No flag')
+
+/** How a listing came to be linked. */
+export const listingLinkLabel = (l: string | null): string => (l === 'code' ? 'matched by its code' : l === 'person' ? 'linked by the team' : l === 'off' ? 'not one of ours' : 'not linked yet')

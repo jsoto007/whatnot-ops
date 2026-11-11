@@ -190,6 +190,8 @@ export interface Activity extends Movement {
 export interface StockLevel extends Sku {
   productName: string
   sold: number
+  /** What Whatnot offers for this product, when a listing there is linked to it. `onWhatnot` is null when Whatnot gave no count. */
+  whatnot?: { listings: number; onWhatnot: number | null; differs: boolean } | null
   lastReceivedAt: string | null
   lastCountedAt: string | null
 }
@@ -703,3 +705,33 @@ export interface BuyerProfile extends BuyerFigures {
 }
 /** lower-case name → the team's flag and whether there is a note, for every flagged or noted buyer. */
 export type BuyerFlags = Record<string, { flag: BuyerFlag | null; note: boolean }>
+
+/** One listing in the shop's Whatnot catalog, next to the product here it is linked to. */
+export interface WhatnotListing {
+  id: number
+  title: string
+  /** "Red / L" */
+  options: string
+  skuCode: string | null
+  priceCents: number | null
+  /** Whatnot's own count, as last read. */
+  onWhatnot: number | null
+  url: string | null
+  /** Who decided: a matching code, a person, or a person's "none of ours" ('off'). */
+  link: 'code' | 'person' | 'off' | null
+  /** `canSell` is what the shop can still sell of the product: never below zero. */
+  sku: { id: number; code: string; name: string; canSell: number } | null
+  /** How many listings the linked product has on Whatnot, and what they offer together (null when Whatnot gave no count). */
+  listings: number
+  offered: number | null
+  /** Everything Whatnot offers for the product is not what the shop can sell. */
+  differs: boolean
+}
+export interface WhatnotCatalog {
+  connected: boolean
+  readAt: string | null
+  /** The access token may not read the catalog. */
+  notAllowed: boolean
+  listings: WhatnotListing[]
+  counts: { all: number; linked: number; undecided: number; differs: number }
+}

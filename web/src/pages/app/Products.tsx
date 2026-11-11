@@ -8,7 +8,11 @@ export function Products() {
   const { can } = useAuth()
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['products'], queryFn: () => apiGet<{ products: Product[] }>('/api/products') })
-  const refresh = () => qc.invalidateQueries({ queryKey: ['products'] })
+  // Inventory lists the same products: a product added here and looked for there a moment
+  // later (before the save has answered) must still turn up once it has.
+  const refresh = async () => {
+    await Promise.all([qc.invalidateQueries({ queryKey: ['products'] }), qc.invalidateQueries({ queryKey: ['inventory'] })])
+  }
   const [name, setName] = useState('')
   const [code, setCode] = useState('')
   const [price, setPrice] = useState('')
