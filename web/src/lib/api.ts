@@ -81,10 +81,16 @@ export interface Organization {
   slug: string
   hostUsername: string | null
 }
+/** The licence in force and whether to ask this person to accept it (only the shop's owner). */
+export interface LicenceStatus {
+  version: string
+  needed: boolean
+}
 export interface Me {
   user: User
   organization: Organization
   permissions: string[]
+  licence?: LicenceStatus
 }
 export interface Invite {
   id: number

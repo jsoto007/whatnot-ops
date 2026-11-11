@@ -278,6 +278,7 @@ def test_review_and_show_routes(client, app, world):
     client.post(
         "/api/auth/signup",
         json={
+            "acceptLicence": True,
             "organization": "Other",
             "name": "O",
             "email": "o@x.test",

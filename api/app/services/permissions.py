@@ -13,6 +13,8 @@ PERMISSIONS: dict[str, frozenset[Role]] = {
     "devices.manage": MANAGERS,
     "audit.view": MANAGERS,
     "settings.manage": OWNER,
+    # Accept the licence for the shop (services/licence.py; never the support account).
+    "licence.accept": OWNER,
     "whatnot.view": MANAGERS,  # connection health; nothing secret is ever shown
     "whatnot.manage": OWNER,  # connect / disconnect the shop's Whatnot seller account
     "shows.view": ALL,

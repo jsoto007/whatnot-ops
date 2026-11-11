@@ -31,7 +31,13 @@ def test_fulfillment_lands_on_a_dashboard_it_may_read(app, client):
     h = {"X-CSRF-Token": client.get("/api/auth/csrf").get_json()["token"]}
     r = client.post(
         "/api/auth/signup",
-        json={"organization": "Shop", "name": "O", "email": "o@x.test", "password": PW},
+        json={
+            "acceptLicence": True,
+            "organization": "Shop",
+            "name": "O",
+            "email": "o@x.test",
+            "password": PW,
+        },
         headers=h,
     )
     assert r.status_code == 201, r.get_json()

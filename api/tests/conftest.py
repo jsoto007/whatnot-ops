@@ -179,6 +179,7 @@ def sign_in(app, client):
         client.post(
             "/api/auth/signup",
             json={
+                "acceptLicence": True,
                 "organization": "O",
                 "name": "Olive",
                 "email": email,

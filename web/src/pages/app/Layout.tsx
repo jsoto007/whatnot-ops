@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { Footer } from '../../components/Footer'
 import { Icon, type IconName } from '../../components/Icon'
+import { LicenceBanner } from '../../components/Licence'
 import { apiGet, type NavCounts } from '../../lib/api'
 import { roleLabel } from '../../lib/labels'
 import { UpdateBanner } from './settings/UpdateExtension'
@@ -182,6 +183,7 @@ export function AppLayout() {
       </aside>
       <div className="main-col">
         <main className="content">
+          <LicenceBanner />
           <WhatnotBanner show={!!counts?.whatnotProblem} />
           <UpdateBanner enabled={can('shows.view')} />
           <Outlet />

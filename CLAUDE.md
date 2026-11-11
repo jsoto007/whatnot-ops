@@ -238,6 +238,17 @@ commands.
   fail while `THIRD_PARTY_LICENSES.txt` is out of date) and update
   `NOTICE.md`; keep the copyright banners in `web/vite.config.ts` and
   `extension/build.mjs`.
+- **Licence acceptance** (`services/licence.py`, `licence_acceptances`): the shop's
+  click-to-accept record (§2.2): version, who, when (UTC), client address, once per
+  shop per version, written with a conditional INSERT and audited. Sign-up refuses
+  without the box ticked; a shop with no record for the current version asks its
+  owners (never staff, never the IT support account) with a banner until one accepts
+  (`POST /api/auth/licence`, the version the page showed). Publishing a new
+  `LICENSE.md` version means changing `LICENCE_VERSION` beside it (a test keeps them
+  equal); every shop is then asked again. People read the terms at `/license`
+  (`pages/LicenceTerms.tsx` draws the served `LICENSE.md` with `components/Markdown.tsx`,
+  as text, never HTML): keep the file to the Markdown `lib/markdown.ts` knows, or the
+  sign-up browser test fails. The Privacy page lists this record.
 - Commits only when asked, on a feature branch; stage by path.
 
 ## Commands

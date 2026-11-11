@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from 'react'
 import { Link } from 'react-router'
+import { LICENCE_TITLE, LICENCE_URL } from '../lib/labels'
 import { LEGAL_UPDATED, WHATNOT_POLICIES_URL, supportEmail } from '../lib/legal'
 
 /** The pages the footer links to. Open to everyone, signed in or not. Keep every statement
@@ -106,9 +107,9 @@ export function Terms() {
 
       <h3>The shop's own agreement</h3>
       <p>
-        This page is for each person who signs in. The shop may also have a license or other written agreement with the maker of Sales Ops,
-        covering things such as who owns the shop's data and who owns the software. Where that agreement and this page say different things,
-        the shop's agreement applies.
+        This page is for each person who signs in. The shop itself uses Sales Ops under the <Link to={LICENCE_URL}>{LICENCE_TITLE}</Link>, or
+        another written agreement with the maker of Sales Ops, covering things such as who owns the shop's data and who owns the software.
+        Where that agreement and this page say different things, the shop's agreement applies.
       </p>
 
       <h3>Changes to this agreement</h3>
@@ -138,7 +139,8 @@ export function Privacy() {
         </li>
         <li>
           <b>What the team does.</b> A record of changes and sign-ins, with who made each one and when. Each sign-in, and each failed attempt
-          to sign in to an account, is recorded with the network address it came from.
+          to sign in to an account, is recorded with the network address it came from. So is the shop's acceptance of its license for Sales
+          Ops: which version, who accepted it and when.
         </li>
         <li>
           <b>The shop's records.</b> Shows, products, stock, sales, orders, shipments and notes.
@@ -152,8 +154,8 @@ export function Privacy() {
           saved.
         </li>
         <li>
-          <b>Technical details.</b> The network address you connect from is counted for a short time to block abuse, is kept with the record
-          of sign-ins described above, and may appear in server logs.
+          <b>Technical details.</b> The network address you connect from is counted for a short time to block abuse, is kept with the
+          records of sign-ins and of accepting the license described above, and may appear in server logs.
         </li>
       </ul>
 
@@ -184,8 +186,8 @@ export function Privacy() {
 
       <h3>How long it is kept</h3>
       <p>
-        The shop's records, the captured chat and the record of changes and sign-ins, with the network addresses in it, are kept for as long as
-        the shop uses Sales Ops. The counts used to block abuse are deleted after about a day. Expired sign-in links and laptop pairing codes are
+        The shop's records, the captured chat, the record of changes and sign-ins, with the network addresses in it, and the record that the
+        shop accepted its license are kept for as long as the shop uses Sales Ops. The counts used to block abuse are deleted after about a day. Expired sign-in links and laptop pairing codes are
         deleted after about a month.
       </p>
 
