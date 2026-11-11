@@ -160,6 +160,42 @@ commands.
   is the sale's SKU, else "No Pick" plus what the winner said in chat
   (`sale_chat`) — the winner picks the product in chat. Read-only: never
   changes a sale, order, payment or stock; only the username is kept.
+- **Whatnot Seller API** (`services/whatnot/`, `docs/WHATNOT_API.md`). Whatnot decides
+  what was sold, whether it was paid and where a parcel is; the app decides which
+  product, the gifts, picking and packing. `client.py` is the only code that calls
+  Whatnot (shared 8 req/s budget in `throttle.py`; a write is retried only when safe).
+  The token and the webhook signing secret come from env (`WHATNOT_API_TOKEN`,
+  `WHATNOT_WEBHOOK_SECRET`) and are never stored; there is no sandbox, so no test may
+  reach the real API (`fake.py`, the `fake_whatnot` fixture; `WHATNOT_API=fake` for
+  dev and e2e). A webhook is a hint: handlers read the resource again and never act
+  on the body (`webhooks.py`, stored once by `webhook-id`). Orders run through the
+  payment-file engine (`whatnot/orders.py` → `reconcile.py`, actor `whatnot`):
+  `orders_mode` "shadow" only compares (Payments tab, a person applies), "auto"
+  applies as they arrive; an order with no sale becomes one
+  (`pipeline.create_sale_from_order`), and a later win line claims it
+  (`claim_order_sale`) instead of making a second. **One package and one label per
+  buyer per show** (`whatnot/shipping.py`): labels only after the show ended, never
+  for a buyer in two open packages; label PDFs and links are fetched when printed
+  and never stored (they show the address). Only the buyer's id and username are kept.
+  A show's results and the financial ledger (`whatnot/results.py`, read-only, shown via
+  `dashboard.whatnot_show` / `whatnot_ledger` to roles with `reports.view`): ledger
+  lines are stored once by Whatnot's transaction id; the "net" is the sum of Whatnot's
+  own signed lines in the shop's currency, and the app never derives one from the fee
+  columns.
+- **Buyers** (`services/buyers.py`, `/app/buyers`). A profile row holds only who a buyer
+  is (Whatnot's user id, every username they used) and what the team says (a note, a
+  `vip` / `watch` flag, audited). What they bought is never stored: it comes from the
+  sales by name through `dashboard.buyer_figures` (a "show" is a show date), with a
+  person's names added up. Everything that changes who holds a name runs under the
+  shop's buyers lock in a short transaction of its own: `link()` is a job queued after
+  Whatnot's orders are read (never inside the order sync), `annotate()` is the team's
+  save. A name moves to another Whatnot account only on a strictly newer, dated order (a
+  tie or an undated order changes nothing, so reading everything again settles); a flag
+  never follows a name to a different account, and `BuyerName.since_date` keeps what the
+  earlier account won out of the new holder's figures (`dashboard.held_since`: use it in
+  any new query that reads sales or orders by buyer name). The flag is shown beside the name on screen,
+  never printed; the laptop (`POST /api/ingest/buyers`) gets the flag and counts, no note
+  and no money.
 - **Numbers.** Dashboard tiles and the Excel sheets both read
   `services/dashboard.py`; add a metric there, never inline in a route or
   the workbook builder. Reports are built synchronously with openpyxl

@@ -4,6 +4,7 @@ import { useAuth } from '../../auth/useAuth'
 import { Field, Form } from '../../components/Form'
 import { api, apiGet, type AiStatus, type AuditEntry, type Organization } from '../../lib/api'
 import { Laptops } from './settings/Laptops'
+import { WhatnotConnection } from './settings/WhatnotConnection'
 
 export function Settings() {
   const { me, can } = useAuth()
@@ -12,6 +13,8 @@ export function Settings() {
       <h2>Settings</h2>
       <p className="muted">{me?.organization.name}</p>
       {can('settings.manage') && <HostUsername />}
+
+      {can('whatnot.view') && <WhatnotConnection manage={can('whatnot.manage')} />}
 
       <Laptops manage={can('devices.manage')} />
 

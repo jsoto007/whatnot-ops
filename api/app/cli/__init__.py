@@ -128,6 +128,24 @@ def register_cli(app: Flask) -> None:
         db.session.commit()
         click.echo(f"owner {email} created for '{organization.name}'")
 
+    @app.cli.command("whatnot-probe")
+    def whatnot_probe():
+        """Look at the live shop through Whatnot's Seller API: reads only, a few dozen
+        slow calls, and a report of what shape the data has (no names, amounts, ids, links
+        or the token). Needs WHATNOT_API_TOKEN; touches no database row."""
+        from ..services.whatnot import NotConfigured, WhatnotClient, probe
+        from ..services.whatnot.client import http_transport
+
+        token = app.config.get("WHATNOT_API_TOKEN") or ""
+        if not token:
+            raise click.ClickException(str(NotConfigured().words))
+        seen: dict = {}
+        transport = app.config.get("WHATNOT_TRANSPORT") or http_transport()
+        client = WhatnotClient(token, transport=probe.read_only(transport, seen=seen))
+        click.echo("Whatnot Seller API probe: read-only, redacted. This is the LIVE shop.")
+        for line in probe.run(client, seen):
+            click.echo(line)
+
     @app.cli.command("ensure-support")
     def ensure_support():
         """Create or repair the IT_SUPPORT account (run at every start, before gunicorn)."""
@@ -230,6 +248,37 @@ def register_cli(app: Flask) -> None:
             spare = spare.skus[0]
         if spare.available < 1:
             inventory.move(spare.id, MovementKind.restock, 1 - spare.available, source_type="e2e")
+        # A regular the team flagged as a VIP, who bought in a show long before today: the
+        # scraper panel must say "VIP · back again" when they win (extension e2e/buyers.spec.ts).
+        from datetime import UTC, date, datetime
+
+        from ..models import Sale, SaleStatus, Show
+        from ..services import buyers
+
+        earlier = db.session.scalar(
+            select(Show).where(Show.organization_id == org.id, Show.show_key == "e2e-earlier")
+        )
+        if earlier is None:
+            earlier = Show(
+                organization_id=org.id,
+                show_key="e2e-earlier",
+                started_at=datetime(2026, 1, 5, 20, tzinfo=UTC),
+                show_date=date(2026, 1, 5),
+            )
+            db.session.add(earlier)
+            db.session.flush()
+            db.session.add(
+                Sale(
+                    organization_id=org.id,
+                    show_id=earlier.id,
+                    buyer_username="e2e_regular",
+                    item_text="E2E Mug",
+                    quantity=2,
+                    price_cents=1000,
+                    status=SaleStatus.paid,
+                )
+            )
+        buyers.ensure(org.id, "e2e_regular").flag = "vip"
         db.session.commit()
         code = os.environ.get("E2E_PAIRING_CODE")
         if code:

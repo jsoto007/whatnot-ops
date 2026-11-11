@@ -2,12 +2,14 @@ import { Fragment, useMemo, useState } from 'react'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
-import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleStatus, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway } from '../../lib/api'
+import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleStatus, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway, type WhatnotRecap as WhatnotRecapData } from '../../lib/api'
 import { fmtLongDate, fmtShopTime } from '../../lib/format'
 import { lotLabel, saleStatusLabel } from '../../lib/labels'
 import { useDebounced } from '../../lib/useDebounced'
 import { Kpis, Tally, TopLists } from './Dashboard'
 import { Reconcile } from './Reconcile'
+import { WhatnotRecap } from './WhatnotNumbers'
+import { WhatnotOrders } from './WhatnotOrders'
 
 const KIND_LABEL: Record<string, string> = { sale: 'Sale', claim: 'Claim', gift: 'Gift', cancel: 'Cancel', payment_failed: 'Payment failed', no_pick: 'No winner', listing: 'Listing', chatter: 'Chatter' }
 const TABS = ['sales', 'walkaways', 'payments', 'events', 'messages', 'analytics'] as const
@@ -26,7 +28,7 @@ export function ShowDetail() {
     setParams(next, { replace: true })
   }
   const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats }>(`/api/shows/${id}`) })
-  const dash = useQuery({ queryKey: ['show-dashboard', id], queryFn: () => apiGet<{ tiles: ShowTiles; topBuyers: TopBuyer[]; topSkus: TopSku[]; winnersWithoutPurchase: WalkAway[] }>(`/api/dashboard/shows/${id}`) })
+  const dash = useQuery({ queryKey: ['show-dashboard', id], queryFn: () => apiGet<{ tiles: ShowTiles; topBuyers: TopBuyer[]; topSkus: TopSku[]; winnersWithoutPurchase: WalkAway[]; whatnot?: WhatnotRecapData | null }>(`/api/dashboard/shows/${id}`) })
   const sales = useQuery({ queryKey: ['sales', id], queryFn: () => apiGet<{ sales: Sale[] }>(`/api/shows/${id}/sales`) })
   const parse = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/parse`), onSuccess: () => qc.invalidateQueries() })
   const aiAudit = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/ai-audit`), onSuccess: () => qc.invalidateQueries() })
@@ -50,6 +52,12 @@ export function ShowDetail() {
           <h2>
             {s ? fmtLongDate(s.date) : 'Show'} {t?.live && <span className="live-pill">Live</span>}
           </h2>
+          {s?.title && (
+            <div className="sub" data-testid="show-title">
+              {s.title}
+              {s.recorded === false ? ' · not recorded on a laptop; its sales come from Whatnot’s orders' : ''}
+            </div>
+          )}
           {s && (
             <div className="sub">
               Started {started!.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · {t?.live ? `${mins} min so far` : `${mins} min of chat`} · {s.messageCount} messages
@@ -61,6 +69,11 @@ export function ShowDetail() {
           {can('orders.view') && (
             <Link className="btn ghost" to={`/app/orders/slips/${id}`} data-testid="order-slips-link">
               Order slips
+            </Link>
+          )}
+          {can('orders.view') && (
+            <Link className="btn ghost" to={`/app/orders/shipping/${id}`} data-testid="show-shipping-link">
+              Shipping
             </Link>
           )}
           {can('review.act') && (
@@ -99,11 +112,17 @@ export function ShowDetail() {
       </div>
       {tab === 'sales' && <SalesTab sales={list} loading={sales.isPending} />}
       {tab === 'walkaways' && <WalkawaysTab rows={walkaways} loading={dash.isPending} canReview={can('review.act')} showId={id} onTab={setTab} />}
-      {tab === 'payments' && (can('orders.reconcile') ? <Reconcile showId={id} /> : <p className="card muted">Only owners and managers can reconcile payments.</p>)}
+      {tab === 'payments' && (
+        <>
+          {can('orders.view') && <WhatnotOrders showId={id} canApply={can('orders.reconcile')} />}
+          {can('orders.reconcile') ? <Reconcile showId={id} /> : <p className="card muted">Only owners and managers can reconcile payments.</p>}
+        </>
+      )}
       {tab === 'events' && <EventsTab showId={id} />}
       {tab === 'messages' && <MessagesTab showId={id} />}
       {tab === 'analytics' && dash.data && (
         <>
+          {dash.data.whatnot && <WhatnotRecap w={dash.data.whatnot} />}
           <TopLists buyers={dash.data.topBuyers} skus={dash.data.topSkus} />
           {can('reports.view') && (
             <p>

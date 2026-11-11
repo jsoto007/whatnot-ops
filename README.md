@@ -146,6 +146,30 @@ nothing.
 for a show totals the quantities per SKU across those orders; an order page
 is the packing slip (print it) with the buyer's history in other shows.
 
+## Buyers
+
+**Buyers** (`/app/buyers`) lists everyone who has won: shows, items, what they
+paid, and what fell through (cancelled wins, failed payments), counted from
+the sales. The team can flag a buyer **VIP** or put them on the **Watch
+list** and leave a note; the flag then shows beside their name on Orders and
+Shipping, and the show laptop says "New buyer" or "Back again · 12 items
+over 5 shows" at each win. With Whatnot connected, a buyer who changes
+their username keeps their history, flag and note (profiles follow
+Whatnot's account id).
+
+## Whatnot's own record (Seller API)
+
+Once the owner connects the shop (Settings → Whatnot), the app reads Whatnot's shows, orders
+and parcels itself: a show's **Payments** tab compares Whatnot's orders with the sales and
+applies them, the order slips need no "Send shipments" step, and **Shipping** (Orders → a
+show → Shipping) makes and prints one label per buyer and follows each parcel to the door.
+Setup, the workflow and what is not yet verified against the live API: `docs/WHATNOT_API.md`.
+
+```bash
+cd api && flask --app wsgi.py whatnot-probe   # a read-only, redacted look at the live shop
+WHATNOT_API=fake make api                     # local work against an in-memory Whatnot
+```
+
 ## Dashboard and reports
 
 The **Dashboard** (`/app`) shows the sheet's tiles across all shows (items

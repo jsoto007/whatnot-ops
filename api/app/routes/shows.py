@@ -1,12 +1,25 @@
 from flask import Blueprint, g, jsonify, request
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import selectinload
 
 from .. import serializers
 from ..auth import require
 from ..db import db
-from ..models import ChatMessage, EventKind, Job, ParsedEvent, ReviewItem, ReviewStatus, Sale, Show
-from ..services import audit, pipeline, ratelimit, sale_chat
+from ..models import (
+    ChatMessage,
+    EventKind,
+    Job,
+    ParsedEvent,
+    ReviewItem,
+    ReviewStatus,
+    Sale,
+    Show,
+    WhatnotShow,
+)
+from ..services import audit, jobs, pipeline, ratelimit, sale_chat
+from ..services.whatnot import WhatnotError, connection
+from ..services.whatnot import orders as whatnot_orders
 
 bp = Blueprint("shows", __name__)
 
@@ -33,6 +46,7 @@ def list_shows():
     shows = db.session.scalars(
         select(Show)
         .where(Show.organization_id == g.u.organization_id)
+        .options(selectinload(Show.whatnot_show))
         .order_by(Show.started_at.desc())
         .limit(200)
     ).all()
@@ -218,3 +232,189 @@ def messages(show_id: int):
             ],
         }
     )
+
+
+# ---------- Whatnot's own record of the show ----------
+
+WHATNOT_REFRESH_PER_10_MIN = 10  # each one pages through Whatnot's orders
+
+
+@bp.errorhandler(WhatnotError)
+def whatnot_error(e: WhatnotError):
+    db.session.rollback()
+    return jsonify({"error": e.words}), e.http_status
+
+
+@bp.errorhandler(whatnot_orders.OrdersError)
+def whatnot_orders_error(e):
+    db.session.rollback()
+    return jsonify({"error": str(e)}), e.status
+
+
+def _whatnot_view(show: Show) -> dict:
+    org_id = show.organization_id
+    conn = connection.active(org_id)
+    if conn is None:
+        return {"connected": False}
+    ws = whatnot_orders.whatnot_show_of(show)
+    day = show.started_at
+    choices = db.session.scalars(
+        select(WhatnotShow)
+        .where(
+            WhatnotShow.organization_id == org_id,
+            WhatnotShow.status.in_(("live", "stopped", "ended")),
+        )
+        .order_by(
+            func.abs(
+                func.extract(
+                    "epoch",
+                    func.coalesce(WhatnotShow.started_at, WhatnotShow.scheduled_start_at) - day,
+                )
+            ).nulls_last()
+        )
+        .limit(12)
+    ).all()
+    out = {
+        "connected": True,
+        "mode": conn.orders_mode,
+        "link": show.whatnot_link,
+        "show": serializers.whatnot_show(ws) if ws is not None else None,
+        "choices": [serializers.whatnot_show(c) for c in choices],
+        "complete": False,
+        "info": None,
+        "summary": {},
+        "rows": [],
+        "uncovered": [],
+    }
+    if ws is None:
+        return out
+    result = whatnot_orders.compare(show)
+    plan = result["plan"]
+    uncovered = (
+        db.session.scalars(
+            select(Sale)
+            .where(Sale.id.in_(plan.uncovered))
+            .options(selectinload(Sale.sku), selectinload(Sale.show))
+            .order_by(Sale.id)
+        ).all()
+        if plan.uncovered
+        else []
+    )
+    out.update(
+        complete=result["complete"],
+        info=result["info"],
+        summary=plan.summary,
+        rows=[serializers.reconcile_row(r) for r in plan.rows],
+        uncovered=[
+            {
+                "saleId": s.id,
+                "buyer": s.buyer_username,
+                "item": s.item_text or (s.sku.code if s.sku else ""),
+                "quantity": s.quantity,
+                "priceCents": s.price_cents,
+                "status": s.status.value,
+            }
+            for s in uncovered
+        ],
+    )
+    return out
+
+
+@bp.get("/<int:show_id>/whatnot")
+@require("orders.view", heavy=True)
+def whatnot_compare(show_id: int):
+    """Whatnot's orders for the show next to the app's sales: what applying them would do."""
+    show = _show_or_404(show_id)
+    if show is None:
+        return jsonify({"error": "show not found"}), 404
+    out = _whatnot_view(show)
+    db.session.rollback()  # a comparison never writes
+    return jsonify(out)
+
+
+@bp.post("/<int:show_id>/whatnot/link")
+@require("orders.reconcile")
+def whatnot_link(show_id: int):
+    """Say by hand which Whatnot show this recording is of (or that it is of none)."""
+    show = _show_or_404(show_id)
+    if show is None:
+        return jsonify({"error": "show not found"}), 404
+    if show.whatnot_link == "made":
+        return jsonify({"error": "this show was made from the Whatnot show itself"}), 409
+    target = (request.get_json(silent=True) or {}).get("whatnotShowId")
+    ws = None
+    if target is not None:
+        ws = db.session.get(WhatnotShow, target) if isinstance(target, int) else None
+        if ws is None or ws.organization_id != g.u.organization_id:
+            return jsonify({"error": "that Whatnot show was not found"}), 404
+    show.whatnot_show_id = ws.id if ws is not None else None
+    show.whatnot_link = "manual"
+    audit.record(
+        g.u.organization_id,
+        "whatnot.show_linked",
+        user=g.u,
+        target_type="show",
+        target_id=show.id,
+        details={"title": ws.title if ws is not None else None},
+    )
+    db.session.commit()
+    return jsonify(_whatnot_view(show))
+
+
+@bp.post("/<int:show_id>/whatnot/refresh")
+@require("orders.reconcile")
+def whatnot_refresh(show_id: int):
+    """Read the show's orders from Whatnot again, now."""
+    show = _show_or_404(show_id)
+    if show is None:
+        return jsonify({"error": "show not found"}), 404
+    ws = whatnot_orders.whatnot_show_of(show)
+    if ws is None:
+        return jsonify({"error": "This show is not matched to a show on Whatnot yet."}), 409
+    ratelimit.per_org("whatnot-refresh", g.u.organization_id, WHATNOT_REFRESH_PER_10_MIN, 600)
+    job = jobs.enqueue(
+        "whatnot_sync_show",
+        {"org_id": show.organization_id, "whatnot_show_id": ws.whatnot_id},
+        org_id=show.organization_id,
+        dedupe_key=f"whatnot_sync_show:{show.organization_id}:{ws.whatnot_id}",
+    )
+    db.session.commit()
+    job = db.session.get(Job, job.id)
+    if job is not None and job.error:  # ran at once (no worker) and Whatnot refused or failed
+        return jsonify({"error": "Whatnot could not be read just now. Try again in a minute."}), 502
+    queued = job is not None and job.status.value != "done"
+    return jsonify({**_whatnot_view(_show_or_404(show_id)), "queued": queued})
+
+
+@bp.post("/<int:show_id>/whatnot/apply")
+@require("orders.reconcile")
+def whatnot_apply(show_id: int):
+    """Apply Whatnot's orders to the show's sales: payments, cancellations, and a sale for
+    each paid order the app has none for."""
+    show = _show_or_404(show_id)
+    if show is None:
+        return jsonify({"error": "show not found"}), 404
+    ratelimit.per_user("reconcile", g.u.id, 30, 600)
+    try:
+        result = whatnot_orders.apply(show, user=g.u)
+    except OperationalError as e:
+        # Two transactions each waiting on a buyer the other holds (this, and another
+        # show being read): Postgres stops one. Nothing was changed; say so and let the
+        # person press again.
+        db.session.rollback()
+        if "deadlock" not in str(getattr(e, "orig", e)).lower():
+            raise
+        return jsonify(
+            {"error": "The show is being read right now. Try again in a few seconds."}
+        ), 409
+    audit.record(
+        g.u.organization_id,
+        "whatnot.orders_applied",
+        user=g.u,
+        target_type="show",
+        target_id=show.id,
+        details=result["summary"],
+    )
+    db.session.commit()
+    show = _show_or_404(show_id)
+    return jsonify({**_whatnot_view(show), "applied": result["summary"]})

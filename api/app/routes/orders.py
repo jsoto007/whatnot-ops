@@ -7,16 +7,21 @@ from sqlalchemy.orm import selectinload
 from .. import serializers
 from ..auth import require
 from ..db import db
-from ..models import Order, OrderStatus, ParsedEvent, ReviewItem, ReviewStatus, Sale, Show
-from ..services import audit, order_slips, orders, ratelimit, reconcile
+from ..models import Order, OrderStatus, ParsedEvent, ReviewItem, ReviewStatus, Sale, Show, Sku
+from ..services import audit, buyers, dashboard, order_slips, orders, ratelimit, reconcile
+from ..services.buyers import BuyerError
 from ..services.inventory import Actor, InventoryError
 from ..services.orders import OrderError
 from ..services.reconcile import ReconcileError
 
 bp = Blueprint("orders", __name__)
 BUYER_HISTORY_LIMIT = 200  # newest orders; a regular buyer's full history is not one page
+# The most orders one list answers with. Past it the oldest are left out (never the newest
+# show) and the answer says so (`truncated`), so the page can tell people to pick a show.
+ORDER_LIST_LIMIT = 500
 
 
+@bp.errorhandler(BuyerError)
 @bp.errorhandler(OrderError)
 @bp.errorhandler(ReconcileError)
 @bp.errorhandler(InventoryError)
@@ -28,7 +33,7 @@ def order_error(e):
 def _loaded():
     return select(Order).options(
         selectinload(Order.show),
-        selectinload(Order.sales).selectinload(Sale.sku),
+        selectinload(Order.sales).selectinload(Sale.sku).selectinload(Sku.product),
         selectinload(Order.sales).selectinload(Sale.event).selectinload(ParsedEvent.message),
         selectinload(Order.sales).selectinload(Sale.show),
     )
@@ -78,11 +83,21 @@ def list_orders():
         q = q.where(Order.show_id == show_id)
     if buyer := (request.args.get("buyer") or "").strip().lower():
         q = q.where(func.lower(Order.buyer_username) == buyer)
-    rows = db.session.scalars(q.order_by(Order.status, Order.id).limit(500)).all()
+    # Work still to do first (the status enum runs open → paid → … → shipped → cancelled),
+    # and the newest orders within each: when the list is cut, what falls off is the oldest
+    # shipped and cancelled history, then the oldest waiting orders, never the latest show.
+    rows = db.session.scalars(
+        q.order_by(Order.status, Order.id.desc()).limit(ORDER_LIST_LIMIT + 1)
+    ).all()
+    truncated = len(rows) > ORDER_LIST_LIMIT
+    rows = rows[:ORDER_LIST_LIMIT]
     with_sales = status != "all"
     reviews = _open_reviews(rows) if with_sales else {}
     return jsonify(
-        {"orders": [serializers.order(o, with_sales=with_sales, reviews=reviews) for o in rows]}
+        {
+            "orders": [serializers.order(o, with_sales=with_sales, reviews=reviews) for o in rows],
+            "truncated": truncated,
+        }
     )
 
 
@@ -163,11 +178,15 @@ def update_order(order_id: int):
 @bp.get("/buyers/<path:username>")
 @require("orders.view", heavy=True)
 def buyer_history(username: str):
+    # Every name the buyer has used: someone who renamed themselves has one history.
+    names = buyers.names_for(g.u.organization_id, username)
     rows = db.session.scalars(
         _loaded()
+        .join(Show, Show.id == Order.show_id)
         .where(
             Order.organization_id == g.u.organization_id,
-            func.lower(Order.buyer_username) == username.lower(),
+            func.lower(Order.buyer_username).in_(names),
+            dashboard.held_since(g.u.organization_id, Order.buyer_username, Show.show_date),
         )
         .order_by(Order.id.desc())
         .limit(BUYER_HISTORY_LIMIT)

@@ -11,6 +11,7 @@ from sqlalchemy import event
 
 from ..services.text import clean
 from .accounts import User
+from .buyers import Buyer
 from .core import Device, DevicePairing, Organization
 from .inventory import InventoryMovement, Product, ProductAlias, Sku
 from .orders import Order
@@ -29,7 +30,7 @@ SINGLE_LINE = [
     (Order, "tracking"),
     (Order, "packed_by"),
 ]
-MULTI_LINE = [(Product, "notes"), (Order, "notes")]
+MULTI_LINE = [(Product, "notes"), (Order, "notes"), (Buyer, "note")]
 
 
 def _cleaner(single_line: bool):

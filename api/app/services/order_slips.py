@@ -60,7 +60,7 @@ def product_label(sale: Sale) -> str:
 
 
 def _won_at(sale: Sale):
-    return sale.event.message.captured_at if sale.event else sale.created_at
+    return sale.event.message.captured_at if sale.event else (sale.ordered_at or sale.created_at)
 
 
 _SPACES = re.compile(r"\s+")

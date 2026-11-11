@@ -6,6 +6,7 @@ from sqlalchemy import case, func, select
 
 from ..db import db
 from ..models import (
+    BuyerName,
     ChatMessage,
     EventKind,
     Order,
@@ -18,6 +19,7 @@ from ..models import (
     SaleStatus,
     Show,
     Sku,
+    WhatnotConnection,
 )
 
 STANDING = (SaleStatus.detected, SaleStatus.reserved, SaleStatus.paid, SaleStatus.fulfilled)
@@ -258,6 +260,91 @@ def top_buyers(org_id: int, *, show_id: int | None = None, limit: int = 10) -> l
     ]
 
 
+def held_since(org_id: int, name_col, date_col):
+    """True for a row that belongs to whoever holds its buyer name now. A name that came
+    to its holder from a different Whatnot account (`BuyerName.since_date`) leaves what
+    was won under it before that show date out: those wins were the earlier account's."""
+    return ~(
+        select(BuyerName.id)
+        .where(
+            BuyerName.organization_id == org_id,
+            BuyerName.name_lower == func.lower(name_col),
+            BuyerName.since_date.is_not(None),
+            date_col < BuyerName.since_date,
+        )
+        .exists()
+    )
+
+
+def buyer_figures(
+    org_id: int, names: list[str] | None = None, *, before: date | None = None
+) -> dict[str, dict]:
+    """What each buyer name won, paid for and lost, keyed by the name in lower case (a
+    buyer who changed their name is two keys; `services/buyers.py` adds them up).
+
+    Items are what still stands (as on the dashboard), spend is what was paid, and a
+    "show" is a show date: two recordings of one evening count once. `before` keeps only
+    shows dated earlier than it ("had they bought before tonight?")."""
+    name = func.lower(Sale.buyer_username)
+    standing = Sale.status.in_(STANDING)
+    q = (
+        select(
+            name,
+            func.max(Sale.buyer_username),
+            _qty(STANDING),
+            _rev(PAID),
+            func.array_agg(func.distinct(Show.show_date)).filter(standing),
+            func.count().filter(Sale.status == SaleStatus.cancelled),
+            func.count().filter(Sale.status == SaleStatus.payment_failed),
+        )
+        .join(Show, Show.id == Sale.show_id)
+        .where(
+            Sale.organization_id == org_id,
+            Sale.buyer_username != "",
+            held_since(org_id, Sale.buyer_username, Show.show_date),
+        )
+        .group_by(name)
+    )
+    if names is not None:
+        q = q.where(name.in_(names))
+    if before is not None:
+        q = q.where(Show.show_date < before)
+    return {
+        key: {
+            "username": written,
+            "items": int(items),
+            "paidCents": int(paid),
+            "dates": set(dates or ()),
+            "cancelled": int(cancelled),
+            "failed": int(failed),
+        }
+        for key, written, items, paid, dates, cancelled, failed in db.session.execute(q).all()
+    }
+
+
+def buyer_gifts(org_id: int, names: list[str]) -> int:
+    """Giveaways these names won. Only what the host or the platform said, like the
+    dashboard's tile: a viewer typing "won the giveaway!" is not a win."""
+    if not names:
+        return 0
+    return int(
+        db.session.scalar(
+            select(func.count())
+            .select_from(ParsedEvent)
+            # By show, which the (show, kind) index covers; never the whole table.
+            .join(Show, Show.id == ParsedEvent.show_id)
+            .where(
+                Show.organization_id == org_id,
+                ParsedEvent.kind == EventKind.gift,
+                ParsedEvent.confidence >= 0.8,
+                func.lower(ParsedEvent.buyer_username).in_(names),
+                held_since(org_id, ParsedEvent.buyer_username, Show.show_date),
+            )
+        )
+        or 0
+    )
+
+
 def top_skus(org_id: int, *, show_id: int | None = None, limit: int = 10) -> list[dict]:
     q = (
         select(Sku, Product.name, func.sum(Sale.quantity), _rev(PAID))
@@ -383,7 +470,23 @@ def counts(org_id: int) -> dict:
         .select_from(Show)
         .where(Show.organization_id == org_id, Show.updated_at >= cutoff)
     )
-    return {"openReviews": reviews or 0, "toFulfil": to_fulfil or 0, "live": bool(live)}
+    # The Whatnot connection stopped working (a rejected token, a missing permission):
+    # every page says so, because sales and shipments then stop arriving on their own.
+    whatnot_problem = db.session.scalar(
+        select(func.count())
+        .select_from(WhatnotConnection)
+        .where(
+            WhatnotConnection.organization_id == org_id,
+            WhatnotConnection.disconnected_at.is_(None),
+            WhatnotConnection.problem.in_(("token_rejected", "no_permission")),
+        )
+    )
+    return {
+        "openReviews": reviews or 0,
+        "toFulfil": to_fulfil or 0,
+        "live": bool(live),
+        "whatnotProblem": bool(whatnot_problem),
+    }
 
 
 def review_reasons(org_id: int) -> dict[str, int]:
@@ -457,3 +560,85 @@ def _low_stock(org_id: int) -> list[dict]:
         }
         for s in skus
     ]
+
+
+# ---------- Whatnot's own numbers (services/whatnot/results.py reads them) ----------
+
+
+def _camel(name: str) -> str:
+    head, *rest = name.split("_")
+    return head + "".join(w.title() for w in rest)
+
+
+def whatnot_show(show: Show) -> dict | None:
+    """What Whatnot itself says about the show: its results (viewers, reach, buyers, sales)
+    and its ledger (earnings, fees, refunds, tips). None when the show is not matched to a
+    show on Whatnot. Shown as Whatnot states them; nothing here is worked out by the app
+    except sums of Whatnot's own lines."""
+    from ..models import WhatnotShow
+    from .whatnot import connection, results
+
+    ws = db.session.get(WhatnotShow, show.whatnot_show_id) if show.whatnot_show_id else None
+    if ws is None:
+        return None
+    state = connection.sync_state(show.organization_id, "analytics")
+    return {
+        "title": ws.title,
+        # The access token may not read reports: the page says so instead of "not yet".
+        "resultsNotAllowed": (state.last_error or "").startswith("Forbidden"),
+        "resultsStatus": ws.analytics_status,
+        "resultsAt": ws.analytics_at.isoformat() if ws.analytics_at else None,
+        "results": {_camel(k): v for k, v in (ws.analytics or {}).items()} or None,
+        "ledger": results.figures(show.organization_id, whatnot_show_id=ws.whatnot_id),
+    }
+
+
+def whatnot_ledger(org_id: int, *, days: int = 30, shows: int = 12) -> dict:
+    """Reports → Whatnot's ledger: the last `days` days as Whatnot states them, and the
+    net of each recent show."""
+    from ..models import WhatnotLedgerEntry, WhatnotShow
+    from .whatnot import results
+
+    since = datetime.now(UTC) - timedelta(days=days)
+    start = func.coalesce(WhatnotShow.started_at, WhatnotShow.scheduled_start_at)
+    rows = db.session.execute(
+        select(WhatnotShow.id, WhatnotShow.whatnot_id, WhatnotShow.title, start)
+        .where(
+            WhatnotShow.organization_id == org_id,
+            select(WhatnotLedgerEntry.id)
+            .where(
+                WhatnotLedgerEntry.organization_id == org_id,
+                WhatnotLedgerEntry.whatnot_show_id == WhatnotShow.whatnot_id,
+            )
+            .exists(),
+        )
+        .order_by(start.desc().nulls_last(), WhatnotShow.id.desc())
+        .limit(shows)
+    ).all()
+    # Each show's figures exactly as its own page shows them (results.figures), so the
+    # list and the page can never disagree.
+    nets = {ws_id: results.figures(org_id, whatnot_show_id=wid) for ws_id, wid, _, _ in rows}
+    # The app's own page for each (its first recording), when there is one.
+    local = dict(
+        db.session.execute(
+            select(Show.whatnot_show_id, func.min(Show.id))
+            .where(Show.organization_id == org_id, Show.whatnot_show_id.in_([r[0] for r in rows]))
+            .group_by(Show.whatnot_show_id)
+        ).all()
+    )
+    return {
+        **results.status(org_id),
+        "days": days,
+        "recent": results.figures(org_id, since=since),
+        "shows": [
+            {
+                "showId": local.get(ws_id),
+                "title": title,
+                "startedAt": began.isoformat() if began else None,
+                "netCents": nets[ws_id]["netCents"],
+                "lines": sum(k["lines"] for k in nets[ws_id]["kinds"]),
+            }
+            for ws_id, _, title, began in rows
+            if nets[ws_id] is not None
+        ],
+    }

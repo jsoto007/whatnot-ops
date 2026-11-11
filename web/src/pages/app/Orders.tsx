@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
+import { BuyerFlagChip } from '../../components/BuyerFlag'
 import { DeclineDialog } from '../../components/DeclineDialog'
 import { Icon } from '../../components/Icon'
 import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
@@ -54,7 +55,7 @@ export function Orders() {
   const [decline, setDecline] = useState<Sale | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const shows = useQuery({ queryKey: ['shows'], queryFn: () => apiGet<{ shows: Show[] }>('/api/shows') })
-  const all = useQuery({ queryKey: ['orders', 'every', showId], queryFn: () => apiGet<{ orders: Order[] }>(`/api/orders${showId ? '?show=' + showId : ''}`) })
+  const all = useQuery({ queryKey: ['orders', 'every', showId], queryFn: () => apiGet<{ orders: Order[]; truncated?: boolean }>(`/api/orders${showId ? '?show=' + showId : ''}`) })
   useEffect(() => {
     if (!toast) return
     const t = setTimeout(() => setToast(null), 4000)
@@ -124,6 +125,9 @@ export function Orders() {
                 <Icon name="clipboard" size={16} />
                 Pick list
               </Link>
+              <Link className="btn ghost" to={`/app/orders/shipping/${showId}`} data-testid="shipping-link">
+                Shipping
+              </Link>
             </>
           )}
         </div>
@@ -145,6 +149,11 @@ export function Orders() {
           <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a buyer" aria-label="Find a buyer" />
         </label>
       </div>
+      {all.data?.truncated && (
+        <p className="muted small" role="status" data-testid="orders-truncated">
+          Showing the newest {all.data.orders.length} orders. Older ones are left out: pick a show above to see all of its orders.
+        </p>
+      )}
       {stuck && (
         <section className="banner" aria-label="Orders waiting on one unknown item" data-testid="stuck-banner">
           <div className="banner-main">
@@ -201,6 +210,7 @@ export function Orders() {
                     <Link to={`/app/orders/${o.id}`} className="buyer">
                       {o.buyer}
                     </Link>
+                    <BuyerFlagChip name={o.buyer} />
                     <span className="show-inline">{fmtDate(o.showDate)}</span>
                   </td>
                   <td className="c-items">
@@ -445,9 +455,13 @@ export function OrderDetail() {
       <div className="product-head">
         <h2>
           {o.buyer} · {o.showDate}
+          <BuyerFlagChip name={o.buyer} />
         </h2>
         <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
       </div>
+      <p className="small no-print">
+        <Link to={`/app/buyers/${encodeURIComponent(o.buyer)}`}>About {o.buyer}: everything they have bought, and the team's notes</Link>
+      </p>
       <PackingSlip o={o} />
       {can('orders.fulfill') && (
         <div className="card no-print">

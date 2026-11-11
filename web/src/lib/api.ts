@@ -123,6 +123,10 @@ export interface Show {
   updatedAt: string
   sourceUrl: string | null
   messageCount: number
+  /** The show's title on Whatnot, once the recording is matched to it. */
+  title?: string | null
+  /** false: no laptop recorded it; the app made the show from Whatnot's own record. */
+  recorded?: boolean
 }
 export interface ChatMessage {
   id: number
@@ -257,7 +261,8 @@ export interface Sale {
   seq: number | null
   rawText: string | null
   /** "player" when the win was read from Whatnot's video player, "chat" for a chat line. */
-  source: 'chat' | 'player' | null
+  /** Where the win was read from: the chat, Whatnot's video player, or (no win line at all) Whatnot's own order. */
+  source: 'chat' | 'player' | 'whatnot' | null
   /** When the win happened (the winning line's capture time). */
   wonAt: string | null
   /** The decision waiting on this sale in Review, when there is one (orders routes only). */
@@ -405,7 +410,7 @@ export interface ReconcileRow {
   priceCents: number | null
   status: string
   externalId: string | null
-  action: 'mark_paid' | 'cancel' | 'unchanged' | 'unmatched' | 'skip'
+  action: 'mark_paid' | 'cancel' | 'decline' | 'unchanged' | 'unmatched' | 'skip' | 'record' | 'recorded'
   saleId: number | null
   note: string | null
 }
@@ -490,6 +495,25 @@ export interface NavCounts {
   openReviews: number
   toFulfil: number
   live: boolean
+  /** The Whatnot connection needs a person (rejected token, missing permission). */
+  whatnotProblem?: boolean
+}
+
+// ---------- Whatnot Seller API connection ----------
+/** Why calls to Whatnot are failing, as a code the page turns into words (labels.ts). */
+export type WhatnotProblem = 'token_rejected' | 'no_permission' | 'unreachable'
+export interface WhatnotStatus {
+  /** The server has an access token at all (the developer sets it; it is never shown). */
+  configured: boolean
+  connected: boolean
+  username: string | null
+  connectedAt: string | null
+  lastCheckedAt: string | null
+  problem: WhatnotProblem | null
+  /** 'shadow': orders are compared and a person applies them; 'auto': applied as they arrive. */
+  ordersMode: 'shadow' | 'auto'
+  webhooks: { configured: boolean; url: string | null; lastEventAt: string | null; waiting?: number }
+  sync: { resource: string; lastOkAt: string | null; failing: boolean }[]
 }
 export interface Overview {
   shows: ShowTiles[]
@@ -499,3 +523,183 @@ export interface Overview {
   lowStock: LowStockItem[]
   attention: Attention
 }
+
+/** A show as Whatnot has it. `id` is this app's id for it. */
+export interface WhatnotShowInfo {
+  id: number
+  title: string
+  status: string
+  startsAt: string | null
+  endedAt: string | null
+  url: string | null
+  ordersReadAt: string | null
+}
+/** Whatnot's orders for a show next to the app's sales (GET /api/shows/:id/whatnot). */
+export interface WhatnotCompare {
+  connected: boolean
+  mode?: 'shadow' | 'auto'
+  /** Who matched the recording to the Whatnot show: by time, a person, or made from Whatnot's record. */
+  link?: 'auto' | 'manual' | 'made' | null
+  show?: WhatnotShowInfo | null
+  choices?: WhatnotShowInfo[]
+  /** The show ended and every order was read since: only then is a sale with no order called out. */
+  complete?: boolean
+  info?: { orders: number; giveaways: number; noBuyer: number } | null
+  summary?: Record<string, number>
+  rows?: ReconcileRow[]
+  uncovered?: { saleId: number; buyer: string; item: string; quantity: number; priceCents: number | null; status: string }[]
+  queued?: boolean
+  applied?: Record<string, number>
+}
+
+// ---------- Shipping: one package and one label per buyer (GET /api/shipping/shows/:id) ----------
+/** Where a buyer's shipping stands; the page turns the code into words (labels.ts). */
+export type ShippingState = 'none' | 'wait' | 'shared' | 'reading' | 'ready' | 'second' | 'split' | 'hold' | 'pickup' | 'labelled' | 'shipped' | 'failed' | 'other'
+export interface ShippingPackage {
+  id: number
+  status: string
+  /** Items of this show in the package, and items of another show bundled with them. */
+  items: number
+  otherItems: number
+  /** Those other items belong to a show that is live now: the bundle is still filling. */
+  liveElsewhere: boolean
+  tracking: string | null
+  carrier: string | null
+  labelReady: boolean
+  dueAt: string | null
+  /** What Whatnot wants done before it ships (codes; labels.ts has the words). */
+  holds: string[]
+  pickup: boolean
+  /** The package in Seller Hub. */
+  url: string | null
+  labelRequestedAt: string | null
+  labelProblem: string | null
+  /** "Make labels" would ask for this package's label right now (the server decides). */
+  askable: boolean
+}
+export interface ShippingBuyer {
+  buyer: string | null
+  items: number
+  /** Items not in any package on Whatnot yet. */
+  unplaced: number
+  packages: ShippingPackage[]
+  state: ShippingState
+  orderId: number | null
+  orderStatus: OrderStatus | null
+}
+export interface Shipping {
+  showId: number
+  showDate?: string
+  connected: boolean
+  matched: boolean
+  mode?: 'shadow' | 'auto'
+  /** complete: the show ended and all its orders and packages were read after that. */
+  show?: { title: string; status: string; ended: boolean; complete: boolean }
+  buyers: ShippingBuyer[]
+  totals: Partial<Record<ShippingState | 'buyers', number>>
+  /** How many labels "Make labels" would ask Whatnot for right now. */
+  labelsToMake?: number
+  /** Orders the carrier already has that the app still shows as waiting. */
+  toMarkShipped?: number
+  queued?: boolean
+  requested?: number
+  marked?: number
+}
+
+// ---------- Whatnot's own numbers: a show's results and the financial ledger ----------
+/** Whatnot's ledger for a show or a span of days, as Whatnot states it (cents, signed). */
+export interface WhatnotFigures {
+  /** The shop's currency: the only one summed. Lines in any other are counted, not added. */
+  currency?: string
+  otherCurrencyLines?: number
+  /** The sum of Whatnot's own ledger lines. */
+  netCents: number
+  kinds: { kind: string; lines: number; cents: number }[]
+  /** The fees Whatnot lists on order earnings (codes; labels.ts has the words). */
+  fees: Record<string, number>
+  itemPricesCents: number
+  costOfGoodsCents: number | null
+  through: string | null
+}
+/** GET /api/dashboard/shows/:id → `whatnot` (null for those who may not read reports). */
+export interface WhatnotRecap {
+  title: string
+  /** The access token may not read reports, so Whatnot will not give the show's results. */
+  resultsNotAllowed?: boolean
+  /** GENERATED | PENDING | NOT_ENDED | WILL_NOT_BE_CALCULATED | null (never asked) */
+  resultsStatus: string | null
+  resultsAt: string | null
+  results: Record<string, number> | null
+  ledger: WhatnotFigures | null
+}
+/** GET /api/whatnot/ledger */
+export interface WhatnotLedger {
+  connected: boolean
+  lines?: number
+  building?: boolean
+  lastImportedAt?: string | null
+  /** The access token may not read reports. */
+  notAllowed?: boolean
+  lastFailed?: boolean
+  unreadable?: boolean
+  /** Lines of the latest report that are not in the figures: unreadable, or repeating a transaction id. */
+  skippedLines?: number
+  repeatedLines?: number
+  days?: number
+  recent?: WhatnotFigures | null
+  shows?: { showId: number | null; title: string; startedAt: string | null; netCents: number; lines: number }[]
+}
+
+/** What the team says about a buyer: someone to look after, or someone to keep an eye on. */
+export type BuyerFlag = 'vip' | 'watch'
+/** What a buyer bought, from the shop's sales. A "show" is a show date. */
+export interface BuyerFigures {
+  /** Items that still stand (not cancelled, payment not failed). */
+  items: number
+  /** What was paid for. */
+  paidCents: number
+  shows: number
+  firstShow: string | null
+  lastShow: string | null
+  cancelled: number
+  failed: number
+}
+export interface BuyerRow extends BuyerFigures {
+  username: string
+  /** Names they have also bought under. */
+  names: string[]
+  flag: BuyerFlag | null
+  hasNote: boolean
+}
+export interface BuyerList {
+  buyers: BuyerRow[]
+  total: number
+  counts: { all: number; vip: number; watch: number; noted: number }
+  limit: number
+  offset: number
+}
+export interface BuyerProblem {
+  saleId: number
+  showId: number
+  showDate: string
+  item: string
+  quantity: number
+  priceCents: number | null
+  status: SaleStatus
+}
+export interface BuyerProfile extends BuyerFigures {
+  username: string
+  names: string[]
+  /** False for a name nobody has won under or said anything about. */
+  known: boolean
+  /** Whatnot named the account: a new username lands on this page by itself. */
+  followed: boolean
+  flag: BuyerFlag | null
+  note: string | null
+  notedBy: string | null
+  notedAt: string | null
+  gifts: number
+  problems: BuyerProblem[]
+}
+/** lower-case name → the team's flag and whether there is a note, for every flagged or noted buyer. */
+export type BuyerFlags = Record<string, { flag: BuyerFlag | null; note: boolean }>

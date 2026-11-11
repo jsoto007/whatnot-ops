@@ -61,6 +61,36 @@ def verified(order: Order) -> bool:
     )
 
 
+def ship_by_carrier(order: Order, *, tracking: str | None, actor_label: str = "Whatnot") -> Order:
+    """The carrier has the buyer's package(s) (Whatnot's shipment status says so): the
+    order is shipped, whichever step of picking or packing the app had it at. Nobody has
+    to click through steps that already happened on the packing table. Its paid sales
+    become fulfilled, as when a person marks it shipped; nothing moves in stock (the
+    units left the shelf when they were paid)."""
+    from . import pipeline
+    from .inventory import Actor
+
+    if order.status not in (OrderStatus.paid, OrderStatus.picking, OrderStatus.packed):
+        raise OrderError(f"cannot mark a {order.status.value} order shipped")
+    if not verified(order):
+        raise OrderError("every item must be paid before fulfilment (see Review)")
+    now = datetime.now(UTC)
+    order.picked_at = order.picked_at or now
+    order.packed_at = order.packed_at or now
+    order.shipped_at = now
+    order.status = OrderStatus.shipped
+    order.tracking = (tracking or order.tracking or "").strip()[:120] or None
+    for s in order.sales:
+        if s.status is SaleStatus.paid:
+            pipeline.set_sale_status(
+                s,
+                SaleStatus.fulfilled,
+                reason="shipped (the carrier has it)",
+                actor=Actor("whatnot", None, actor_label),
+            )
+    return order
+
+
 def advance(
     order: Order,
     new_status: OrderStatus,

@@ -13,13 +13,20 @@ PERMISSIONS: dict[str, frozenset[Role]] = {
     "devices.manage": MANAGERS,
     "audit.view": MANAGERS,
     "settings.manage": OWNER,
+    "whatnot.view": MANAGERS,  # connection health; nothing secret is ever shown
+    "whatnot.manage": OWNER,  # connect / disconnect the shop's Whatnot seller account
     "shows.view": ALL,
     "inventory.view": ALL,
     "inventory.write": MANAGERS,
     "orders.view": ALL,
     "orders.fulfill": frozenset({Role.owner, Role.manager, Role.fulfillment}),
     "orders.reconcile": MANAGERS,  # importing payment records changes stock (commit)
+    # Asking Whatnot to make labels closes each buyer's bundle and cannot be undone.
+    "orders.labels": MANAGERS,
     "review.act": MANAGERS,
+    # Every role sees who a buyer is (the packing table needs the flag); a viewer only reads.
+    "buyers.view": ALL,
+    "buyers.manage": frozenset({Role.owner, Role.manager, Role.fulfillment}),
     "reports.view": frozenset({Role.owner, Role.manager, Role.viewer}),
 }
 

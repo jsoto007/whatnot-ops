@@ -8,6 +8,7 @@ const PATHS: Record<string, string> = {
   inventory: '<path d="m12 2 9 5-9 5-9-5 9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/>',
   products: '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
   reports: '<path d="M4 20v-9"/><path d="M10 20V4"/><path d="M16 20v-6"/><path d="M2 20h20"/>',
+  buyers: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   team: '<circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/><path d="M17 4a4 4 0 0 1 0 8"/><path d="M22 21a7 7 0 0 0-5-6.7"/>',
   settings: '<path d="M4 6h8"/><circle cx="16" cy="6" r="2.5"/><path d="M18.5 6H20"/><path d="M12 12h8"/><circle cx="8" cy="12" r="2.5"/><path d="M4 12h1.5"/><path d="M4 18h10"/><circle cx="18" cy="18" r="2.5"/>',
   menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',

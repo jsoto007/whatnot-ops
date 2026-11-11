@@ -12,13 +12,16 @@ Preview first, then apply. Re-applying the same file changes nothing.
 import csv
 import io
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from ..db import db
-from ..models import ReviewItem, ReviewStatus, Sale, SaleStatus, Show
+from ..models import ParsedEvent, ReviewItem, ReviewStatus, Sale, SaleStatus, Show
 from . import catalog, pipeline
 from . import text as text_safe
 from .inventory import Actor
@@ -49,11 +52,51 @@ class Row:
     item: str
     quantity: int = 1
     price_cents: int | None = None
-    status: str = "paid"  # paid | void | failed | unknown
+    # paid | void | failed | unknown, and "pending" from Whatnot's own orders: the order
+    # exists but Whatnot has not settled the payment (never read from a file).
+    status: str = "paid"
     external_id: str | None = None
     action: str = ""  # mark_paid | cancel | decline | unchanged | unmatched | skip
     sale_id: int | None = None
     note: str | None = None
+    # Set when the row is one of Whatnot's own order items (services/whatnot/orders.py):
+    # the item's row id, the sale it was matched to before, and when it was ordered.
+    ref: int | None = None
+    sale_hint: int | None = None
+    ordered_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class Words:
+    """How the payment record is named in reasons and review items: a file someone
+    uploaded, or Whatnot's own orders read through its API."""
+
+    paid: Callable[[str], str]
+    void: Callable[[str, str], str]
+    confirmed: Callable[[str], str]
+    not_listed: str
+    says: str  # "the payment file says" …
+    unmatched: str  # "Payment file" …
+
+
+FILE = Words(
+    paid=lambda import_id: f"payment file {import_id}",
+    void=lambda import_id, status: f"payment file {import_id}: {status}",
+    confirmed=lambda import_id: f"paid at the win; in payment file {import_id}",
+    not_listed="is not in the payment file",
+    says="the payment file says",
+    unmatched="Payment file",
+)
+WHATNOT = Words(
+    paid=lambda import_id: "paid on Whatnot",
+    void=lambda import_id, status: (
+        "payment failed on Whatnot" if status == "failed" else "cancelled on Whatnot"
+    ),
+    confirmed=lambda import_id: "paid at the win; confirmed by Whatnot's order",
+    not_listed="is not among Whatnot's orders for this show",
+    says="Whatnot's order says",
+    unmatched="Whatnot",
+)
 
 
 @dataclass
@@ -174,9 +217,29 @@ def parse_csv(text: str) -> list[Row]:
     return rows
 
 
-def plan(show: Show, rows: list[Row]) -> Plan:
-    """Match file rows to the show's sales. Each sale is used at most once."""
-    sales = db.session.scalars(select(Sale).where(Sale.show_id == show.id).order_by(Sale.id)).all()
+def plan(
+    show: Show,
+    rows: list[Row],
+    *,
+    shows: list[Show] | None = None,
+    extra_sale_ids: set[int] | None = None,
+) -> Plan:
+    """Match file rows to the show's sales. Each sale is used at most once. `shows` widens
+    the search to every recording of the same Whatnot show (two laptops, a restart).
+    `extra_sale_ids` are sales in other shows already tied to one of these rows (a row's
+    `sale_hint`): they can be matched and changed, but are never "uncovered" here."""
+    show_ids = [s.id for s in shows] if shows else [show.id]
+    where = Sale.show_id.in_(show_ids)
+    if extra_sale_ids:
+        where = where | (
+            Sale.id.in_(extra_sale_ids) & (Sale.organization_id == show.organization_id)
+        )
+    sales = db.session.scalars(
+        select(Sale)
+        .where(where)
+        .options(selectinload(Sale.event).selectinload(ParsedEvent.message))
+        .order_by(Sale.id)
+    ).all()
     taken: set[int] = set()
     out = Plan()
     for row in rows:
@@ -189,7 +252,10 @@ def plan(show: Show, rows: list[Row]) -> Plan:
         else:
             taken.add(sale.id)
             row.sale_id = sale.id
-            if row.status == "paid":
+            if row.status == "pending":
+                # Whatnot has the order but has not settled it: the sale stands as it is.
+                row.action, row.note = "unchanged", "Whatnot is still taking the payment"
+            elif row.status == "paid":
                 row.action = (
                     "unchanged"
                     if sale.status in (SaleStatus.paid, SaleStatus.fulfilled)
@@ -225,6 +291,7 @@ def plan(show: Show, rows: list[Row]) -> Plan:
         s.id
         for s in sales
         if s.id not in taken
+        and s.show_id in show_ids
         and (
             s.status in (SaleStatus.detected, SaleStatus.reserved)
             # Paid only because Whatnot charges at the win: the file should list it, and a
@@ -240,6 +307,10 @@ def _match(show: Show, row: Row, sales: list[Sale], taken: set[int]) -> Sale | N
     sku = pipeline.match_sku(show.organization_id, row.item)
     key = catalog.norm_alias(row.item)
     candidates = [s for s in sales if s.id not in taken and s.buyer_username.lower() == buyer]
+    if row.sale_hint is not None:
+        for s in candidates:
+            if s.id == row.sale_hint:
+                return s  # matched to this very order item before
     if row.external_id:
         for s in candidates:
             if s.external_order_id == row.external_id:
@@ -247,6 +318,8 @@ def _match(show: Show, row: Row, sales: list[Sale], taken: set[int]) -> Sale | N
         # A sale an earlier file already tied to another order is that order's, not this one's
         # (a re-export lists the paid lot again next to the refunded one).
         candidates = [s for s in candidates if not s.external_order_id]
+    if row.ref is not None:
+        return _same_win_sale(row, candidates, sku)
 
     def priced(found: list[Sale]) -> Sale | None:
         # One buyer can win several lots of one listing at different prices: the price
@@ -285,6 +358,34 @@ def _match(show: Show, row: Row, sales: list[Sale], taken: set[int]) -> Sale | N
     return None
 
 
+def _same_win_sale(row: Row, candidates: list[Sale], sku) -> Sale | None:
+    """The sale one of Whatnot's own order items is, or None. Stricter than for a file: a
+    file's rows are a person's export of one show's payments, so the wording is forgiven
+    and a buyer's only purchase is assumed to be the one. Whatnot's orders include wins
+    the app never saw, so "the buyer's only sale" may be a different win altogether, and
+    matching it would pay, decline or cancel the wrong sale. A match needs the same win
+    (`pipeline.same_win`: the lot by title, the price when the sale knows what was paid,
+    and the order placed within half an hour of the win line), or failing the title, the
+    same known product under those same price and time rules."""
+    best: tuple | None = None
+    for sale in candidates:
+        price, won = pipeline.paid_price(sale), pipeline.won_when(sale)
+        key = pipeline.same_win(
+            sale.item_text, price, won, row.item, row.price_cents, row.ordered_at
+        )
+        if key is None and sku is not None and sale.sku_id == sku.id:
+            # Worded differently, but both name the same product of the shop's.
+            key = pipeline.same_win("x", price, won, "x", row.price_cents, row.ordered_at)
+            key = (3, key[1]) if key is not None else None
+        if key is None:
+            continue
+        # The surest first, then a sale still open over one already closed, then the oldest.
+        rank = (key, sale.status not in pipeline.CLOSABLE, sale.id)
+        if best is None or rank < best[0]:
+            best = (rank, sale)
+    return best[1] if best else None
+
+
 def _player_price_differs(sale: Sale, row: Row) -> bool:
     """The sale's price came from the video player and the payment file disagrees. Chat
     sales are left alone: their price is often the SKU's list price, not what was paid."""
@@ -293,16 +394,30 @@ def _player_price_differs(sale: Sale, row: Row) -> bool:
     return sale.event is not None and sale.event.rule == "player_win"
 
 
-def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Plan:
+def apply(
+    show: Show,
+    p: Plan,
+    *,
+    actor: Actor,
+    user=None,
+    import_id: str,
+    words: Words = FILE,
+    on_unmatched: Callable[[Row], bool] | None = None,
+    flag_uncovered: bool = True,
+) -> Plan:
+    """Apply a plan. `words` names the record in reasons and review items. `on_unmatched`
+    may settle a paid row no sale matched (Whatnot's own orders record the sale) and
+    returns True when it did; otherwise the row goes to Review. `flag_uncovered` is False
+    while the record cannot be complete yet (a show still live)."""
     for row in p.rows:
         if row.action == "unchanged" and row.status == "paid":
             # Already paid (Whatnot charges at the win): the file only confirms it.
             sale = db.session.get(Sale, row.sale_id)
             if _player_price_differs(sale, row):
-                _review_price(show, sale, row)  # not confirmed until a person checks it
+                _review_price(show, sale, row, words)  # not confirmed until a person checks it
             elif sale.status_reason == pipeline.AUTOPAY_REASON:
                 # The file agrees: the next file need not list it again.
-                sale.status_reason = f"paid at the win; in payment file {import_id}"
+                sale.status_reason = words.confirmed(import_id)
                 sale.external_order_id = sale.external_order_id or row.external_id
         if row.action not in ("mark_paid", "cancel", "decline"):
             continue
@@ -318,7 +433,7 @@ def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Pl
                     continue  # reviewed with the other unmatched rows below
                 pipeline._reserve(sale)  # never refused; an oversell shows as a shortfall
             pipeline.set_sale_status(
-                sale, SaleStatus.paid, reason=f"payment file {import_id}", actor=actor
+                sale, SaleStatus.paid, reason=words.paid(import_id), actor=actor
             )
             sale.paid_at = sale.paid_at or db.func.now()
             if row.external_id:
@@ -326,59 +441,73 @@ def apply(show: Show, p: Plan, *, actor: Actor, user=None, import_id: str) -> Pl
             if sale.price_cents is None and row.price_cents is not None:
                 sale.price_cents = row.price_cents
             elif _player_price_differs(sale, row):
-                _review_price(show, sale, row)
+                _review_price(show, sale, row, words)
         else:
             pipeline.set_sale_status(
                 sale,
                 SaleStatus.payment_failed if row.action == "decline" else SaleStatus.cancelled,
-                reason=f"payment file {import_id}: {row.status}",
+                reason=words.void(import_id, row.status),
                 actor=actor,
             )
     seen: dict[tuple[str, str], int] = {}
     for row in p.rows:
         if row.action == "unmatched":
+            if on_unmatched is not None and row.sale_id is None and on_unmatched(row):
+                continue  # settled: the record itself is the sale (see `on_unmatched`)
             k = (row.buyer.lower(), row.item.lower())
             seen[k] = seen.get(k, 0) + 1
-            _review_unmatched(show, row, import_id, occurrence=seen[k])
-    for sale_id in p.uncovered:
+            _review_unmatched(show, row, import_id, occurrence=seen[k], words=words)
+    for sale_id in p.uncovered if flag_uncovered else ():
         sale = db.session.get(Sale, sale_id)
         sale.flagged = True
         pipeline.open_review(
             show.organization_id,
             "no_payment_record",
             f"{sale.buyer_username}'s {sale.quantity} × "
-            f"{sale.item_text or (sale.sku.code if sale.sku else '?')} is not in the payment file",
-            show_id=show.id,
+            f"{sale.item_text or (sale.sku.code if sale.sku else '?')} {words.not_listed}",
+            show_id=sale.show_id,
             sale_id=sale.id,
             source="reconcile",
         )
     from . import orders
 
-    for order in _orders_of(show):
+    touched = {row.sale_id for row in p.rows if row.sale_id} | set(p.uncovered)
+    for order in _orders_of(show, touched):
         orders.refresh(order)
     return p
 
 
-def _review_price(show: Show, sale: Sale, row: Row) -> None:
+def _review_price(show: Show, sale: Sale, row: Row, words: Words = FILE) -> None:
     pipeline.open_review(
         show.organization_id,
         "price_mismatch",
         f"{sale.buyer_username}'s {sale.item_text}: the video player read "
-        f"{pipeline.money(sale.price_cents)}, the payment file says "
+        f"{pipeline.money(sale.price_cents)}, {words.says} "
         f"{pipeline.money(row.price_cents)} — check which one is right",
-        show_id=show.id,
+        show_id=sale.show_id,
         sale_id=sale.id,
         source="reconcile",
     )
 
 
-def _orders_of(show: Show):
+def _orders_of(show: Show, sale_ids: set[int] | None = None):
+    """The show's orders, and the orders of any sale the plan touched in another recording
+    of the same Whatnot show."""
     from ..models import Order
 
-    return db.session.scalars(select(Order).where(Order.show_id == show.id)).all()
+    orders = set(db.session.scalars(select(Order).where(Order.show_id == show.id)).all())
+    if sale_ids:
+        orders |= set(
+            db.session.scalars(
+                select(Order).join(Sale, Sale.order_id == Order.id).where(Sale.id.in_(sale_ids))
+            ).all()
+        )
+    return sorted(orders, key=lambda o: o.id)
 
 
-def _review_unmatched(show: Show, row: Row, import_id: str, *, occurrence: int = 1) -> None:
+def _review_unmatched(
+    show: Show, row: Row, import_id: str, *, occurrence: int = 1, words: Words = FILE
+) -> None:
     """One open review per paid order nobody could match. The key is the order id when the
     file has one; otherwise buyer + item (case-insensitive) + which occurrence in the file,
     so two separate "Mystery Pack" wins by the same buyer stay two items, while applying
@@ -401,7 +530,7 @@ def _review_unmatched(show: Show, row: Row, import_id: str, *, occurrence: int =
     pipeline.open_review(
         show.organization_id,
         "unmatched_payment",
-        f"Payment file: {row.buyer} paid for {row.quantity} × {row.item} but no matching "
+        f"{words.unmatched}: {row.buyer} paid for {row.quantity} × {row.item} but no matching "
         f"sale was found ({row.note or ''})",
         show_id=show.id,
         proposal={

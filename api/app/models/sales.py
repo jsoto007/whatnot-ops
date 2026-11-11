@@ -110,6 +110,9 @@ class Sale(db.Model):
     order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), index=True)
     external_order_id: Mapped[str | None] = mapped_column(String(80))
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When Whatnot says the order was placed, for a sale tied to a Whatnot order. A sale
+    # the app first learnt of from Whatnot has no chat line: this is then its win time.
+    ordered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     flagged: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False)
     # Free gifts packed with this lot ("Gift 2" on the order slips). Set by a person only.
     gift_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

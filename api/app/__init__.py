@@ -12,6 +12,7 @@ from .db import db, migrate
 from .logsafe import error_line
 from .routes.audit import bp as audit_bp
 from .routes.auth import bp as auth_bp
+from .routes.buyers import bp as buyers_bp
 from .routes.catalog import bp as catalog_bp
 from .routes.devices import bp as devices_bp
 from .routes.extension import bp as extension_bp
@@ -21,8 +22,11 @@ from .routes.orders import bp as orders_bp
 from .routes.pair import bp as pair_bp
 from .routes.reports import bp as reports_bp
 from .routes.review import bp as review_bp
+from .routes.shipping import bp as shipping_bp
 from .routes.shows import bp as shows_bp
 from .routes.team import bp as team_bp
+from .routes.webhooks import bp as webhooks_bp
+from .routes.whatnot import bp as whatnot_bp
 from .spa import register_spa
 
 log = logging.getLogger(__name__)
@@ -160,6 +164,27 @@ def create_app(config: Config | None = None) -> Flask:
 
     from . import models  # noqa: F401 - register tables with SQLAlchemy/Alembic
     from .services import pipeline, supervisor  # noqa: F401 - registers job handlers
+    from .services.whatnot import (  # noqa: F401 - register their jobs and webhook topics
+        orders as _whatnot_orders,
+    )
+    from .services.whatnot import results as _whatnot_results  # noqa: F401
+    from .services.whatnot import shipping as _whatnot_shipping  # noqa: F401
+    from .services.whatnot import sync as _whatnot_sync  # noqa: F401
+    from .services.whatnot import webhooks  # noqa: F401
+
+    if config.WHATNOT_FAKE:
+        # Local work and the browser tests: an in-memory Whatnot instead of the live shop.
+        from .services.whatnot import fake
+
+        app.extensions["whatnot_fake"] = shop = fake.FakeWhatnot()
+        app.config.update(
+            WHATNOT_TRANSPORT=shop.transport,
+            WHATNOT_API_TOKEN=fake.TOKEN,
+            WHATNOT_FETCH=shop.fetch,
+        )
+        from .routes.whatnot_fake import bp as whatnot_fake_bp
+
+        app.register_blueprint(whatnot_fake_bp, url_prefix="/api/whatnot/fake")
 
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(ingest_bp, url_prefix="/api")
@@ -173,7 +198,11 @@ def create_app(config: Config | None = None) -> Flask:
     app.register_blueprint(catalog_bp, url_prefix="/api")
     app.register_blueprint(review_bp, url_prefix="/api/review")
     app.register_blueprint(orders_bp, url_prefix="/api/orders")
+    app.register_blueprint(buyers_bp, url_prefix="/api/buyers")
     app.register_blueprint(reports_bp, url_prefix="/api")
+    app.register_blueprint(whatnot_bp, url_prefix="/api/whatnot")
+    app.register_blueprint(shipping_bp, url_prefix="/api/shipping")
+    app.register_blueprint(webhooks_bp, url_prefix="/api/webhooks")
     register_spa(app)
     register_cli(app)
 

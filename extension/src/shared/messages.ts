@@ -33,6 +33,8 @@ export type Request =
   | { cmd: 'flushUploads' }
   /** what this show has sold that is down to 3 or fewer (StockReply | null) */
   | { cmd: 'getStock'; showId?: string }
+  /** what the shop knows about the people who just won, before this show (BuyersReply | null) */
+  | { cmd: 'getBuyers'; showId?: string; names: string[] }
   /** extension pages only: the connection changed (paired, key saved, disconnected) */
   | { cmd: 'settingsChanged' }
   /** extension pages only: a different shop was connected; set unsent rows aside */

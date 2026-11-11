@@ -6,6 +6,7 @@ import { Icon, type IconName } from '../../components/Icon'
 import { apiGet, type NavCounts } from '../../lib/api'
 import { roleLabel } from '../../lib/labels'
 import { UpdateBanner } from './settings/UpdateExtension'
+import { WhatnotBanner } from './settings/WhatnotConnection'
 
 const GROUPS: { title: string; items: { to: string; label: string; permission: string; icon: IconName; end?: boolean }[] }[] = [
   {
@@ -14,6 +15,7 @@ const GROUPS: { title: string; items: { to: string; label: string; permission: s
       { to: '/app', label: 'Dashboard', permission: 'shows.view', icon: 'dashboard', end: true },
       { to: '/app/shows', label: 'Shows', permission: 'shows.view', icon: 'shows' },
       { to: '/app/orders', label: 'Orders', permission: 'orders.view', icon: 'orders' },
+      { to: '/app/buyers', label: 'Buyers', permission: 'buyers.view', icon: 'buyers' },
       { to: '/app/review', label: 'Review', permission: 'review.act', icon: 'review' },
     ],
   },
@@ -178,6 +180,7 @@ export function AppLayout() {
         </button>
       </aside>
       <main className="content">
+        <WhatnotBanner show={!!counts?.whatnotProblem} />
         <UpdateBanner enabled={can('shows.view')} />
         <Outlet />
       </main>

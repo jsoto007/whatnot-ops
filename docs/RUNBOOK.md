@@ -27,6 +27,13 @@ unset); the worker does. Both read the same `DATABASE_URL`.
 3. Optional AI: `AI_PROVIDER=claude` + `ANTHROPIC_API_KEY` (or `jev` +
    `JEV_API_KEY`, `JEV_API_URL`) on **both** services. The worker makes the
    calls. `AI_PROVIDER=fake` is refused in production.
+   Optional Whatnot Seller API (`docs/WHATNOT_API.md`): `WHATNOT_API_TOKEN` and
+   `WHATNOT_WEBHOOK_SECRET` on **both** services (the worker reads Whatnot and
+   applies orders; the web service receives the webhooks and prints labels).
+   There is no sandbox: the token is the live shop. Register the webhook
+   address in Seller Hub only after the deploy that serves it is live, and
+   the owner has pressed Connect in Settings. `WHATNOT_API=fake` is refused
+   in production.
 4. Smoke test (also `make smoke BASE_URL=https://…`):
    `GET /api/health` → `{"status":"ok","db":true}`; `/` serves the sign-in
    page; `/some/route` falls back to the SPA; `/api/nope` is 404.
@@ -109,3 +116,21 @@ cd extension && DEFAULT_SERVER_URL=https://ops.example.com npm run package
 
 Later: an unlisted Chrome Web Store listing gives install-by-link and
 auto-updates (one-time developer registration and Google's review).
+
+## Whatnot connection
+
+- **"The Whatnot connection stopped working" on every page**: Whatnot answered
+  401 or 403. The account owner makes a new token in Seller Hub (or adds the
+  missing permission); put it in `WHATNOT_API_TOKEN` on both services. Settings →
+  Whatnot → Check now clears the banner once a call works.
+- **Nothing arrives during a show**: Settings → Whatnot shows the last update
+  received. With no webhook for 10 minutes while a show is live, the worker
+  reads the show's orders itself every sweep (5 min). A failing webhook address
+  is throttled and then removed by Whatnot: add it again in Seller Hub.
+- **A read failed**: the `jobs` table keeps the error line (`kind` starting
+  `whatnot_`); `whatnot_sync_state.last_error` says which reading. Reads never
+  change a sale, a payment or stock; they are safe to run again
+  (show page → Payments → "Read again from Whatnot").
+- **Freeze merges while a show is live**, as before: a deploy restarts the web
+  service, and Whatnot retries a webhook it could not deliver (for 2.5 days),
+  but a migration mid-show is still a risk not worth taking.

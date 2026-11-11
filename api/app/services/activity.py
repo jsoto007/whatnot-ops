@@ -32,6 +32,18 @@ RECONCILE_ACTION = {
     "unmatched": "no matching sale",
     "skip": "skipped",
     "uncovered": "not in the file",
+    "record": "sale to record",
+    "recorded": "sale recorded",
+}
+
+
+WHATNOT_ORDER_ACTION = {
+    "mark_paid": "marked paid",
+    "cancel": "cancelled",
+    "decline": "payment declined",
+    "recorded": "sales recorded",
+    "unmatched": "for a person to check",
+    "uncovered": "with no order on Whatnot",
 }
 
 
@@ -112,7 +124,7 @@ WHO = {
 
 def who(action: str, actor_type: str | None, label: str | None) -> str:
     """The activity log's "Who" column."""
-    if actor_type not in ("user", "device", "ai") and action in WHO:
+    if actor_type not in ("user", "device", "ai", "whatnot") and action in WHO:
         return WHO[action]
     return actor(actor_type, label)
 
@@ -124,6 +136,8 @@ def actor(actor_type: str | None, label: str | None) -> str:
         return label
     if actor_type == "ai":
         return "AI"
+    if actor_type == "whatnot":
+        return "Whatnot"  # what Whatnot's own records said (an order paid, a parcel sent)
     return "Automatic"
 
 
@@ -232,6 +246,19 @@ def _parsed(d: dict, _target: str) -> str:
     return f"Re-read a show's chat: {_plural(d['sales'], 'sale')}, {d['reviews']} to review"
 
 
+BUYER_FLAG = {"vip": "a VIP", "watch": "on the watch list"}
+
+
+def _buyer_flagged(d: dict, _target: str) -> str:
+    buyer = _q(d["buyer"])
+    if d.get("after") == "watch":
+        return f"Put buyer {buyer} on the watch list"
+    if d.get("after") == "vip":
+        return f"Marked buyer {buyer} as a VIP"
+    was = BUYER_FLAG.get(d.get("before"))
+    return f"Buyer {buyer} is no longer {was}" if was else f"Cleared the flag on buyer {buyer}"
+
+
 def _order_updated(d: dict, _target: str) -> str:
     before, after = d["before"], d["after"]
     words = {"notes": "notes", "tracking": "tracking number", "packedBy": "packed by"}
@@ -333,9 +360,80 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
         lambda d, t: f"Changed a sale's gifts from {d['before']} to {d['after']}",
     ),
     "sale.autopaid": ("Marked a sale paid at the win", None),
+    "buyer.flagged": ("Changed a buyer's flag", _buyer_flagged),
+    "buyer.noted": (
+        "Changed a buyer's note",
+        lambda d, t: (
+            f"{'Wrote' if not d.get('before') else 'Changed'} the note on buyer {_q(d['buyer'])}"
+            if d.get("after")
+            else f"Removed the note on buyer {_q(d['buyer'])}"
+        ),
+    ),
+    "buyer.renamed": (
+        "A buyer changed their name",
+        lambda d, t: f"Buyer {_q(d['before'])} now goes by {_q(d['after'])} on Whatnot",
+    ),
+    "buyer.merged": (
+        "Joined two buyer profiles",
+        lambda d, t: (
+            f"Buyer {_q(d['other'])} and buyer {_q(d['buyer'])} are one Whatnot account:"
+            " their profiles were joined"
+        ),
+    ),
+    "buyer.name_moved": (
+        "A buyer's name went to another account",
+        lambda d, t: f"The name {_q(d['name'])} is now used by a different Whatnot account",
+    ),
     "payments.reconciled": ("Matched the payment file", _reconciled),
     "organization.updated": ("Changed the shop settings", _org_updated),
     "report.downloaded": ("Downloaded a show report", _report),
+    "whatnot.connected": (
+        "Connected the shop to Whatnot",
+        lambda d, t: (
+            f"Connected the shop to Whatnot as @{d['username']}"
+            + (" and set it as the host's username" if d.get("hostUsernameSet") else "")
+        ),
+    ),
+    "whatnot.disconnected": (
+        "Disconnected the shop from Whatnot",
+        lambda d, t: f"Disconnected the shop from Whatnot (@{d['username']})",
+    ),
+    "whatnot.orders_applied": (
+        "Applied Whatnot's orders to a show",
+        lambda d, t: (
+            "Applied Whatnot's orders to a show"
+            + (f": {c}" if (c := _counts(d, WHATNOT_ORDER_ACTION)) else ": nothing to change")
+        ),
+    ),
+    "whatnot.show_linked": (
+        "Matched a show to Whatnot",
+        lambda d, t: (
+            f"Matched a show to the Whatnot show {_q(d['title'])}"
+            if d.get("title")
+            else "Unmatched a show from Whatnot"
+        ),
+    ),
+    "whatnot.mode": (
+        "Changed how Whatnot's orders are used",
+        lambda d, t: (
+            "Whatnot's orders are now applied as they arrive"
+            if d["mode"] == "auto"
+            else "Whatnot's orders are now only compared until a person applies them"
+        ),
+    ),
+    "whatnot.orders_shipped": (
+        "Marked orders shipped",
+        lambda d, t: (
+            f"Marked {_plural(d['orders'], 'order')} shipped: the carrier has them"
+            if d.get("orders")
+            else "Marked orders shipped: the carrier has them"
+        ),
+    ),
+    "labels.requested": (
+        "Asked Whatnot for shipping labels",
+        lambda d, t: f"Asked Whatnot to make {_plural(d['packages'], 'shipping label')}",
+    ),
+    "label.printed": ("Opened a shipping label to print", None),
     "ai.sale_confirmed": ("Confirmed a sale", None),
     "ai.applied": ("Applied a suggestion", None),
 }

@@ -1,6 +1,6 @@
 import { Recorder } from '../capture/recorder'
 import { DeclineWatcher, isDeclineBody, outside } from '../capture/decline'
-import { WinWatcher } from '../capture/player'
+import { parseWinBody, WinWatcher } from '../capture/player'
 import { buildSelector, chatContainer, findRow, scrollParent } from '../capture/row'
 import type { CapturedRow } from '../capture/types'
 import {
@@ -19,6 +19,7 @@ import { onShipmentsPage } from '../shipments/read'
 import type { ShipmentsReply } from '../shipments/upload'
 import { type StockSeen, stockAlerts } from '../stock/alerts'
 import type { StockReply } from '../stock/fetch'
+import { type BuyersReply, buyerLine } from '../buyers/known'
 import { Panel, readLayout } from './panel'
 import { dotState, uploadNote, winNotice } from './status'
 
@@ -81,6 +82,8 @@ export class Controller {
   private stockTimer: ReturnType<typeof setInterval> | null = null
   /** Last stock poll of this recording; null until the first one (the baseline). */
   private stockSeen: StockSeen | null = null
+  /** Counts the "who won?" questions, so only the latest answer names the panel's line. */
+  private buyerAsk = 0
   private playerObserver: MutationObserver | null = null
   private observedPlayer: Element | null = null
   private pending: CapturedRow[] = []
@@ -384,6 +387,8 @@ export class Controller {
     if (this.winTimer) clearInterval(this.winTimer)
     this.winTimer = null
     this.wins = null
+    this.buyerAsk++ // an answer still on its way is not shown
+    this.panel.setBuyer('')
     this.declines = null
     this.stopStock()
     this.playerObserver?.disconnect()
@@ -411,7 +416,7 @@ export class Controller {
       this.onRow(row)
       // Each win is also a notice beside the panel or the pill, for a few seconds.
       const notice = winNotice(row)
-      if (notice) this.panel.notify(notice)
+      if (notice) void this.whoWon(row, this.panel.notify(notice))
     }
     this.renderWins()
   }
@@ -452,6 +457,28 @@ export class Controller {
     this.stockSeen = seen
     this.panel.setLowStock(reply.items)
     this.panel.showStockAlerts(alerts)
+  }
+
+  /**
+   * Ask the shop who the winner is (new, or back again; the team's flag) and say so on the win's
+   * notice and in the panel. Says nothing when not connected or the web app does not answer.
+   */
+  private async whoWon(row: CapturedRow, notice: HTMLElement): Promise<void> {
+    const win = parseWinBody(row.body)
+    if (!win) return
+    const asked = ++this.buyerAsk
+    let reply: BuyersReply | null
+    try {
+      reply = await send<BuyersReply | null>({ cmd: 'getBuyers', showId: this.startedAt ?? undefined, names: [win.winner] })
+    } catch {
+      return
+    }
+    const buyer = reply?.buyers.find((b) => b.name.toLowerCase() === win.winner.toLowerCase())
+    if (!buyer || !this.wins) return // not connected, offline, or stopped meanwhile
+    const line = buyerLine(buyer)
+    this.panel.amend(notice, line)
+    // Answers can come back out of order: the panel's line is about the latest win only.
+    if (asked === this.buyerAsk) this.panel.setBuyer(`${win.winner}: ${line}`)
   }
 
   private stopStock(): void {

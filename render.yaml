@@ -83,6 +83,9 @@ services:
       #   AI_PROVIDER=claude|jev, ANTHROPIC_API_KEY / JEV_API_KEY (+ JEV_API_URL, JEV_MODEL)
       #   (set the same AI_* values on the worker; that is where the jobs run)
       #   LOG_LEVEL=INFO
+      #   WHATNOT_API_TOKEN       Whatnot Seller API token (docs/WHATNOT_API.md); also on the worker
+      #   WHATNOT_WEBHOOK_SECRET  signing secret of the webhook Whatnot delivers to
+      #                           /api/webhooks/whatnot (without it that address answers 404)
 
   # Background worker: parsing, AI supervision, exports (jobs table, SKIP LOCKED).
   - type: worker
@@ -110,3 +113,4 @@ services:
       # Dashboard, same values as the web service (never commit them):
       #   MAILGUN_API_KEY, MAILGUN_DOMAIN, EMAIL_FROM   password-reset emails go out from here
       #   AI_PROVIDER + its key                          the AI jobs run here
+      #   WHATNOT_API_TOKEN (+ WHATNOT_WEBHOOK_SECRET)   reading Whatnot and applying orders run here

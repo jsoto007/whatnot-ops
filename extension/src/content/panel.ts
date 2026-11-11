@@ -215,6 +215,7 @@ const HTML = `
           <div class="st" id="st">Ready. Open the show, then press Start.</div>
           <div class="sync" id="sync"></div>
           <div class="sync" id="wins" hidden></div>
+          <div class="sync" id="who" hidden></div>
           <div class="prompt" id="resumeRow" hidden>
             <button class="pb" id="resume">Resume last show</button>
             <button class="pb sec" id="fresh">Start fresh</button>
@@ -501,6 +502,12 @@ export class Panel {
     this.el('wins').hidden = !msg
   }
 
+  /** What the shop knows about the latest winner ("lani808: back again · 12 items over 5 shows"). */
+  setBuyer(msg: string): void {
+    this.el('who').textContent = msg
+    this.el('who').hidden = !msg
+  }
+
   setCount(n: number): void {
     const text = String(n)
     this.el('cnt').textContent = text
@@ -522,8 +529,11 @@ export class Panel {
 
   // ---------- notifications ----------
 
-  /** Show a notice beside the panel or the pill for NOTICE_MS, or until it is clicked. Text only. */
-  notify(n: Notice): void {
+  /**
+   * Show a notice beside the panel or the pill for NOTICE_MS, or until it is clicked. Text only.
+   * Returns the notice, so a line learnt a moment later can be added to it (`amend`).
+   */
+  notify(n: Notice): HTMLElement {
     const box = this.el('toasts')
     while (box.children.length >= NOTICE_MAX) this.remove(box.firstElementChild as HTMLElement)
     const doc = box.ownerDocument
@@ -546,6 +556,17 @@ export class Panel {
     this.arm(el, NOTICE_MS)
     el.addEventListener('pointerenter', () => this.disarm(el))
     el.addEventListener('pointerleave', () => this.arm(el, NOTICE_HOLD_MS))
+    return el
+  }
+
+  /** Add one more line to a notice that is still showing (who the winner is, once the shop answered). */
+  amend(el: HTMLElement, text: string): void {
+    const tx = el.querySelector('.tx')
+    if (!tx || !el.parentNode || el.classList.contains('gone')) return // fading, or already taken off
+    const s = el.ownerDocument.createElement('span')
+    s.className = 'more'
+    s.textContent = text
+    tx.append(s)
   }
 
   /** Fade a notice out, then take it off. */
