@@ -1,6 +1,7 @@
 """Orders → Shipping: one package and one label per buyer for a show, from Whatnot."""
 
 from flask import Blueprint, Response, g, jsonify, request
+from sqlalchemy import select
 
 from ..auth import require
 from ..db import db
@@ -57,18 +58,34 @@ def refresh(show_id: int):
     if ws is None:
         return jsonify({"error": "This show is not matched to a show on Whatnot yet."}), 409
     ratelimit.per_org("whatnot-refresh", g.u.organization_id, REFRESH_PER_10_MIN, 600)
-    job = shipping.schedule(show.organization_id, ws.whatnot_id)
+    # The show's orders first (a last win may not be here yet), then the parcels they are
+    # in: the orders job queues the shipments read itself.
+    from ..models import Job
+    from ..services import jobs
+
+    job = jobs.enqueue(
+        "whatnot_sync_show",
+        {"org_id": show.organization_id, "whatnot_show_id": ws.whatnot_id},
+        org_id=show.organization_id,
+        dedupe_key=f"whatnot_sync_show:{show.organization_id}:{ws.whatnot_id}",
+    )
     db.session.commit()
     job_id = job.id
     db.session.expire_all()
-    from ..models import Job
-
     job = db.session.get(Job, job_id)
     if job is not None and job.error:
         return jsonify({"error": "Whatnot could not be read just now. Try again in a minute."}), 502
-    queued = job is not None and job.status.value != "done"
+    waiting = db.session.scalar(
+        select(Job.id)
+        .where(
+            Job.organization_id == g.u.organization_id,
+            Job.kind.in_(("whatnot_sync_show", "whatnot_sync_shipments")),
+            Job.status.in_(("queued", "running")),
+        )
+        .limit(1)
+    )
     show = _show_or_404(show_id)
-    return jsonify({"showId": show.id, **shipping.packages(show), "queued": queued})
+    return jsonify({"showId": show.id, **shipping.packages(show), "queued": waiting is not None})
 
 
 @bp.post("/shows/<int:show_id>/labels")

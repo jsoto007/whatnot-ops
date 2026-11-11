@@ -21,6 +21,11 @@ async function signup(page: Page) {
   await expect(page).toHaveURL(/\/app$/)
 }
 
+/** E2E_SHOTS=<folder> saves a picture of each new screen (for a write-up); off by default. */
+const shot = async (page: Page, name: string) => {
+  if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/${name}.png`, fullPage: true })
+}
+
 const win = (seq: number, buyer: string, title: string, price: string) => {
   const body = `${buyer} won the auction for ${title} for ${price}`
   return {
@@ -82,6 +87,7 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   await page.getByTestId('whatnot-connect').click()
   await expect(page.getByTestId('whatnot-state')).toContainText(`Connected as @shop_${run}`)
   await expect(page.getByTestId('whatnot-mode').getByRole('radio', { name: /Compare only/ })).toBeChecked()
+  await shot(page, '1-settings-connected')
 
   // The show's Payments tab: matched to the Whatnot show on its own; read its orders.
   await page.getByRole('link', { name: 'Shows', exact: true }).click()
@@ -95,10 +101,10 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   await expect(rows.getByRole('row').filter({ hasText: 'kat.c' })).toContainText('payment failed')
   await expect(rows.getByRole('row').filter({ hasText: 'kat.c' })).toContainText('mark the payment declined')
   await expect(rows.getByRole('row').filter({ hasText: 'newbie' })).toContainText('record the sale')
+  await shot(page, '2-payments-compare')
   // Comparing changed nothing: both units are still off the shelf.
   await page.getByTestId('whatnot-apply').click()
-  await expect(page.getByTestId('whatnot-applied')).toContainText('1 mark the payment declined')
-  await expect(page.getByTestId('whatnot-applied')).toContainText('3 sale recorded')
+  await expect(page.getByTestId('whatnot-applied')).toHaveText('1 payment declined · 3 newly recorded')
   await expect(page.getByTestId('whatnot-apply')).toHaveText('Nothing to apply')
 
   // Shipping: one package and one label per buyer.
@@ -109,8 +115,9 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   await expect(page.getByTestId('ship-splitsy').getByTestId('ship-package')).toHaveCount(2)
   // Two labels to make (lani808, newbie); the page asks first and says what it closes.
   await expect(page.getByTestId('shipping-make-labels')).toHaveText('Make 2 labels')
+  await shot(page, '3-shipping-before-labels')
   page.once('dialog', async (dialog) => {
-    expect(dialog.message()).toContain("closes each buyer's bundle")
+    expect(dialog.message()).toContain("closes its buyer's bundle")
     await dialog.accept()
   })
   await page.getByTestId('shipping-make-labels').click()
@@ -120,6 +127,7 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   expect(((await made.json()) as { labelsRequested: string[] }).labelsRequested.sort()).toEqual([fake.shipments[0], fake.shipments[1]].sort())
   await page.getByTestId('shipping-refresh').click()
   await expect(page.getByTestId('ship-lani808').getByTestId('ship-state')).toHaveText('Label ready')
+  await shot(page, '4-shipping-labels-ready')
   const print = page.getByTestId('ship-lani808').getByTestId('ship-print')
   const pdf = await page.request.get((await print.getAttribute('href'))!)
   expect(pdf.status()).toBe(200)

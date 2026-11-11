@@ -223,11 +223,72 @@ WHATNOT_ACTOR = Actor("whatnot", None, "Whatnot")
 ORDER_PAID_REASON = "paid on Whatnot"
 
 
+# A win line and Whatnot's order for the same win are seconds apart; half an hour allows
+# for a laptop's clock and a line captured late. Further apart, they are different wins.
+SAME_WIN_WINDOW = timedelta(minutes=30)
+
+
 def _titles_match(a: str | None, b: str | None) -> bool:
     """Two listing titles for the same lot: equal once case, spacing and punctuation are
     set aside. An empty title matches nothing."""
+    return same_listing(a, b) == 0
+
+
+def same_listing(a: str | None, b: str | None) -> int | None:
+    """How surely two titles name the same lot: 0 the same text (case, spacing and
+    punctuation aside), 1 the same once Whatnot's trailing lot number is set aside ("Red
+    bundle" / "Red bundle #752"), 2 one contains the other. None: not the same lot, which
+    always includes two different lot numbers ("… #7" and "… #8" are two wins)."""
     ka, kb = catalog.norm_alias(a or ""), catalog.norm_alias(b or "")
-    return bool(ka) and ka == kb
+    if not ka or not kb:
+        return None
+    if ka == kb:
+        return 0
+    lot_a, lot_b = rules.lot_number(a or ""), rules.lot_number(b or "")
+    if lot_a is not None and lot_b is not None and lot_a != lot_b:
+        return None
+    base_a = catalog.norm_alias(rules.item_title(a or ""))
+    base_b = catalog.norm_alias(rules.item_title(b or ""))
+    if base_a and base_a == base_b:
+        return 1
+    if base_a and base_b and (base_a in base_b or base_b in base_a):
+        return 2
+    return None
+
+
+def paid_price(sale: Sale) -> int | None:
+    """What the buyer paid, when the sale knows it: the price a win line or an order
+    stated. A sale whose line named no price carries the product's list price instead,
+    which says nothing about what was paid: None."""
+    if sale.event is not None and sale.event.price_cents is None:
+        return None
+    return sale.price_cents
+
+
+def won_when(sale: Sale):
+    """When the lot was won: its win line's time, else when Whatnot says it was ordered."""
+    if sale.event is not None and sale.event.message is not None:
+        return sale.event.message.captured_at
+    return sale.ordered_at
+
+
+def same_win(
+    title_a, price_a, at_a, title_b, price_b, at_b, *, window: timedelta = SAME_WIN_WINDOW
+) -> tuple | None:
+    """Whether a sale and a win line / order are one and the same win, as a sort key (the
+    smaller, the surer) or None. Same lot by title, the same price when both are known,
+    and close in time when both times are known. Used both ways round (a win line meeting
+    the sale an order made; an order meeting the sale a win line made), so the two paths
+    cannot disagree and make two sales of one win."""
+    rank = same_listing(title_a, title_b)
+    if rank is None:
+        return None
+    if None not in (price_a, price_b) and price_a != price_b:
+        return None
+    apart = abs((at_a - at_b).total_seconds()) if None not in (at_a, at_b) else None
+    if apart is not None and apart > window.total_seconds():
+        return None
+    return (rank, apart if apart is not None else window.total_seconds())
 
 
 def _recordings_of_the_same_show(show: Show) -> list[int]:
@@ -305,36 +366,45 @@ def create_sale_from_order(
 
 def claim_order_sale(show: Show, ev: ParsedEvent) -> Sale | None:
     """The win a chat or video-player line is about, when Whatnot's order for it already
-    made the sale (create_sale_from_order): the same buyer, the same listing title and the
-    same price, in any recording of this Whatnot show, with no line tied to it yet. The
-    line becomes that sale's evidence instead of a second sale. The oldest such sale goes
-    first, so three wins of one listing claim three sales. Caller holds the buyer's lock."""
+    made the sale (create_sale_from_order): the same buyer and the same win (`same_win`:
+    lot, price, and close in time), with no line tied to it yet. The line becomes that
+    sale's evidence instead of a second sale. Looked for across the whole shop, not only
+    this recording: one laptop can record through two shows, and the order's sale then
+    lives in another show here. The surest match wins, then the oldest, so three wins of
+    one listing claim three sales. The order's quantity stands (it is Whatnot's record).
+    Caller holds the buyer's lock."""
     if not ev.buyer_username:
         return None
+    at = _won_at(ev)
+    same_show = set(_recordings_of_the_same_show(show))
     candidates = db.session.scalars(
         select(Sale)
         .where(
             Sale.organization_id == show.organization_id,
-            Sale.show_id.in_(_recordings_of_the_same_show(show)),
             Sale.event_id.is_(None),
             Sale.external_order_id.is_not(None),
+            Sale.status.in_(OPEN + (SaleStatus.paid, SaleStatus.fulfilled)),
             func.lower(Sale.buyer_username) == ev.buyer_username.lower(),
         )
         .order_by(Sale.id)
         .with_for_update()
     ).all()
+    best: tuple | None = None
     for sale in candidates:
-        if not _titles_match(sale.item_text, ev.item_text):
-            continue
-        if None not in (sale.price_cents, ev.price_cents) and sale.price_cents != ev.price_cents:
-            continue
-        if sale.quantity != ev.quantity:
-            continue
-        sale.event_id = ev.id
-        if sale.price_cents is None:
-            sale.price_cents = ev.price_cents
-        return sale
-    return None
+        if sale.ordered_at is None and sale.show_id not in same_show:
+            continue  # nothing says when it was won: only this show's own
+        key = same_win(
+            sale.item_text, sale.price_cents, sale.ordered_at, ev.item_text, ev.price_cents, at
+        )
+        if key is not None and (best is None or key < best[0]):
+            best = (key, sale)
+    if best is None:
+        return None
+    sale = best[1]
+    sale.event_id = ev.id
+    if sale.price_cents is None:
+        sale.price_cents = ev.price_cents
+    return sale
 
 
 def close_sale(show: Show, ev: ParsedEvent, new_status: SaleStatus) -> Sale | None:

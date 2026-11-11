@@ -25,8 +25,18 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from ...db import db
-from ...models import Sale, SaleStatus, Show, WhatnotOrder, WhatnotOrderItem, WhatnotShow
+from ...models import (
+    ChatMessage,
+    ParsedEvent,
+    Sale,
+    SaleStatus,
+    Show,
+    WhatnotOrder,
+    WhatnotOrderItem,
+    WhatnotShow,
+)
 from .. import jobs, pipeline, reconcile
+from ..orders import STANDING
 from ..reconcile import Plan, Row
 from . import connection, sync
 
@@ -115,24 +125,49 @@ def _complete(ws: WhatnotShow) -> bool:
     )
 
 
+HERE = {
+    SaleStatus.cancelled: "cancelled here",
+    SaleStatus.payment_failed: "marked payment declined here",
+    SaleStatus.fulfilled: "already shipped here",
+}
+THERE = {
+    "paid": "paid on Whatnot",
+    "pending": "sold on Whatnot",
+    "void": "cancelled on Whatnot",
+    "failed": "not paid on Whatnot",
+}
+
+
 def _plan(show: Show, ws: WhatnotShow) -> tuple[Plan, dict, list[Show]]:
     recordings = sync.recordings_of(ws) or [show]
     rows, info = rows_for(ws)
-    plan = reconcile.plan(recordings[0], rows, shows=recordings)
-    unnamed = set(
-        db.session.scalars(
-            select(Sale.id).where(
-                Sale.id.in_([r.sale_id for r in plan.rows if r.action == "mark_paid"] or [0]),
-                Sale.status == SaleStatus.detected,
-                Sale.sku_id.is_(None),
-            )
+    # A sale already tied to one of these order items may live in a show that is not a
+    # recording of this Whatnot show (one laptop recording through two shows): it is still
+    # that order's sale, and Whatnot's word on the payment still applies to it.
+    hinted = {r.sale_hint for r in rows if r.sale_hint}
+    plan = reconcile.plan(recordings[0], rows, shows=recordings, extra_sale_ids=hinted)
+    sales = {
+        s.id: s
+        for s in db.session.scalars(
+            select(Sale).where(Sale.id.in_([r.sale_id for r in plan.rows if r.sale_id] or [0]))
         )
-    )
+    }
     for row in plan.rows:
+        sale = sales.get(row.sale_id)
         # An order nobody has a sale for: cancelled or failed, there is nothing to record.
         if row.action == "unmatched" and row.sale_id is None and row.status in ("void", "failed"):
             row.action, row.note = "skip", "never recorded here, and not paid on Whatnot"
-        elif row.action == "mark_paid" and row.sale_id in unnamed:
+        elif row.action == "unmatched" and sale is not None:
+            # The two records disagree about a sale already closed or shipped here: a
+            # person decides. Said in words (the engine's own note is written for a file).
+            here = HERE.get(sale.status, "closed here")
+            row.note = f"{here}, but {THERE.get(row.status, 'different on Whatnot')}"
+        elif (
+            row.action == "mark_paid"
+            and sale is not None
+            and sale.status is SaleStatus.detected
+            and sale.sku_id is None
+        ):
             # Paid on Whatnot, but nobody has said which product it is: its own review item
             # is already waiting, and naming the product is what marks it paid.
             row.action, row.note = "unchanged", "waiting for its product to be named"
@@ -152,42 +187,63 @@ def compare(show: Show) -> dict:
     return {"plan": plan, "info": info, "complete": _complete(ws)}
 
 
-def _existing_sale_for(org_id: int, row: Row) -> Sale | None:
-    """A standing sale already tied to this order and listing anywhere in the shop (for
-    example in a recording that was linked to another show since)."""
-    for sale in db.session.scalars(
-        select(Sale)
-        .where(Sale.organization_id == org_id, Sale.external_order_id == row.external_id)
-        .order_by(Sale.id)
-    ):
-        if pipeline._titles_match(sale.item_text, row.item):
-            return sale
-    return None
+def _existing_sale_for(org_id: int, row: Row, taken: set[int]) -> Sale | None:
+    """A sale already tied to this order and listing anywhere in the shop (for example in
+    a recording that was matched to another show since), not yet used by another item of
+    this run: two items of one order with the same title are two sales, not one. A sale
+    that stands comes before one that was closed."""
+    found = [
+        sale
+        for sale in db.session.scalars(
+            select(Sale)
+            .where(Sale.organization_id == org_id, Sale.external_order_id == row.external_id)
+            .order_by(Sale.id)
+            .with_for_update()
+        )
+        if sale.id not in taken and pipeline.same_listing(sale.item_text, row.item) is not None
+    ]
+    found.sort(
+        key=lambda s: (s.status not in STANDING, pipeline.same_listing(s.item_text, row.item))
+    )
+    return found[0] if found else None
 
 
-def _unclaimed_win(show_ids: list[int], row: Row, taken: set[int]) -> Sale | None:
-    """A sale a win line made for this very lot while we were planning (the parser and
-    this run are separate transactions): same buyer, title, price and quantity, tied to
-    no order yet."""
-    for sale in db.session.scalars(
-        select(Sale)
+def _unclaimed_win(org_id: int, show_ids: list[int], row: Row, taken: set[int]) -> Sale | None:
+    """A sale a win line made for this very win, tied to no order yet: the same buyer and
+    the same win by `pipeline.same_win` (lot, price, close in time). Looked for across the
+    shop, like the win line's own search (`pipeline.claim_order_sale`): the recording that
+    holds it may be matched to another show. Also what catches a sale the parser made
+    while this run was planning (they are separate transactions)."""
+    candidates = db.session.execute(
+        select(Sale, ChatMessage.captured_at)
+        .outerjoin(ParsedEvent, Sale.event_id == ParsedEvent.id)
+        .outerjoin(ChatMessage, ParsedEvent.message_id == ChatMessage.id)
         .where(
-            Sale.show_id.in_(show_ids),
+            Sale.organization_id == org_id,
             Sale.external_order_id.is_(None),
             Sale.status.in_(pipeline.OPEN + (SaleStatus.paid,)),
             func.lower(Sale.buyer_username) == row.buyer.lower(),
         )
         .order_by(Sale.id)
-        .with_for_update()
-    ):
-        if sale.id in taken or sale.quantity != row.quantity:
+        .with_for_update(of=Sale)
+    ).all()
+    best: tuple | None = None
+    for sale, won_at in candidates:
+        if sale.id in taken:
             continue
-        if not pipeline._titles_match(sale.item_text, row.item):
-            continue
-        if None not in (sale.price_cents, row.price_cents) and sale.price_cents != row.price_cents:
-            continue
-        return sale
-    return None
+        if won_at is None and sale.show_id not in show_ids:
+            continue  # nothing says when it was won: only this show's own
+        key = pipeline.same_win(
+            sale.item_text,
+            pipeline.paid_price(sale),
+            won_at,
+            row.item,
+            row.price_cents,
+            row.ordered_at,
+        )
+        if key is not None and (best is None or key < best[0]):
+            best = (key, sale)
+    return best[1] if best else None
 
 
 def apply(show: Show, *, user=None) -> dict:
@@ -204,6 +260,11 @@ def apply(show: Show, *, user=None) -> dict:
         .limit(1)
     ):
         raise OrdersError("Whatnot's orders for this show have not been read yet. Try again soon.")
+    # One at a time per show, and never while the parser is in the middle of the same
+    # show: both make sales from the same wins. The parser's own lock is taken for every
+    # recording of the show, in a fixed order, before anything is read.
+    for show_id in sorted(s.id for s in (sync.recordings_of(ws) or [show])):
+        pipeline._lock_show(show_id, wait=True)
     plan, info, recordings = _plan(show, ws)
     if info["noBuyer"]:
         # Without buyers nothing can be matched, and every sale would look unpaid.
@@ -212,6 +273,7 @@ def apply(show: Show, *, user=None) -> dict:
             "The access token needs the permission to read customers."
         )
     primary = recordings[0]
+    org_id = primary.organization_id
     show_ids = [s.id for s in recordings]
     taken = {row.sale_id for row in plan.rows if row.sale_id}
     created: list[int] = []
@@ -220,10 +282,17 @@ def apply(show: Show, *, user=None) -> dict:
         """A paid (or still settling) order with no sale: record the sale, once."""
         if row.status not in ("paid", "pending"):
             return False
-        pipeline._lock_buyer(primary.organization_id, row.buyer)
-        sale = _existing_sale_for(primary.organization_id, row)
+        pipeline._lock_buyer(org_id, row.buyer)
+        sale = _existing_sale_for(org_id, row, taken)
+        if sale is not None and sale.status not in STANDING:
+            # This order's sale exists but was closed here (in a show that is no longer a
+            # recording of this one): the two records disagree, so a person decides.
+            row.sale_id = sale.id
+            row.note = f"{HERE.get(sale.status, 'closed here')}, but {THERE[row.status]}"
+            taken.add(sale.id)
+            return False
         if sale is None:
-            sale = _unclaimed_win(show_ids, row, taken)
+            sale = _unclaimed_win(org_id, show_ids, row, taken)
             if sale is not None:
                 sale.external_order_id = row.external_id
         if sale is None:

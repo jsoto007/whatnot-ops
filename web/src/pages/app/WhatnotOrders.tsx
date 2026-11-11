@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, api, apiGet, money, type WhatnotCompare } from '../../lib/api'
 import { fmtWhen, plural } from '../../lib/format'
-import { saleStatusLabel, summaryWords, whatnotOrderActionLabel, whatnotPaymentLabel, whatnotShowStatusLabel } from '../../lib/labels'
+import { saleStatusLabel, summaryWords, whatnotAppliedLabel, whatnotOrderActionLabel, whatnotPaymentLabel, whatnotShowStatusLabel } from '../../lib/labels'
 
 const CHANGES = ['mark_paid', 'cancel', 'decline', 'record'] as const
 
@@ -19,7 +19,9 @@ export function WhatnotOrders({ showId, canApply }: { showId: string; canApply: 
     onSuccess: async (data, a) => {
       qc.setQueryData(key, data)
       if (a.path === 'apply') {
-        setDone(summaryWords(data.applied ?? {}, whatnotOrderActionLabel) || 'Nothing needed changing.')
+        // What was done, not what was left alone.
+        const changed = Object.fromEntries(Object.entries(data.applied ?? {}).filter(([k]) => k !== 'unchanged' && k !== 'skip'))
+        setDone(summaryWords(changed, whatnotAppliedLabel) || 'Nothing needed changing.')
         await qc.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'whatnot-orders' })
       } else {
         setDone(a.path === 'refresh' && data.queued ? 'Reading from Whatnot now. This page shows the result in a minute.' : null)
@@ -33,12 +35,14 @@ export function WhatnotOrders({ showId, canApply }: { showId: string; canApply: 
   const rows = d.rows ?? []
   const uncovered = d.uncovered ?? []
   const summary = d.summary ?? {}
-  const toChange = CHANGES.reduce((n, k) => n + (summary[k] ?? 0), 0) + (d.complete ? uncovered.length : 0)
+  // An order that disagrees with a sale already closed or shipped here: Apply puts it in Review.
+  const conflicts = rows.filter((r) => r.action === 'unmatched').length
+  const toChange = CHANGES.reduce((n, k) => n + (summary[k] ?? 0), 0) + conflicts + (d.complete ? uncovered.length : 0)
   const noBuyers = (d.info?.noBuyer ?? 0) > 0
 
   const matcher = canApply && (d.choices?.length ?? 0) > 0 && d.link !== 'made' && (
     <span className="inline-form">
-      <select value={choice} onChange={(e) => setChoice(e.target.value)} aria-label="Show on Whatnot">
+      <select className="show-select" value={choice} onChange={(e) => setChoice(e.target.value)} aria-label="Show on Whatnot">
         <option value="">{ws ? 'Change to…' : 'Choose the show on Whatnot…'}</option>
         {d.choices!.map((c) => (
           <option key={c.id} value={c.id}>

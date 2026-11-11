@@ -21,7 +21,7 @@ import random
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
 import requests
@@ -121,9 +121,16 @@ PROBLEM_WORDS = {
 }
 
 
+# The most a money column holds (Postgres integer) with room to add a few together, and the
+# most one item can cost (as for an uploaded payment file: anything larger is a misread).
+MAX_CENTS = 2_000_000_000
+MAX_PRICE_CENTS = 10_000_000
+
+
 def cents(money) -> int | None:
     """Whatnot's Money ({"amount": "42.00", "currency": "USD"}) as integer cents.
-    Never through a float; None for a missing or unreadable amount."""
+    Never through a float. None for a missing or unreadable amount, and for one too large
+    to be real: a single odd value must not make a row unstorable and stop a whole read."""
     if not isinstance(money, dict):
         return None
     amount = money.get("amount")
@@ -131,27 +138,34 @@ def cents(money) -> int | None:
         return None
     try:
         value = Decimal(str(amount).strip())
-    except InvalidOperation:
+        if not value.is_finite() or value.adjusted() > 9:
+            return None
+        result = int((value * 100).quantize(Decimal(1)))
+    except (InvalidOperation, ArithmeticError, ValueError):
         return None
-    if not value.is_finite():
-        return None
-    return int((value * 100).quantize(Decimal(1)))
+    return result if abs(result) <= MAX_CENTS else None
+
+
+def price_cents(money) -> int | None:
+    """One item's price: `cents()`, and None unless it is between $0 and $100,000."""
+    value = cents(money)
+    return value if value is not None and 0 <= value <= MAX_PRICE_CENTS else None
 
 
 def when(value) -> datetime | None:
-    """An ISO 8601 timestamp from the API as a tz-aware datetime (UTC when it names no
-    zone); None when missing or unreadable."""
-    if not isinstance(value, str) or not value:
+    """An ISO 8601 timestamp from the API as a tz-aware datetime in UTC (UTC when it names
+    no zone); None when missing, unreadable, or not a date anything here could mean."""
+    if not isinstance(value, str) or not value or len(value) > 40:
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        if not 2000 <= parsed.year <= 2200:
+            return None
+        return parsed.astimezone(UTC)
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        from datetime import UTC
-
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed
 
 
 class Response:

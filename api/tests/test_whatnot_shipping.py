@@ -670,3 +670,337 @@ def test_the_timer_looks_at_shipments_only_while_some_are_on_their_way(app, shop
         )
         db.session.commit()
         assert shipping.due(shop["org"]) is False  # nothing recent, nothing moving
+
+
+# ---------- regressions from the 2026-11-10 money-safety review ----------
+
+
+def ready(app, shop, buyer="lani808"):
+    s = parcel(shop, buyer, [order(shop, buyer, "Red bundle")])
+    read(app, shop)
+    read_shipments(app, shop)
+    return s
+
+
+def test_two_people_pressing_make_labels_together_ask_whatnot_once(app, shop):
+    """A label cannot be undone. Both presses used to pass the "already asked?" check and
+    each sent its own request."""
+    import threading
+    from types import SimpleNamespace
+
+    s = ready(app, shop)
+    gate = threading.Barrier(2, timeout=20)
+    real = shipping.packages
+
+    def together(show):
+        view = real(show)
+        gate.wait()  # both have read "nobody asked yet" before either goes on
+        return view
+
+    shipping.packages = together
+    out = []
+
+    def press():
+        with app.app_context():
+            result = shipping.request_labels(
+                db.session.get(Show, shop["show"]), user=SimpleNamespace(id=None)
+            )
+            db.session.commit()
+            out.append(result["requested"])
+
+    try:
+        threads = [threading.Thread(target=press) for _ in range(2)]
+        [t.start() for t in threads]
+        [t.join(30) for t in threads]
+    finally:
+        shipping.packages = real
+    assert out == [1, 1]  # each was told its request went in
+    assert shop["fake"].labels_requested == [s["id"]]  # and Whatnot was asked once
+
+
+def test_a_label_job_run_again_sends_nothing_a_second_time(app, shop):
+    """A worker restarted mid-list gets the same job again (requeue_stale), and any later
+    failure retries the whole payload."""
+    a, b = ready(app, shop), ready(app, shop, "kat.c")
+    with app.app_context():
+        ids = list(db.session.scalars(select(WhatnotShipment.id).order_by(WhatnotShipment.id)))
+        payload = {"org_id": shop["org"], "shipment_ids": ids, "user_id": None}
+        shipping.labels_job(payload)
+        shipping.labels_job(payload)
+        shipping.labels_job({**payload, "shipment_ids": list(reversed(ids))})
+    assert sorted(shop["fake"].labels_requested) == sorted([a["id"], b["id"]])
+
+
+def test_a_request_that_may_or_may_not_have_reached_whatnot_is_not_sent_again(
+    app, client, shop, sign_in
+):
+    """A timeout after Whatnot took the request looked like a refusal, and the next press
+    asked again."""
+    from app.services.whatnot.client import Unavailable, WhatnotClient
+
+    s = ready(app, shop)
+    h = sign_in(shop["org"], role="manager")
+    real = WhatnotClient.request
+
+    def lossy(self, method, path, **kw):
+        out = real(self, method, path, **kw)
+        if method == "POST":
+            raise Unavailable("ReadTimeout calling Whatnot")  # Whatnot did it; we never heard
+        return out
+
+    WhatnotClient.request = lossy
+    try:
+        first = labels(client, shop, h).get_json()
+        second = labels(client, shop, h).get_json()
+    finally:
+        WhatnotClient.request = real
+    assert (first["requested"], second["requested"]) == (1, 0)
+    assert shop["fake"].labels_requested == [s["id"]]
+    pack = second["buyers"][0]["packages"][0]
+    assert (pack["labelProblem"], pack["askable"]) == ("unknown", False)
+    assert second["labelsToMake"] == 0
+    # An hour on and still no label: it may be asked for again.
+    with app.app_context():
+        row = db.session.scalar(select(WhatnotShipment))
+        row.label_requested_at = datetime.now(UTC) - timedelta(minutes=61)
+        db.session.commit()
+    assert view(app, shop)["labelsToMake"] == 1
+
+
+def test_a_pickup_is_never_offered_or_sent_for_a_label(app, client, shop, sign_in):
+    s = ready(app, shop)
+    shop["fake"].set_shipment(s["id"], fulfillment_method="pickup")
+    read_shipments(app, shop)
+    v = view(app, shop)
+    assert (v["buyers"][0]["state"], v["labelsToMake"]) == ("pickup", 0)
+    h = sign_in(shop["org"], role="manager")
+    assert labels(client, shop, h).get_json()["requested"] == 0
+    with app.app_context():  # not even when its id is put in a job by hand
+        row_id = db.session.scalar(select(WhatnotShipment.id))
+        shipping.labels_job({"org_id": shop["org"], "shipment_ids": [row_id]})
+    assert shop["fake"].labels_requested == []
+
+
+def test_no_label_until_the_shows_final_orders_and_parcels_were_read(app, client, shop, sign_in):
+    """The show has ended, but a last win may not be here yet: it could be sitting in a
+    second open package. Nobody is "ready" on old data."""
+    parcel(shop, "lani808", [order(shop, "lani808", "Red bundle")])
+    read(app, shop)
+    read_shipments(app, shop)
+    with app.app_context():  # as if both reads had happened while the show was still live
+        ws = db.session.scalar(select(WhatnotShow))
+        ws.orders_synced_at = ws.ended_at - timedelta(minutes=1)
+        db.session.commit()
+    v = view(app, shop)
+    assert (v["buyers"][0]["state"], v["labelsToMake"], v["show"]["complete"]) == (
+        "reading",
+        0,
+        False,
+    )
+    h = sign_in(shop["org"], role="manager")
+    r = labels(client, shop, h)
+    assert r.status_code == 409 and "have not been read from Whatnot yet" in r.get_json()["error"]
+    assert shop["fake"].labels_requested == []
+    # "Read again from Whatnot" reads the orders, then the parcels: now it is ready.
+    r = client.post(f"/api/shipping/shows/{shop['show']}/refresh", headers=h).get_json()
+    assert (r["buyers"][0]["state"], r["labelsToMake"], r["show"]["complete"]) == ("ready", 1, True)
+
+
+def test_the_count_on_the_button_is_exactly_what_is_sent(app, client, shop, sign_in):
+    ready(app, shop, "one")
+    ready(app, shop, "two")
+    parcel(
+        shop,
+        "held",
+        [order(shop, "held", "Red bundle")],
+        required_actions=["package_review_required"],
+    )
+    read(app, shop)
+    read_shipments(app, shop)
+    h = sign_in(shop["org"], role="manager")
+    assert view(app, shop)["labelsToMake"] == 2
+    r = labels(client, shop, h, buyers=["one"]).get_json()
+    assert (r["requested"], r["labelsToMake"]) == (1, 1)  # one in flight, one still to make
+    r = labels(client, shop, h).get_json()
+    assert (r["requested"], r["labelsToMake"]) == (1, 0)
+    assert len(shop["fake"].labels_requested) == 2
+
+
+def test_a_status_the_app_does_not_know_is_never_called_label_ready(app, shop):
+    s = ready(app, shop)
+    shop["fake"].set_shipment(s["id"], status="label_pending")
+    read_shipments(app, shop)
+    v = view(app, shop)
+    assert v["buyers"][0]["state"] == "other" and v["totals"].get("labelled") is None
+    with app.app_context():
+        assert db.session.scalar(select(WhatnotShipment.status)) == "Other"
+
+
+def test_one_order_that_cannot_ship_does_not_hold_back_the_others(app, shop):
+    """It used to raise, so nobody was marked shipped, and in auto mode the carrier's news
+    for the whole show stayed stuck behind it."""
+    shop["say"](app, [win("aaa", "Red bundle"), win("bbb", "Red bundle")])
+    run(app, shop["show"])
+    a, b = order(shop, "aaa", "Red bundle"), order(shop, "bbb", "Red bundle")
+    parcel(shop, "aaa", [a], status="dropped_off", tracking="94A")
+    parcel(shop, "bbb", [b], status="dropped_off", tracking="94B")
+    read(app, shop)
+    apply(app, shop)
+    read_shipments(app, shop)
+    with app.app_context():
+        from app.models import OrderStatus
+        from app.services import orders as orders_service
+
+        mine = db.session.scalar(select(Order).where(Order.buyer_username == "aaa"))
+        orders_service.advance(mine, OrderStatus.picking, actor_label="p")
+        db.session.commit()
+    # A second win for aaa that nobody has named yet lands on the order being picked.
+    shop["say"](app, [win("aaa", LOT, "7.00")])
+    run(app, shop["show"])
+    assert view(app, shop)["toMarkShipped"] == 1  # only bbb: aaa has an item to settle
+    with app.app_context():
+        assert shipping.mark_shipped(db.session.get(Show, shop["show"])) == 1
+        db.session.commit()
+        got = {o.buyer_username: o.status.value for o in db.session.scalars(select(Order))}
+    assert got == {"aaa": "picking", "bbb": "shipped"}
+
+
+def test_a_buyer_with_an_order_in_each_recording_has_both_marked_shipped(app, shop):
+    from app.models import ChatMessage
+
+    shop["say"](app, [win("lani808", "Red bundle")])
+    run(app, shop["show"])
+    with app.app_context():
+        first = db.session.get(Show, shop["show"])
+        second = Show(
+            organization_id=shop["org"],
+            show_key="second-laptop",
+            started_at=first.started_at + timedelta(minutes=20),
+            show_date=first.show_date,
+        )
+        db.session.add(second)
+        db.session.flush()
+        line = "lani808 won the auction for Red bundle #2 for $26.00"
+        db.session.add(
+            ChatMessage(
+                show_id=second.id, client_id="e" * 16, seq=1, username="", body=line,
+                raw_text=line, source="player", captured_at=shop["now"] - timedelta(hours=1),
+            )
+        )  # fmt: skip
+        db.session.commit()
+        second_id = second.id
+    run(app, second_id)
+    a, b = order(shop, "lani808", "Red bundle"), order(shop, "lani808", "Red bundle #2", 2600)
+    parcel(shop, "lani808", [a, b], status="in_transit", tracking="94")
+    read(app, shop)
+    apply(app, shop)
+    read_shipments(app, shop)
+    assert view(app, shop)["toMarkShipped"] == 2
+    with app.app_context():
+        assert shipping.mark_shipped(db.session.get(Show, shop["show"])) == 2
+        db.session.commit()
+        assert {o.status.value for o in db.session.scalars(select(Order))} == {"shipped"}
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://2130706433/a.pdf",  # 127.0.0.1 as one number
+        "https://0x7f.1/a.pdf",
+        "https://127.1/a.pdf",
+        "https://0/a.pdf",
+        "https://localhost./a.pdf",
+        "https://foo.localhost/a.pdf",
+        "https://metadata.internal/a.pdf",
+        "https://labels.example./a.pdf",
+        "https://user:pw@labels.example/a.pdf",
+        "https://labels.example:8443/a.pdf",
+        "https://[::1]/a.pdf",
+        "https://intranet/a.pdf",
+    ],
+)
+def test_no_spelling_of_a_local_address_is_fetched(url):
+    assert shipping._safe_url(url) is None
+
+
+def test_a_name_that_resolves_to_a_private_address_is_not_fetched(monkeypatch):
+    def resolve(addresses):
+        return lambda host, port, **kw: [(2, 1, 6, "", (a, port)) for a in addresses]
+
+    monkeypatch.setattr(shipping.socket, "getaddrinfo", resolve(["93.184.216.34"]))
+    assert shipping._public("labels.example") is True
+    monkeypatch.setattr(shipping.socket, "getaddrinfo", resolve(["93.184.216.34", "10.0.0.8"]))
+    assert shipping._public("rebind.example") is False
+    monkeypatch.setattr(shipping.socket, "getaddrinfo", resolve(["169.254.169.254"]))
+    assert shipping._public("169.254.169.254.nip.io") is False
+
+
+def test_tracking_text_from_whatnot_is_cleaned_like_any_text_from_outside(app, shop):
+    s = ready(app, shop)
+    shop["fake"].set_shipment(s["id"], status="label_generated", tracking_code="94\u202e00\x07AB")
+    read_shipments(app, shop)
+    with app.app_context():
+        row = db.session.scalar(select(WhatnotShipment))
+        assert row.tracking == "USPS Ground Advantage 9400AB" and row.tracking_code == "9400AB"
+
+
+def test_a_hold_whatnot_adds_after_the_button_was_pressed_stops_the_request(app, shop):
+    """The job checks each parcel again, under its lock, on what it holds at that moment."""
+    s = ready(app, shop)
+    with app.app_context():
+        row = db.session.scalar(select(WhatnotShipment))
+        row_id = row.id
+        row.required_actions = ["order_pending_cancellation"]  # read after the press
+        db.session.commit()
+        shipping.labels_job({"org_id": shop["org"], "shipment_ids": [row_id]})
+        assert db.session.scalar(select(WhatnotShipment.label_requested_at)) is None
+    assert shop["fake"].labels_requested == [] and s["id"]
+
+
+def test_a_parcel_still_filling_in_another_show_that_is_live_gets_no_label(
+    app, client, shop, sign_in
+):
+    """Back-to-back shows share a buyer's bundle. The first show has ended, but a label now
+    would close the bundle while the buyer is still winning in the second."""
+    live = shop["fake"].add_show(
+        title="Saturday", status="live", start=shop["now"] - timedelta(minutes=4)
+    )
+    later = shop["fake"].add_order(
+        show_id=live["id"],
+        buyer="lani808",
+        items=[{"title": "Red bundle", "price_cents": 2500}],
+        created=shop["now"] - timedelta(minutes=2),
+    )
+    parcel(shop, "lani808", [order(shop, "lani808", LOT, 700), later])
+    read(app, shop)
+    read_shipments(app, shop)
+    v = view(app, shop)
+    assert (v["buyers"][0]["state"], v["labelsToMake"]) == ("shared", 0)
+    assert v["buyers"][0]["packages"][0]["liveElsewhere"] is True
+    h = sign_in(shop["org"], role="manager")
+    assert labels(client, shop, h).get_json()["requested"] == 0
+    assert shop["fake"].labels_requested == []
+    # The second show ends: the bundle is complete, and the parcel is ready.
+    shop["fake"].shows[live["id"]].update(status="ended", ended_at=datetime.now(UTC).isoformat())
+    read(app, shop)
+    read_shipments(app, shop)
+    v = view(app, shop)
+    assert (v["buyers"][0]["state"], v["labelsToMake"]) == ("ready", 1)
+
+
+def test_only_a_read_begun_after_the_show_ended_counts_as_its_final_one(app, shop):
+    from app.services.whatnot import sync
+
+    parcel(shop, "lani808", [order(shop, "lani808", "Red bundle")])
+    read(app, shop)
+    read_shipments(app, shop)
+    assert view(app, shop)["show"]["complete"] is True
+    with app.app_context():
+        ws = db.session.scalar(select(WhatnotShow))
+        # The show ends while a read is under way: that read began before the end.
+        began = datetime.now(UTC)
+        ws.ended_at = began + timedelta(seconds=30)
+        sync.sync_show_orders(shop["org"], client_for(shop["org"]), ws)
+        db.session.commit()
+        assert ws.orders_synced_at < ws.ended_at
+    assert view(app, shop)["show"]["complete"] is False

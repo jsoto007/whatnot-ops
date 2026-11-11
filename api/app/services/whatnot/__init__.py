@@ -25,6 +25,7 @@ from .client import (
     cents,
     client_for,
     make_client,
+    price_cents,
     when,
 )
 
@@ -43,5 +44,6 @@ __all__ = [
     "cents",
     "client_for",
     "make_client",
+    "price_cents",
     "when",
 ]

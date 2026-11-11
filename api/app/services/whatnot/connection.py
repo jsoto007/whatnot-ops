@@ -246,7 +246,10 @@ def status(org_id: int) -> dict:
     if connected:
         rows = db.session.scalars(
             select(WhatnotSyncState)
-            .where(WhatnotSyncState.organization_id == org_id)
+            # "shipments:<show>" rows are per-show bookkeeping, not a kind of reading.
+            .where(
+                WhatnotSyncState.organization_id == org_id, ~WhatnotSyncState.resource.contains(":")
+            )
             .order_by(WhatnotSyncState.resource)
         ).all()
         out["sync"] = [

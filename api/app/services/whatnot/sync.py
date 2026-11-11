@@ -33,7 +33,16 @@ from ...models import (
 from .. import jobs, text
 from ..showdate import show_date
 from . import connection, webhooks
-from .client import NotFound, WhatnotClient, WhatnotError, cents, client_for, when
+from .client import (
+    MAX_CENTS,
+    NotFound,
+    WhatnotClient,
+    WhatnotError,
+    cents,
+    client_for,
+    price_cents,
+    when,
+)
 
 log = logging.getLogger(__name__)
 
@@ -171,12 +180,13 @@ def link_recordings(org_id: int) -> int:
             if rec.source_url and ws.whatnot_id in rec.source_url:
                 best = (float("inf"), ws)
                 break
-            if ws.started_at is not None:
-                start = ws.started_at - RECORDING_LEAD
-            elif ws.scheduled_start_at is not None:
-                start = ws.scheduled_start_at - RECORDING_LEAD_SCHEDULED
-            else:
+            # The earliest the show can have been live. `started_at` may only be its first
+            # order (the show began at or before it); the scheduled time is a rough guess.
+            began = ws.begins_at
+            if began is None:
                 continue
+            exact = ws.started_at is not None and began == ws.started_at
+            start = began - (RECORDING_LEAD if exact else RECORDING_LEAD_SCHEDULED)
             seconds = _overlap(rec_start, rec_end + timedelta(minutes=1), start, ws.ended_at or now)
             if seconds > 0 and (best is None or seconds > best[0]):
                 best = (seconds, ws)
@@ -336,9 +346,13 @@ def upsert_items(org_id: int, order_row_id: int, items: list[dict]) -> int:
             and not isinstance(quantity, bool)
             and 0 < quantity < 10_000
             else 1,
-            "unit_price_cents": cents(data.get("unit_price")),
+            "unit_price_cents": price_cents(data.get("unit_price")),
             "whatnot_shipment_id": _str(data.get("shipment_id"), 20),
         }
+        if (values["unit_price_cents"] or 0) * values["quantity"] > MAX_CENTS:
+            # A line total no money column can hold (500 × $100,000): the price is unread,
+            # so no sum built from it can fail later.
+            values["unit_price_cents"] = None
         update = {
             k: v
             for k, v in values.items()
@@ -380,6 +394,7 @@ def sync_show_orders(org_id: int, client: WhatnotClient, ws: WhatnotShow) -> dic
     Orders of other shows met on the way are stored too."""
     start = ws.begins_at
     floor = (start - SHOW_LEAD) if start else datetime.now(UTC) - timedelta(days=2)
+    began = datetime.now(UTC)
     seen = new = 0
     for i, data in enumerate(client.orders()):
         made = when(data.get("created_at"))
@@ -399,7 +414,9 @@ def sync_show_orders(org_id: int, client: WhatnotClient, ws: WhatnotShow) -> dic
     )
     if first is not None and (ws.started_at is None or first < ws.started_at):
         ws.started_at = first
-    ws.orders_synced_at = datetime.now(UTC)
+    # When the read BEGAN: an order placed while it ran may have been missed, so only a
+    # read begun after the show ended counts as its final one.
+    ws.orders_synced_at = began
     return {"seen": seen, "new": new}
 
 

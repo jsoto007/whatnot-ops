@@ -8,7 +8,7 @@ import { fmtLongDate, fmtWhen, plural } from '../../lib/format'
 import { labelProblemLabel, orderStatusLabel, packageHoldLabel, packageStatusLabel, shippingStateLabel } from '../../lib/labels'
 
 const CONFIRM = (n: number) =>
-  `Make ${plural(n, 'label', 'labels')}?\n\nThis closes each buyer's bundle on Whatnot: anything they win afterwards ships, and is charged shipping, separately. It cannot be undone.`
+  `Make ${plural(n, 'label', 'labels')}?\n\nEach label closes its buyer's bundle on Whatnot: anything they win afterwards ships, and is charged shipping, separately. It cannot be undone.`
 const fmtDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
 
 /**
@@ -39,6 +39,8 @@ export function Shipping() {
   const d = q.data
   const t = d.totals
   const ready = (t.ready ?? 0) + (t.second ?? 0)
+  // What the button would send, as the server counts it: never a package already asked for.
+  const toMake = d.labelsToMake ?? 0
   const error = act.error instanceof ApiError ? act.error.message : act.error ? 'That did not work. Try again.' : null
 
   return (
@@ -79,11 +81,19 @@ export function Shipping() {
             {t.split ? ` · ${t.split} to combine` : ''}
             {t.hold ? ` · ${t.hold} on hold` : ''}
             {t.none ? ` · ${t.none} not packaged yet` : ''}
+            {t.pickup ? ` · ${t.pickup} for pickup` : ''}
           </p>
-          {!d.show!.ended && (
+          {!d.show!.ended ? (
             <p className="card small" data-testid="shipping-live">
               The show has not ended. Labels wait until it does: making one closes that buyer's bundle, and anything they win afterwards would ship separately.
             </p>
+          ) : (
+            !d.show!.complete && (
+              <p className="card small" data-testid="shipping-reading">
+                The show has ended, but its final orders and packages have not been read from Whatnot yet. Press <b>Read again from Whatnot</b> before making labels, so a last win is not left out of its
+                buyer's package.
+              </p>
+            )
           )}
           <div className="inline-form">
             {can('orders.fulfill') && (
@@ -95,13 +105,13 @@ export function Shipping() {
               <button
                 type="button"
                 className="btn primary"
-                disabled={act.isPending || !d.show!.ended || ready === 0}
+                disabled={act.isPending || !d.show!.ended || toMake === 0}
                 onClick={() => {
-                  if (window.confirm(CONFIRM(ready))) act.mutate({ path: 'labels', body: { confirm: true } })
+                  if (window.confirm(CONFIRM(toMake))) act.mutate({ path: 'labels', body: { confirm: true } })
                 }}
                 data-testid="shipping-make-labels"
               >
-                {ready ? `Make ${plural(ready, 'label', 'labels')}` : 'No labels to make'}
+                {toMake ? `Make ${plural(toMake, 'label', 'labels')}` : 'No labels to make'}
               </button>
             )}
             {can('orders.fulfill') && (d.toMarkShipped ?? 0) > 0 && (
@@ -148,7 +158,7 @@ export function Shipping() {
 }
 
 function BuyerRow({ b, canPrint }: { b: ShippingBuyer; canPrint: boolean }) {
-  const warn = b.state === 'split' || b.state === 'hold' || b.state === 'failed'
+  const warn = b.state === 'split' || b.state === 'hold' || b.state === 'failed' || b.state === 'other'
   return (
     <tr data-testid={`ship-${b.buyer}`} className={b.state === 'shipped' ? 'low' : ''}>
       <td className="c-buyer">{b.buyer ?? '—'}</td>
@@ -187,7 +197,11 @@ function Package({ p, canPrint, many }: { p: ShippingPackage; canPrint: boolean;
           {packageHoldLabel(h)}
         </div>
       ))}
-      {p.otherItems > 0 && <div className="small">Also holds {plural(p.otherItems, 'item', 'items')} from another show: pack them together.</div>}
+      {p.otherItems > 0 && (
+        <div className="small">
+          Also holds {plural(p.otherItems, 'item', 'items')} from another show{p.liveElsewhere ? ' that is live now: wait for it to end before making the label.' : ': pack them together.'}
+        </div>
+      )}
       {p.labelProblem ? (
         <div className="form-error small">{labelProblemLabel(p.labelProblem)}.</div>
       ) : (

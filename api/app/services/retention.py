@@ -8,7 +8,7 @@ windows and long-dead one-time tokens go.
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from ..db import db
 from ..models import DevicePairing, Job, JobStatus, PasswordReset, WhatnotEvent
@@ -20,6 +20,7 @@ DEAD_TOKENS = timedelta(days=30)  # expired pairing codes and reset links (hashe
 # Webhook deliveries already acted on. Whatnot retries one for about 2.5 days, and the
 # unique webhook id has to outlive that; a month also leaves time to read what happened.
 WHATNOT_EVENTS = timedelta(days=30)
+STUCK_EVENTS = timedelta(days=3)  # Whatnot itself stops retrying after about 2.5 days
 
 
 def sweep() -> dict[str, int]:
@@ -37,6 +38,13 @@ def sweep() -> dict[str, int]:
         ).rowcount,
         "password_resets": db.session.execute(
             delete(PasswordReset).where(PasswordReset.expires_at < now - DEAD_TOKENS)
+        ).rowcount,
+        # A delivery whose job gave up for good (five tries) is settled as failed, so it
+        # is not "waiting to be read" forever. Reading the show again covers what it said.
+        "whatnot_events_stuck": db.session.execute(
+            update(WhatnotEvent)
+            .where(WhatnotEvent.status == "queued", WhatnotEvent.received_at < now - STUCK_EVENTS)
+            .values(status="failed", error="never handled", processed_at=now)
         ).rowcount,
         "whatnot_events": db.session.execute(
             delete(WhatnotEvent).where(

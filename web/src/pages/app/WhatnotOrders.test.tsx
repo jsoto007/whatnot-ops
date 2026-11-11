@@ -65,7 +65,7 @@ test("Whatnot's orders next to the sales, in words, and what Apply will do", asy
 test('Apply posts once and says what was done', async () => {
   const calls = open(compared, true, { ...compared, summary: { unchanged: 3 }, rows: [], uncovered: [], applied: { unchanged: 1, decline: 1, recorded: 1 } })
   fireEvent.click(await screen.findByTestId('whatnot-apply'))
-  await waitFor(() => expect(screen.getByTestId('whatnot-applied').textContent).toBe('1 nothing to change · 1 mark the payment declined · 1 sale recorded'))
+  await waitFor(() => expect(screen.getByTestId('whatnot-applied').textContent).toBe('1 payment declined · 1 newly recorded'))
   expect(calls.filter((c) => c.method === 'POST').map((c) => c.url)).toEqual(['/api/shows/7/whatnot/apply'])
   expect(screen.getByTestId('whatnot-apply').textContent).toBe('Nothing to apply')
 })
@@ -96,4 +96,18 @@ test('an unmatched show can be matched by hand', async () => {
   fireEvent.click(screen.getByTestId('whatnot-link'))
   await screen.findByTestId('whatnot-rows')
   expect(calls.find((c) => c.method === 'POST')).toEqual({ method: 'POST', url: '/api/shows/7/whatnot/link', body: { whatnotShowId: 4 } })
+})
+
+test('an order that disagrees with a closed sale counts as a change: Apply sends it to Review', async () => {
+  const conflict = { ...row('kat.c', 'paid', 'unmatched', 'cancelled here, but paid on Whatnot'), saleId: 12 }
+  open({ ...compared, summary: { unmatched: 1 }, rows: [conflict] as WhatnotCompare['rows'], uncovered: [] }, true)
+  await screen.findByTestId('whatnot-rows')
+  expect(screen.getByTestId('whatnot-apply').textContent).toBe('Apply 1 change')
+  expect(screen.getByTestId('whatnot-rows').textContent).toContain('send to Review (cancelled here, but paid on Whatnot)')
+})
+
+test('applying with nothing changed says so', async () => {
+  open(compared, true, { ...compared, applied: { unchanged: 3, skip: 1 } })
+  fireEvent.click(await screen.findByTestId('whatnot-apply'))
+  await waitFor(() => expect(screen.getByTestId('whatnot-applied').textContent).toBe('Nothing needed changing.'))
 })

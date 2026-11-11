@@ -26,6 +26,7 @@ const pack = (over: Partial<ShippingPackage> = {}): ShippingPackage => ({
   status: 'created',
   items: 3,
   otherItems: 0,
+  liveElsewhere: false,
   tracking: null,
   carrier: null,
   labelReady: false,
@@ -35,6 +36,7 @@ const pack = (over: Partial<ShippingPackage> = {}): ShippingPackage => ({
   url: 'https://www.whatnot.com/dashboard/shipments/1',
   labelRequestedAt: null,
   labelProblem: null,
+  askable: false,
   ...over,
 })
 const buyer = (name: string, state: ShippingBuyer['state'], packages: ShippingPackage[], over: Partial<ShippingBuyer> = {}): ShippingBuyer => ({
@@ -50,7 +52,8 @@ const buyer = (name: string, state: ShippingBuyer['state'], packages: ShippingPa
 const doc = (buyers: ShippingBuyer[], over: Partial<Doc> = {}): Doc => {
   const totals: Doc['totals'] = { buyers: buyers.length }
   for (const b of buyers) totals[b.state] = (totals[b.state] ?? 0) + 1
-  return { showId: 7, showDate: '2026-11-07', connected: true, matched: true, mode: 'shadow', show: { title: 'Friday night', status: 'ended', ended: true }, buyers, totals, toMarkShipped: 0, ...over }
+  const labelsToMake = buyers.reduce((n, b) => n + b.packages.filter((p) => p.askable).length, 0)
+  return { showId: 7, showDate: '2026-11-07', connected: true, matched: true, mode: 'shadow', show: { title: 'Friday night', status: 'ended', ended: true, complete: true }, buyers, totals, labelsToMake, toMarkShipped: 0, ...over }
 }
 
 function open(first: Doc, permissions: string[], after?: Doc) {
@@ -84,7 +87,7 @@ afterEach(() => vi.unstubAllGlobals())
 test('one row per buyer, each state in words, and no code on the page', async () => {
   open(
     doc([
-      buyer('lani808', 'ready', [pack()]),
+      buyer('lani808', 'ready', [pack({ askable: true })]),
       buyer('split_sam', 'split', [pack({ id: 12, items: 1 }), pack({ id: 13, items: 1 })]),
       buyer('held_hana', 'hold', [pack({ id: 14, holds: ['order_pending_cancellation'] })]),
       buyer('done_dee', 'shipped', [pack({ id: 15, status: 'in_transit', tracking: '9400AAA', carrier: 'USPS', labelReady: true })], { orderStatus: 'shipped' }),
@@ -107,12 +110,12 @@ test('one row per buyer, each state in words, and no code on the page', async ()
 })
 
 test('making labels asks first, says what it closes, and posts the confirmation', async () => {
-  const ready = doc([buyer('lani808', 'ready', [pack()]), buyer('kat.c', 'ready', [pack({ id: 12 })])])
+  const ready = doc([buyer('lani808', 'ready', [pack({ askable: true })]), buyer('kat.c', 'ready', [pack({ id: 12, askable: true })])])
   const calls = open(ready, ALL, { ...ready, requested: 2 })
   const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
   vi.stubGlobal('confirm', confirm)
   fireEvent.click(await screen.findByTestId('shipping-make-labels'))
-  expect(confirm.mock.calls[0]![0]).toContain("closes each buyer's bundle")
+  expect(confirm.mock.calls[0]![0]).toContain("closes its buyer's bundle")
   expect(confirm.mock.calls[0]![0]).toContain('cannot be undone')
   expect(calls.filter((c) => c.method === 'POST')).toEqual([]) // said no: nothing sent
   fireEvent.click(screen.getByTestId('shipping-make-labels'))
@@ -121,7 +124,7 @@ test('making labels asks first, says what it closes, and posts the confirmation'
 })
 
 test('while the show is live labels cannot be made, and the page says why', async () => {
-  open(doc([buyer('lani808', 'wait', [pack()])], { show: { title: 'Friday night', status: 'live', ended: false } }), ALL)
+  open(doc([buyer('lani808', 'wait', [pack()])], { show: { title: 'Friday night', status: 'live', ended: false, complete: false } }), ALL)
   expect((await screen.findByTestId('shipping-live')).textContent).toContain('Labels wait until it does')
   expect((screen.getByTestId('shipping-make-labels') as HTMLButtonElement).disabled).toBe(true)
 })
@@ -161,4 +164,42 @@ test('a viewer sees packages and no buttons or print links', async () => {
 test('not connected, or not matched to a Whatnot show, says what to do', async () => {
   open({ showId: 7, connected: false, matched: false, buyers: [], totals: {} }, ALL)
   expect((await screen.findByTestId('shipping-state')).textContent).toContain('Not connected to Whatnot')
+})
+
+test('the button counts what the server will send, not the buyers who look ready', async () => {
+  // Two ready buyers, but one label was asked for a minute ago: one to make.
+  open(doc([buyer('lani808', 'ready', [pack({ askable: true })]), buyer('kat.c', 'ready', [pack({ id: 12, labelRequestedAt: new Date().toISOString() })])]), ALL)
+  expect((await screen.findByTestId('shipping-make-labels')).textContent).toBe('Make 1 label')
+  expect(screen.getByTestId('shipping-state').textContent).toContain('2 ready for a label')
+})
+
+test("until the show's final list is read nobody is ready, and the page says what to press", async () => {
+  open(doc([buyer('lani808', 'reading', [pack()])], { show: { title: 'Friday night', status: 'ended', ended: true, complete: false } }), ALL)
+  expect((await screen.findByTestId('shipping-reading')).textContent).toContain('Read again from Whatnot')
+  expect(within(screen.getByTestId('ship-lani808')).getByTestId('ship-state').textContent).toBe("Waiting for the show's final list from Whatnot")
+  expect((screen.getByTestId('shipping-make-labels') as HTMLButtonElement).disabled).toBe(true)
+})
+
+test('pickups, unknown statuses and unconfirmed requests each read in words', async () => {
+  open(
+    doc([
+      buyer('pat', 'pickup', [pack({ pickup: true })]),
+      buyer('odd', 'other', [pack({ id: 12, status: 'label_pending' })]),
+      buyer('maybe', 'ready', [pack({ id: 13, labelProblem: 'unknown', labelRequestedAt: new Date().toISOString() })]),
+    ]),
+    ALL,
+  )
+  expect((await screen.findByTestId('ship-pat')).textContent).toContain('Pickup: no label needed')
+  expect(screen.getByTestId('ship-odd').textContent).toContain('Check this package in Seller Hub')
+  expect(screen.getByTestId('ship-odd').textContent).not.toContain('label_pending')
+  expect(screen.getByTestId('ship-maybe').textContent).toContain('did not confirm it took the request')
+  expect(screen.getByTestId('shipping-make-labels').textContent).toBe('No labels to make')
+})
+
+test('a parcel shared with a show that is live now waits, and says so', async () => {
+  open(doc([buyer('lani808', 'shared', [pack({ otherItems: 1, liveElsewhere: true })])]), ALL)
+  const row = await screen.findByTestId('ship-lani808')
+  expect(within(row).getByTestId('ship-state').textContent).toBe('Bundle still filling: this buyer is in another show that is live now')
+  expect(row.textContent).toContain('wait for it to end before making the label')
+  expect(screen.getByTestId('shipping-make-labels').textContent).toBe('No labels to make')
 })

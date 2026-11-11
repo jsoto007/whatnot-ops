@@ -162,9 +162,9 @@ def accept(body, webhook_id: str) -> str:
         db.session.rollback()
         return "duplicate"
     conn.last_event_at = datetime.now(UTC)
-    org_id = conn.organization_id
-    db.session.commit()  # the delivery is safely ours before any work on it starts
-    jobs.enqueue("whatnot_event", {"event_id": event_id}, org_id=org_id)
+    # The delivery and the job that will act on it are stored together: there is never a
+    # delivery nobody will handle. (Without a worker the job runs here and now instead.)
+    jobs.enqueue("whatnot_event", {"event_id": event_id}, org_id=conn.organization_id)
     db.session.commit()
     return "queued"
 

@@ -51,6 +51,42 @@ def test_money_becomes_integer_cents_without_a_float(money, expected):
     assert cents(money) == expected
 
 
+@pytest.mark.parametrize(
+    "amount",
+    [
+        "99999999.99",
+        "1e30",
+        "1e999999999",
+        "-1e999999999",
+        "9" * 30,
+        "Infinity",
+        "-Infinity",
+        "sNaN",
+    ],
+)
+def test_an_amount_too_large_to_be_real_is_unreadable_not_a_crash(amount):
+    """One such order used to make its INSERT fail, and with it the whole show's read."""
+    assert cents({"amount": amount, "currency": "USD"}) is None
+
+
+def test_a_price_is_between_nothing_and_a_hundred_thousand_dollars():
+    from app.services.whatnot import price_cents
+
+    assert price_cents({"amount": "17.00"}) == 1700 and price_cents({"amount": "0"}) == 0
+    assert price_cents({"amount": "100000.00"}) == 10_000_000
+    assert price_cents({"amount": "100000.01"}) is None  # a misread, as in a payment file
+    assert price_cents({"amount": "-5.00"}) is None and cents({"amount": "-5.00"}) == -500
+    assert cents({"amount": "20000000.00"}) == 2_000_000_000  # the most a column holds
+    assert cents({"amount": "20000000.01"}) is None
+
+
+def test_timestamps_no_calendar_could_mean_are_unreadable():
+    assert when("0001-01-01T00:00:00+14:00") is None  # would be year 0 in UTC
+    assert when("9999-12-31T23:59:59-14:00") is None
+    assert when("1999-12-31T23:59:59Z") is None and when("2" * 60) is None
+    assert when("2026-11-08T02:00:00+05:30").isoformat() == "2026-11-07T20:30:00+00:00"
+
+
 def test_timestamps_are_tz_aware():
     assert when("2026-10-20T16:00:00.123Z").isoformat() == "2026-10-20T16:00:00.123000+00:00"
     assert when("2026-10-20T16:00:00").tzinfo is not None

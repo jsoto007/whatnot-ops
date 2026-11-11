@@ -116,20 +116,35 @@ const WHATNOT_ORDER_ACTION: Record<string, string> = {
   decline: 'mark the payment declined',
   record: 'record the sale',
   recorded: 'sale recorded',
-  unmatched: 'needs a person',
+  unmatched: 'send to Review',
   skip: 'left alone',
   uncovered: 'with no order on Whatnot',
 }
 export const whatnotOrderActionLabel = (a: string): string => WHATNOT_ORDER_ACTION[a] ?? 'left alone'
 
+/** The same actions once applied, in the past tense ("2 marked paid · 1 sale recorded"). */
+const WHATNOT_APPLIED: Record<string, string> = {
+  mark_paid: 'marked paid',
+  cancel: 'cancelled',
+  decline: 'payment declined',
+  recorded: 'newly recorded',
+  unmatched: 'sent to Review',
+  uncovered: 'with no order on Whatnot, sent to Review',
+}
+export const whatnotAppliedLabel = (a: string): string => WHATNOT_APPLIED[a] ?? 'left alone'
+
 /** Where a buyer's shipping stands for a show. One package and one label per buyer is the rule. */
 const SHIPPING_STATE: Record<string, string> = {
   none: 'Not in a package on Whatnot yet',
   wait: 'Bundle still open: the show is live',
+  shared: 'Bundle still filling: this buyer is in another show that is live now',
+  reading: "Waiting for the show's final list from Whatnot",
   ready: 'Ready for its label',
   second: 'A later win needs its own label',
   split: 'Two open packages: combine them in Seller Hub first',
   hold: 'On hold',
+  pickup: 'Pickup: no label needed',
+  other: 'Check this package in Seller Hub',
   labelled: 'Label ready',
   shipped: 'With the carrier',
   failed: 'Delivery failed',
@@ -161,6 +176,6 @@ const LABEL_PROBLEM: Record<string, string> = {
   needs_verification: 'Whatnot needs the seller to finish verification before it makes labels',
   no_permission: 'The access token may not make labels yet. The account owner can add that permission in Seller Hub',
   not_now: 'Whatnot cannot make this label right now. Open the package in Seller Hub to see why',
-  failed: 'Whatnot did not take the request. Try again',
+  unknown: 'Whatnot did not confirm it took the request. Check the package in Seller Hub before asking again',
 }
-export const labelProblemLabel = (p: string): string => LABEL_PROBLEM[p] ?? 'Whatnot did not take the request. Try again'
+export const labelProblemLabel = (p: string): string => LABEL_PROBLEM[p] ?? LABEL_PROBLEM.unknown!

@@ -23,6 +23,8 @@ carrier ("auto" mode, or a person pressing the button).
 import hashlib
 import ipaddress
 import logging
+import socket
+import time
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
@@ -30,6 +32,7 @@ from urllib.parse import urlsplit
 import requests
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import selectinload
 
 from ...db import db
 from ...models import (
@@ -42,10 +45,13 @@ from ...models import (
     WhatnotOrderItem,
     WhatnotShipment,
     WhatnotShow,
+    WhatnotSyncState,
 )
 from .. import jobs, rules, text
 from . import connection, sync, webhooks
 from .client import (
+    MAX_CENTS,
+    Busy,
     Conflict,
     Forbidden,
     NotFound,
@@ -83,6 +89,7 @@ MAX_SHIPMENT_PAGES = 40
 SHIPMENTS_EVERY = timedelta(minutes=30)
 RECENT = timedelta(days=21)
 MAX_LABEL_BYTES = 15 * 1024 * 1024
+FETCH_SECONDS = 45  # the whole download, not each read
 LABELS_PER_REQUEST = 400
 
 
@@ -116,8 +123,10 @@ def _status_text(data: dict, status: str) -> str:
 
 
 def _tracking_text(tracking: dict) -> str:
-    parts = [tracking.get("carrier"), tracking.get("service"), tracking.get("tracking_code")]
-    return " ".join(p for p in parts if isinstance(p, str) and p)[:120]
+    """ "USPS Ground Advantage 9400…", as Seller Hub prints it. Cleaned like every other
+    text from outside: it is shown on the order slips."""
+    parts = [_str(tracking.get(k), 60) for k in ("carrier", "service", "tracking_code")]
+    return " ".join(p for p in parts if p)[:120]
 
 
 def _mirror_items(org_id: int, client: WhatnotClient, items: list[dict]):
@@ -216,6 +225,10 @@ def store_shipment(
                 .with_for_update()
             )
         row.whatnot_id = whatnot_id
+        # Another reader may have stored this same shipment while we waited for the row:
+        # the "older answer loses" check again, now that the row is ours.
+        if None not in (updated, row.whatnot_updated_at) and updated < row.whatnot_updated_at:
+            return row
     tracking = data.get("tracking") if isinstance(data.get("tracking"), dict) else {}
     documents = data.get("documents") if isinstance(data.get("documents"), dict) else {}
     actions = data.get("required_actions")
@@ -270,11 +283,13 @@ def _store_lots(org_id: int, row: WhatnotShipment, held) -> None:
         show_id = _local_show_id(org_id, order.whatnot_show_id)
         shows[show_id] += 1
         key = order.whatnot_id if nth[order.id] == 1 else f"{order.whatnot_id}-{nth[order.id]}"
+        if len(key) > 20:
+            continue  # cut short it would overwrite the order's first lot (ids are ~10 digits)
         values = {
             "organization_id": org_id,
             "show_id": show_id,
             "shipment_id": row.id,
-            "whatnot_order_id": key[:20],
+            "whatnot_order_id": key,
             "recipient": row.recipient,
             "title": item.title,
             "lot_number": rules.lot_number(item.title),
@@ -293,7 +308,7 @@ def _store_lots(org_id: int, row: WhatnotShipment, held) -> None:
         )
     row.item_count = sum(item.quantity for _, item in held)
     priced = [item.unit_price_cents * item.quantity for _, item in held if item.unit_price_cents]
-    row.value_cents = sum(priced) if priced else row.value_cents
+    row.value_cents = min(sum(priced), MAX_CENTS) if priced else row.value_cents
     known = {k: v for k, v in shows.items() if k is not None}
     if known:
         # The show most of its lots belong to (a bundle can span two shows).
@@ -346,14 +361,19 @@ def sync_recent_shipments(org_id: int, client: WhatnotClient, since: datetime) -
 # ---------- one package per buyer ----------
 
 
-def _state(packages: list[dict], unplaced: int, ended: bool) -> str:
-    """Where a buyer's shipping stands, as one code the page turns into words."""
+def _state(packages: list[dict], unplaced: int, ended: bool, complete: bool) -> str:
+    """Where a buyer's shipping stands, as one code the page turns into words. `complete`
+    says every order and every parcel of the show was read after it ended: before that a
+    last win may still be on its way into a second package, so nobody is "ready"."""
     live = [p for p in packages if p["status"] not in GONE]
     if any(p["holds"] for p in live):
         return "hold"
     if not live:
         return "none"
-    open_ = [p for p in live if p["status"] == OPEN]
+    to_ship = [p for p in live if not p["pickup"]]
+    if not to_ship:
+        return "pickup"  # handed over in person: no label, ever
+    open_ = [p for p in to_ship if p["status"] == OPEN]
     if len(open_) > 1:
         return "split"  # two open packages: two labels unless they are combined first
     if unplaced:
@@ -361,22 +381,103 @@ def _state(packages: list[dict], unplaced: int, ended: bool) -> str:
     if open_:
         if not ended:
             return "wait"
-        return "second" if len(live) > 1 else "ready"
-    if all(p["status"] in WITH_CARRIER for p in live):
+        if open_[0]["liveElsewhere"]:
+            # The same bundle is still filling in another show that is live right now.
+            return "shared"
+        if not complete:
+            return "reading"
+        return "second" if len(to_ship) > 1 else "ready"
+    if all(p["status"] in WITH_CARRIER for p in to_ship):
         return "shipped"
-    if any(p["status"] == "failed" for p in live):
+    if any(p["status"] == "failed" for p in to_ship):
         return "failed"
-    return "labelled"
+    if all(p["status"] in (LABELLED,) + WITH_CARRIER for p in to_ship):
+        return "labelled"
+    return "other"  # a status this app does not know: never called "label ready"
+
+
+def _shipments_read_at(org_id: int, ws: WhatnotShow) -> datetime | None:
+    state = db.session.scalar(
+        select(WhatnotSyncState).where(
+            WhatnotSyncState.organization_id == org_id,
+            WhatnotSyncState.resource == f"shipments:{ws.id}",
+        )
+    )
+    return state.last_ok_at if state is not None else None
+
+
+def _complete(org_id: int, ws: WhatnotShow) -> bool:
+    """The show has ended, and all its orders and all its parcels were read after that."""
+    if ws.status != "ended" or ws.ended_at is None:
+        return False
+    if ws.orders_synced_at is None or ws.orders_synced_at < ws.ended_at:
+        return False
+    read_at = _shipments_read_at(org_id, ws)
+    return read_at is not None and read_at >= ws.ended_at
+
+
+# An order of a show we have no record of yet is taken to be a show in progress if it is
+# this recent (the show list is read every 15 minutes; a show does not run longer).
+UNKNOWN_SHOW_IS_LIVE = timedelta(hours=12)
+
+
+def _in_a_show_still_live(org_id: int, ws: WhatnotShow, shipment_ids: set[str]) -> set[str]:
+    """The shipments that also hold a win from ANOTHER show that has not ended. Back-to-back
+    shows share a buyer's bundle: a label made for the first would close it while the
+    buyer is still winning in the second."""
+    if not shipment_ids:
+        return set()
+    rows = db.session.execute(
+        select(
+            WhatnotOrderItem.whatnot_shipment_id,
+            WhatnotOrder.whatnot_show_id,
+            func.max(WhatnotOrder.ordered_at),
+        )
+        .join(WhatnotOrder, WhatnotOrder.id == WhatnotOrderItem.order_id)
+        .where(
+            WhatnotOrderItem.organization_id == org_id,
+            WhatnotOrderItem.whatnot_shipment_id.in_(shipment_ids),
+            WhatnotOrder.whatnot_show_id.is_not(None),
+            WhatnotOrder.whatnot_show_id != ws.whatnot_id,
+            WhatnotOrder.status.in_(SHIPPABLE),
+        )
+        .group_by(WhatnotOrderItem.whatnot_shipment_id, WhatnotOrder.whatnot_show_id)
+    ).all()
+    if not rows:
+        return set()
+    status = dict(
+        db.session.execute(
+            select(WhatnotShow.whatnot_id, WhatnotShow.status).where(
+                WhatnotShow.organization_id == org_id,
+                WhatnotShow.whatnot_id.in_({r[1] for r in rows}),
+            )
+        ).all()
+    )
+    recent = datetime.now(UTC) - UNKNOWN_SHOW_IS_LIVE
+    out = set()
+    for shipment_id, other_show, newest in rows:
+        known = status.get(other_show)
+        if known in ("ended", "cancelled"):
+            continue
+        if known is None and (newest is None or newest < recent):
+            continue
+        out.add(shipment_id)
+    return out
 
 
 def packages(show: Show) -> dict:
     """Every buyer of the show with their package(s) on Whatnot, in pick order (most items
     first, then A-Z, as on the order slips)."""
+    return _view(show)[0]
+
+
+def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
+    """`packages()` and, for mark_shipped, the (order id, tracking) pairs the carrier has."""
     org_id = show.organization_id
     conn = connection.active(org_id)
     ws = db.session.get(WhatnotShow, show.whatnot_show_id) if show.whatnot_show_id else None
     if conn is None or ws is None:
-        return {"connected": conn is not None, "matched": False, "buyers": [], "totals": {}}
+        return {"connected": conn is not None, "matched": False, "buyers": [], "totals": {}}, []
     rows = db.session.execute(
         select(WhatnotOrder, WhatnotOrderItem)
         .join(WhatnotOrderItem, WhatnotOrderItem.order_id == WhatnotOrder.id)
@@ -407,14 +508,21 @@ def packages(show: Show) -> dict:
             .group_by(WhatnotOrderItem.whatnot_shipment_id)
         ).all()
     )
+    live_elsewhere = _in_a_show_still_live(org_id, ws, shipment_ids)
     recordings = [s.id for s in sync.recordings_of(ws)] or [show.id]
-    orders = {
-        o.buyer_username.lower(): o
-        for o in db.session.scalars(
-            select(Order).where(Order.show_id.in_(recordings)).order_by(Order.id.desc())
-        )
-    }
+    # A buyer has one order per recording of the show (two laptops: two orders).
+    orders: dict[str, list[Order]] = defaultdict(list)
+    for o in db.session.scalars(
+        select(Order)
+        .where(Order.show_id.in_(recordings))
+        .options(selectinload(Order.sales))
+        .order_by(Order.id)
+        .execution_options(populate_existing=True)
+    ):
+        orders[o.buyer_username.lower()].append(o)
     ended = ws.status == "ended"
+    complete = _complete(org_id, ws)
+    now = datetime.now(UTC)
     by_buyer: dict[str, dict] = {}
     for order, item in rows:
         name = (order.buyer_username or "").lstrip("@")
@@ -438,6 +546,8 @@ def packages(show: Show) -> dict:
                     "items": n,
                     # Items in the same parcel that belong to another show.
                     "otherItems": max(0, int(totals_in.get(whatnot_id) or 0) - n),
+                    # …and that other show is live now: the bundle is still filling.
+                    "liveElsewhere": whatnot_id in live_elsewhere,
                     "tracking": s.tracking_code,
                     "carrier": s.carrier,
                     "labelReady": s.label_ready,
@@ -452,34 +562,57 @@ def packages(show: Show) -> dict:
                 }
             )
         packs.sort(key=lambda p: p["id"])
-        local = orders.get(key)
+        state = _state(packs, b["unplaced"], ended, complete)
+        for p in packs:
+            # Exactly the packages "Make labels" would send for right now.
+            p["askable"] = state in ("ready", "second") and _askable(p, now)
+        local = orders.get(key, [])
+        # The order still waiting to be picked, packed or marked shipped comes first.
+        shown = next((o for o in local if o.status.value in ("paid", "picking", "packed")), None)
+        shown = shown or (local[-1] if local else None)
         out.append(
             {
                 "buyer": b["buyer"] or None,
                 "items": b["items"],
                 "unplaced": b["unplaced"],
                 "packages": packs,
-                "state": _state(packs, b["unplaced"], ended),
-                "orderId": local.id if local else None,
-                "orderStatus": local.status.value if local else None,
+                "state": state,
+                "orderId": shown.id if shown else None,
+                "orderStatus": shown.status.value if shown else None,
+                "_orders": local,
             }
         )
     out.sort(key=lambda b: (-b["items"], (b["buyer"] or "").lower()))
     count = defaultdict(int)
     for b in out:
         count[b["state"]] += 1
+    to_ship = _carrier_has(out)
+    for b in out:
+        del b["_orders"]
     return {
         "connected": True,
         "matched": True,
         "mode": conn.orders_mode,
-        "show": {"title": ws.title, "status": ws.status, "ended": ended},
+        "show": {"title": ws.title, "status": ws.status, "ended": ended, "complete": complete},
         "buyers": out,
         "totals": {"buyers": len(out), **count},
-        "toMarkShipped": len(_carrier_has(show, out)),
-    }
+        "labelsToMake": sum(1 for b in out for p in b["packages"] if p["askable"]),
+        "toMarkShipped": len(to_ship),
+    }, to_ship
 
 
 # ---------- labels ----------
+
+
+# Why Whatnot did not make a label, as codes the page turns into words. The first three are
+# definite: Whatnot answered "no", so no label is being made and asking again is safe.
+REFUSED = ("needs_verification", "no_permission", "not_now")
+# The request may or may not have reached Whatnot (a timeout, a 5xx): asking again could
+# make a second label, so the app waits as long as for one it knows was accepted.
+UNKNOWN = "unknown"
+# Whatnot makes a label in the background and says nothing when that fails. For this long
+# after a request it accepted (or may have), the app does not ask again.
+LABEL_IN_FLIGHT = timedelta(minutes=60)
 
 
 def _label_code(e: WhatnotError) -> str:
@@ -489,23 +622,61 @@ def _label_code(e: WhatnotError) -> str:
         return "no_permission"
     if isinstance(e, Conflict):
         return "not_now"
-    return "failed"
+    return UNKNOWN
 
 
-# Whatnot makes a label in the background: for this long after asking, a second press
-# does not ask again (unless Whatnot refused the first).
-LABEL_IN_FLIGHT = timedelta(minutes=15)
-
-
-def _in_flight(package: dict, now: datetime) -> bool:
+def _askable(package: dict, now: datetime) -> bool:
+    """May a label be asked for this package now? Open, shipped (not pickup), nothing held,
+    not shared with a show still live, and no request in flight. The request itself
+    checks again under the row's lock (_claim)."""
+    if package["status"] != OPEN or package["holds"] or package["pickup"]:
+        return False
+    if package["liveElsewhere"]:
+        return False
     asked = when(package["labelRequestedAt"])
-    return asked is not None and not package["labelProblem"] and now - asked < LABEL_IN_FLIGHT
+    if asked is None or package["labelProblem"] in REFUSED:
+        return True
+    return now - asked >= LABEL_IN_FLIGHT
+
+
+def _claim(org_id: int, row_id: int, user_id: int | None) -> bool:
+    """Take the right to send ONE label request for this shipment. The row is locked and
+    read fresh, every rule is checked on what it holds now, and the claim is committed
+    before the request is sent (the atomic-gate rule). Two people pressing the button, a
+    job run twice, a worker restarted mid-list: only one of them gets True, and a crash
+    between the claim and the request errs toward not asking twice. A hold Whatnot put on
+    the parcel since the button was pressed stops it here."""
+    row = db.session.scalar(
+        select(WhatnotShipment)
+        .where(WhatnotShipment.id == row_id, WhatnotShipment.organization_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    now = datetime.now(UTC)
+    ok = (
+        row is not None
+        and bool(row.whatnot_id)
+        and row.api_status == OPEN
+        and row.fulfillment_method != "pickup"
+        and not row.required_actions
+        and (
+            row.label_requested_at is None
+            or row.label_problem in REFUSED
+            or now - row.label_requested_at >= LABEL_IN_FLIGHT
+        )
+    )
+    if ok:
+        row.label_requested_at, row.label_requested_by_id, row.label_problem = now, user_id, None
+    db.session.commit()  # releases the lock either way
+    return ok
 
 
 def request_labels(show: Show, *, user, buyers: list[str] | None = None) -> dict:
     """Ask Whatnot to make the label of every buyer who is ready for one: the show has
-    ended, and all their wins are in one open package with nothing held. Never for a buyer
-    with two open packages. Queued as a job: Whatnot makes labels in the background."""
+    ended and been read in full, and all their wins are in one open package with nothing
+    held. Never for a buyer with two open packages, never for a pickup. Queued as a job
+    (Whatnot makes labels in the background); the job claims each shipment before it
+    sends, so nothing is asked for twice."""
     view = packages(show)
     if not view["matched"]:
         raise ShippingError("This show is not matched to a show on Whatnot yet.")
@@ -514,29 +685,24 @@ def request_labels(show: Show, *, user, buyers: list[str] | None = None) -> dict
             "Wait until the show has ended. Making a label closes the buyer's bundle: "
             "anything they win afterwards would ship, and be charged shipping, separately."
         )
+    if not view["show"]["complete"]:
+        raise ShippingError(
+            "The show's final orders and packages have not been read from Whatnot yet. "
+            "Press Read again from Whatnot, then make the labels."
+        )
     wanted = {b.lower().lstrip("@") for b in buyers} if buyers else None
-    now = datetime.now(UTC)
-    ids = []
-    for b in view["buyers"]:
-        if wanted is not None and (b["buyer"] or "").lower() not in wanted:
-            continue
-        if b["state"] in ("ready", "second"):
-            ids += [
-                p["id"]
-                for p in b["packages"]
-                if p["status"] == OPEN and not p["holds"] and not _in_flight(p, now)
-            ]
-    ids = ids[:LABELS_PER_REQUEST]
+    ids = [
+        p["id"]
+        for b in view["buyers"]
+        if wanted is None or (b["buyer"] or "").lower() in wanted
+        for p in b["packages"]
+        if p["askable"]
+    ][:LABELS_PER_REQUEST]
     if not ids:
         return {"requested": 0}
-    db.session.execute(
-        update(WhatnotShipment)
-        .where(WhatnotShipment.id.in_(ids), WhatnotShipment.organization_id == show.organization_id)
-        .values(label_requested_at=now, label_requested_by_id=user.id, label_problem=None)
-    )
     jobs.enqueue(
         "whatnot_labels",
-        {"org_id": show.organization_id, "shipment_ids": ids},
+        {"org_id": show.organization_id, "shipment_ids": ids, "user_id": user.id},
         org_id=show.organization_id,
     )
     return {"requested": len(ids)}
@@ -544,44 +710,74 @@ def request_labels(show: Show, *, user, buyers: list[str] | None = None) -> dict
 
 @jobs.handler("whatnot_labels")
 def labels_job(payload: dict) -> None:
-    """Send each label request. One that Whatnot refuses is recorded on its shipment and
-    the rest go on; the job is not retried as a whole (a label must not be asked for twice
-    because a later one failed)."""
+    """Send each label request, once. Each shipment is claimed (and the claim committed)
+    before its request goes out, so running this job again, or two of them at once, sends
+    nothing a second time. A refusal is recorded on the shipment and the rest go on."""
     org_id = payload["org_id"]
     if connection.active(org_id) is None:
         return
     client = client_for(org_id)
     for row_id in payload.get("shipment_ids", []):
-        row = db.session.get(WhatnotShipment, row_id)
-        if row is None or row.organization_id != org_id or not row.whatnot_id:
-            continue
-        if row.api_status != OPEN:
-            continue  # it got its label some other way in the meantime
+        if not _claim(org_id, row_id, payload.get("user_id")):
+            continue  # asked for already, labelled meanwhile, or not ours
+        whatnot_id = db.session.scalar(
+            select(WhatnotShipment.whatnot_id).where(WhatnotShipment.id == row_id)
+        )
+        problem = None
         try:
-            client.request("POST", f"/shipments/{row.whatnot_id}/generate_label")
+            client.request("POST", f"/shipments/{whatnot_id}/generate_label")
         except WhatnotError as e:
             if isinstance(e, Unauthorized):
                 connection.note_failure(org_id, e)  # the token itself stopped working
-            row = db.session.get(WhatnotShipment, row_id)
-            row.label_problem = _label_code(e)
+            # A 429 was never processed (the client retried it first): definitely not made.
+            problem = "not_now" if isinstance(e, Busy) else _label_code(e)
+        if problem is not None:
+            db.session.execute(
+                update(WhatnotShipment)
+                .where(WhatnotShipment.id == row_id)
+                .values(label_problem=problem)
+            )
         db.session.commit()
     # Whatnot says "queued", not "done": the label arrives by webhook, or at the next read.
 
 
+_LOCAL_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home", ".corp")
+
+
 def _safe_url(url) -> str | None:
-    """A link Whatnot gave us, fetched only if it is plain https to a public host."""
+    """A link Whatnot gave us, fetched only if it is plain https to a named public host:
+    no credentials, no address literal in any spelling (dotted, decimal, hex), no local
+    name. The names it resolves to are checked again when it is fetched (_public)."""
     if not isinstance(url, str) or len(url) > 4096:
         return None
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or not host or host == "localhost" or host.endswith(".local"):
-        return None
     try:
-        if not ipaddress.ip_address(host).is_global:
-            return None
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        port = parts.port
     except ValueError:
-        pass  # a name, not an address
+        return None
+    if parts.scheme != "https" or parts.username or parts.password or port not in (None, 443):
+        return None
+    if not host or host.endswith(".") or "." not in host or host.endswith(_LOCAL_SUFFIXES):
+        return None
+    if host == "localhost" or ":" in host:
+        return None
+    last = host.rsplit(".", 1)[-1]
+    if not last.isalpha():  # 127.0.0.1, 127.1, 0x7f.1, 2130706433.: a number, not a name
+        return None
     return url
+
+
+def _public(host: str) -> bool:
+    """Every address the name resolves to is a public one."""
+    try:
+        infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    try:
+        return bool(infos) and all(ipaddress.ip_address(i[4][0]).is_global for i in infos)
+    except ValueError:
+        return False
 
 
 def _fetch(url: str) -> bytes:
@@ -592,14 +788,24 @@ def _fetch(url: str) -> bytes:
         return fetch(url)
     if current_app.config.get("TESTING"):
         raise RuntimeError("a test tried to download a label: install a WHATNOT_FETCH")
+    failed = ShippingError("Whatnot's label could not be downloaded. Try again.")
+    if not _public(urlsplit(url).hostname or ""):
+        raise failed
+    deadline = time.monotonic() + FETCH_SECONDS
+    chunks, size = [], 0
     try:
-        with requests.get(url, timeout=(5, 30), stream=True, allow_redirects=False) as r:
+        with requests.get(url, timeout=(5, 15), stream=True, allow_redirects=False) as r:
             if r.status_code != 200:
-                raise ShippingError("Whatnot's label could not be downloaded. Try again.")
-            data = r.raw.read(MAX_LABEL_BYTES + 1, decode_content=True)
+                raise failed
+            for chunk in r.iter_content(64 * 1024):
+                size += len(chunk)
+                # A response that is too large, or dribbles in forever, is cut off.
+                if size > MAX_LABEL_BYTES or time.monotonic() > deadline:
+                    raise failed
+                chunks.append(chunk)
     except requests.RequestException:
-        raise ShippingError("Whatnot's label could not be downloaded. Try again.") from None
-    return data
+        raise failed from None
+    return b"".join(chunks)
 
 
 def label_pdf(row: WhatnotShipment) -> tuple[bytes, str]:
@@ -631,34 +837,49 @@ def label_pdf(row: WhatnotShipment) -> tuple[bytes, str]:
 # ---------- carrier news → the app's orders ----------
 
 
-def _carrier_has(show: Show, buyers: list[dict]) -> list[tuple[int, str | None]]:
-    """(order id, tracking) for each buyer whose every package is with the carrier while
-    the app's order is still waiting to be picked, packed or marked shipped."""
+def _carrier_has(buyers: list[dict]) -> list[tuple[int, str | None]]:
+    """(order id, tracking) for each order of a buyer whose every package is with the
+    carrier while the order still waits to be picked, packed or marked shipped. An order
+    with an item nobody has settled (not every standing sale paid) is left for a person."""
+    from .. import orders as orders_service
+
     out = []
     for b in buyers:
-        if b["state"] != "shipped" or b["orderId"] is None:
-            continue
-        if b["orderStatus"] not in ("paid", "picking", "packed"):
+        if b["state"] != "shipped":
             continue
         tracking = next((p["tracking"] for p in b["packages"] if p["tracking"]), None)
-        out.append((b["orderId"], tracking))
+        for order in b["_orders"]:
+            if order.status.value in ("paid", "picking", "packed") and orders_service.verified(
+                order
+            ):
+                out.append((order.id, tracking))
     return out
 
 
 def mark_shipped(show: Show, *, actor_label: str = "Whatnot") -> int:
-    """Move to Shipped the orders whose packages the carrier already has."""
+    """Move to Shipped the orders whose packages the carrier already has. Each order on its
+    own: one that cannot be shipped (it changed a moment ago) is skipped, not the rest."""
     from .. import orders as orders_service
 
     n = 0
-    for order_id, tracking in _carrier_has(show, packages(show)["buyers"]):
-        order = db.session.get(Order, order_id, with_for_update=True)
+    for order_id, tracking in _view(show)[1]:
+        order = db.session.scalar(
+            select(Order)
+            .where(Order.id == order_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         if order is None or order.status not in (
             OrderStatus.paid,
             OrderStatus.picking,
             OrderStatus.packed,
         ):
             continue
-        orders_service.ship_by_carrier(order, tracking=tracking, actor_label=actor_label)
+        try:
+            with db.session.begin_nested():
+                orders_service.ship_by_carrier(order, tracking=tracking, actor_label=actor_label)
+        except (orders_service.OrderError, ValueError):
+            continue  # an item still needs a person; the order stays where it is
         n += 1
     return n
 
@@ -709,7 +930,12 @@ def _on_shipment(event: WhatnotEvent) -> None:
 def read_show(org_id: int, client: WhatnotClient, ws: WhatnotShow) -> dict:
     """Every shipment made since the show began."""
     start = ws.begins_at or datetime.now(UTC) - timedelta(days=2)
-    return sync_recent_shipments(org_id, client, start - sync.SHOW_LEAD)
+    began = datetime.now(UTC)
+    out = sync_recent_shipments(org_id, client, start - sync.SHOW_LEAD)
+    # When this show's parcels were last read in full: labels wait for a read that began
+    # after the show ended (see _complete).
+    connection.sync_state(org_id, f"shipments:{ws.id}").last_ok_at = began
+    return out
 
 
 @jobs.handler("whatnot_sync_shipments")
@@ -718,13 +944,15 @@ def sync_shipments_job(payload: dict) -> None:
     if connection.active(org_id) is None:
         return
     client = client_for(org_id)
-    ws = sync._show_row(org_id, payload.get("whatnot_show_id"))
-    since = (
-        (ws.begins_at or datetime.now(UTC)) - sync.SHOW_LEAD
-        if ws is not None
-        else datetime.now(UTC) - RECENT
-    )
-    sync._run(org_id, "shipments", lambda: sync_recent_shipments(org_id, client, since))
+    whatnot_show_id = payload.get("whatnot_show_id")
+
+    def read():
+        ws = sync._show_row(org_id, whatnot_show_id)
+        if ws is not None:
+            return read_show(org_id, client, ws)
+        return sync_recent_shipments(org_id, client, datetime.now(UTC) - RECENT)
+
+    sync._run(org_id, "shipments", read)
     db.session.commit()
     shows = set(
         db.session.scalars(

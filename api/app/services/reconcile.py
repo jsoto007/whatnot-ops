@@ -18,9 +18,10 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from ..db import db
-from ..models import ReviewItem, ReviewStatus, Sale, SaleStatus, Show
+from ..models import ParsedEvent, ReviewItem, ReviewStatus, Sale, SaleStatus, Show
 from . import catalog, pipeline
 from . import text as text_safe
 from .inventory import Actor
@@ -216,12 +217,28 @@ def parse_csv(text: str) -> list[Row]:
     return rows
 
 
-def plan(show: Show, rows: list[Row], *, shows: list[Show] | None = None) -> Plan:
+def plan(
+    show: Show,
+    rows: list[Row],
+    *,
+    shows: list[Show] | None = None,
+    extra_sale_ids: set[int] | None = None,
+) -> Plan:
     """Match file rows to the show's sales. Each sale is used at most once. `shows` widens
-    the search to every recording of the same Whatnot show (two laptops, a restart)."""
+    the search to every recording of the same Whatnot show (two laptops, a restart).
+    `extra_sale_ids` are sales in other shows already tied to one of these rows (a row's
+    `sale_hint`): they can be matched and changed, but are never "uncovered" here."""
     show_ids = [s.id for s in shows] if shows else [show.id]
+    where = Sale.show_id.in_(show_ids)
+    if extra_sale_ids:
+        where = where | (
+            Sale.id.in_(extra_sale_ids) & (Sale.organization_id == show.organization_id)
+        )
     sales = db.session.scalars(
-        select(Sale).where(Sale.show_id.in_(show_ids)).order_by(Sale.id)
+        select(Sale)
+        .where(where)
+        .options(selectinload(Sale.event).selectinload(ParsedEvent.message))
+        .order_by(Sale.id)
     ).all()
     taken: set[int] = set()
     out = Plan()
@@ -274,6 +291,7 @@ def plan(show: Show, rows: list[Row], *, shows: list[Show] | None = None) -> Pla
         s.id
         for s in sales
         if s.id not in taken
+        and s.show_id in show_ids
         and (
             s.status in (SaleStatus.detected, SaleStatus.reserved)
             # Paid only because Whatnot charges at the win: the file should list it, and a
@@ -300,6 +318,8 @@ def _match(show: Show, row: Row, sales: list[Sale], taken: set[int]) -> Sale | N
         # A sale an earlier file already tied to another order is that order's, not this one's
         # (a re-export lists the paid lot again next to the refunded one).
         candidates = [s for s in candidates if not s.external_order_id]
+    if row.ref is not None:
+        return _same_win_sale(row, candidates, sku)
 
     def priced(found: list[Sale]) -> Sale | None:
         # One buyer can win several lots of one listing at different prices: the price
@@ -336,6 +356,34 @@ def _match(show: Show, row: Row, sales: list[Sale], taken: set[int]) -> Sale | N
     if len(candidates) == 1 and (sku is None or candidates[0].sku_id is None):
         return candidates[0]  # only one open purchase by this buyer; the item wording just differs
     return None
+
+
+def _same_win_sale(row: Row, candidates: list[Sale], sku) -> Sale | None:
+    """The sale one of Whatnot's own order items is, or None. Stricter than for a file: a
+    file's rows are a person's export of one show's payments, so the wording is forgiven
+    and a buyer's only purchase is assumed to be the one. Whatnot's orders include wins
+    the app never saw, so "the buyer's only sale" may be a different win altogether, and
+    matching it would pay, decline or cancel the wrong sale. A match needs the same win
+    (`pipeline.same_win`: the lot by title, the price when the sale knows what was paid,
+    and the order placed within half an hour of the win line), or failing the title, the
+    same known product under those same price and time rules."""
+    best: tuple | None = None
+    for sale in candidates:
+        price, won = pipeline.paid_price(sale), pipeline.won_when(sale)
+        key = pipeline.same_win(
+            sale.item_text, price, won, row.item, row.price_cents, row.ordered_at
+        )
+        if key is None and sku is not None and sale.sku_id == sku.id:
+            # Worded differently, but both name the same product of the shop's.
+            key = pipeline.same_win("x", price, won, "x", row.price_cents, row.ordered_at)
+            key = (3, key[1]) if key is not None else None
+        if key is None:
+            continue
+        # The surest first, then a sale still open over one already closed, then the oldest.
+        rank = (key, sale.status not in pipeline.CLOSABLE, sale.id)
+        if best is None or rank < best[0]:
+            best = (rank, sale)
+    return best[1] if best else None
 
 
 def _player_price_differs(sale: Sale, row: Row) -> bool:

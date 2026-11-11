@@ -22,6 +22,7 @@ from app.models import (
     ReviewItem,
     ReviewStatus,
     Sale,
+    SaleStatus,
     Show,
     WhatnotConnection,
     WhatnotOrder,
@@ -76,7 +77,8 @@ def read(app, shop, *, orders=True):
 
 
 def order(shop, buyer, title, price=2500, **kw):
-    kw.setdefault("created", shop["now"] - timedelta(hours=1))
+    # Whatnot makes the order at the win: seconds from the win line, never an hour.
+    kw.setdefault("created", datetime.now(UTC) - timedelta(seconds=20))
     return shop["fake"].add_order(
         show_id=shop["wshow"], buyer=buyer, items=[{"title": title, "price_cents": price}], **kw
     )
@@ -480,8 +482,9 @@ def test_three_wins_of_one_listing_by_one_buyer_match_three_orders_once_each(app
 def test_a_win_line_that_arrives_after_the_order_made_the_sale_is_its_evidence_not_a_second_sale(
     app, shop
 ):
-    order(shop, "lani808", "Red bundle")
-    order(shop, "newbie", LOT, 700)
+    just_now = datetime.now(UTC) - timedelta(seconds=20)  # the order, then its win line
+    order(shop, "lani808", "Red bundle", created=just_now)
+    order(shop, "newbie", LOT, 700, created=just_now)
     read(app, shop)
     assert apply(app, shop) == {"recorded": 2}
     stock = level(app, shop["red"])
@@ -497,8 +500,9 @@ def test_a_win_line_that_arrives_after_the_order_made_the_sale_is_its_evidence_n
 
 
 def test_wins_claim_order_sales_one_each_and_the_extra_win_is_a_new_sale(app, shop):
-    order(shop, "lani808", "Red bundle")
-    order(shop, "lani808", "Red bundle")
+    just_now = datetime.now(UTC) - timedelta(seconds=20)
+    order(shop, "lani808", "Red bundle", created=just_now)
+    order(shop, "lani808", "Red bundle", created=just_now)
     read(app, shop)
     assert apply(app, shop) == {"recorded": 2}
     shop["say"](app, [win("lani808", "Red bundle")] * 3)
@@ -531,7 +535,7 @@ def test_a_sale_in_another_recording_of_the_same_show_is_matched_not_duplicated(
         db.session.commit()
         second_id = second.id
     run(app, second_id)
-    o = order(shop, "kat.c", "Red bundle")
+    o = order(shop, "kat.c", "Red bundle", created=shop["now"] - timedelta(minutes=59))
     read(app, shop)
     assert apply(app, shop) == {"unchanged": 1}
     assert sale_rows(app) == [
@@ -878,7 +882,7 @@ def test_a_sale_from_an_order_reads_like_a_win_for_the_person_picking_the_produc
             )
         )  # fmt: skip
         db.session.commit()
-    order(shop, "newbie", LOT, 700)
+    order(shop, "newbie", LOT, 700, created=shop["now"] - timedelta(hours=1))
     read(app, shop)
     apply(app, shop)
     sales = client.get(f"/api/shows/{shop['show']}/sales").get_json()["sales"]
@@ -900,3 +904,348 @@ def test_a_sale_from_an_order_reads_like_a_win_for_the_person_picking_the_produc
     assert sale_rows(app)[0][2] == "paid" and level(app, shop["red"]) == (2, 0)
     assert apply(app, shop) == {"unchanged": 1}
     assert sale_rows(app)[0][3] == "paid at the win; confirmed by Whatnot's order"
+
+
+# ---------- regressions from the 2026-11-10 money-safety review ----------
+
+
+def test_two_items_of_one_order_with_the_same_title_are_two_sales(app, shop):
+    """They used to become one sale (the second item found the first item's sale by the
+    order number): one unit short on the shelf count, and never corrected."""
+    shop["fake"].add_order(
+        show_id=shop["wshow"],
+        buyer="lani808",
+        items=[
+            {"title": "Red bundle", "price_cents": 2500},
+            {"title": "Red bundle", "price_cents": 2500},
+        ],
+        created=shop["now"] - timedelta(hours=1),
+    )
+    read(app, shop)
+    assert apply(app, shop) == {"recorded": 2}
+    assert len(sale_rows(app)) == 2 and level(app, shop["red"]) == (1, 0)
+    assert apply(app, shop) == {"unchanged": 2}
+    assert len(sale_rows(app)) == 2 and level(app, shop["red"]) == (1, 0)
+
+
+@pytest.mark.parametrize(
+    ("order_title", "line_title", "line_price", "one_sale"),
+    [
+        ("Red bundle", "Red bundle #752", "25.00", True),  # the player adds the lot number
+        ("Red bundle #752", "Red bundle", "25.00", True),
+        ("RED  BUNDLE!", "red bundle", "25.00", True),
+        ("Red bundle #7", "Red bundle #8", "25.00", False),  # two lots are two wins
+        ("Red bundle", "Red bundle", "26.00", False),  # another price is another win
+        ("Red bundle", "Blue bundle", "25.00", False),
+    ],
+)
+def test_a_win_line_worded_differently_from_the_order_is_still_the_same_win(
+    app, shop, order_title, line_title, line_price, one_sale
+):
+    order(shop, "lani808", order_title, created=datetime.now(UTC) - timedelta(seconds=20))
+    read(app, shop)
+    apply(app, shop)
+    shop["say"](app, [win("lani808", line_title, line_price)])
+    made = run(app, shop["show"]).sales
+    assert (made, len(sale_rows(app))) == ((0, 1) if one_sale else (1, 2))
+
+
+def test_a_win_line_long_after_the_order_is_another_win(app, shop):
+    order(shop, "lani808", "Red bundle", created=shop["now"] - timedelta(hours=1))
+    read(app, shop)
+    apply(app, shop)
+    shop["say"](app, [win("lani808", "Red bundle")])  # now
+    assert run(app, shop["show"]).sales == 1 and len(sale_rows(app)) == 2
+
+
+def test_the_orders_quantity_stands_when_the_win_line_counts_differently(app, shop):
+    shop["fake"].add_order(
+        show_id=shop["wshow"],
+        buyer="lani808",
+        items=[{"title": "Red bundle", "price_cents": 2500, "quantity": 2}],
+        created=datetime.now(UTC) - timedelta(seconds=20),
+    )
+    read(app, shop)
+    apply(app, shop)
+    shop["say"](app, [win("lani808", "Red bundle")])  # the player never says "x2"
+    assert run(app, shop["show"]).sales == 0
+    assert len(sale_rows(app)) == 1 and level(app, shop["red"]) == (1, 0)  # two units, once
+
+
+def test_one_recording_through_two_shows_does_not_sell_a_win_twice(app, shop):
+    """The laptop recorded straight through two shows. The recording is matched to the
+    second; the first show gets its own entry. A win in the first show is one sale either
+    way round: the order after the win line, or the win line after the order."""
+    now, fake = shop["now"], shop["fake"]
+    fake.shows[shop["wshow"]]["ended_at"] = (now - timedelta(minutes=95)).isoformat()
+    fake.add_show(
+        title="Second", start=now - timedelta(minutes=90), ended=now - timedelta(minutes=5)
+    )
+    with app.app_context():
+        from app.models import ChatMessage
+
+        db.session.query(ChatMessage).update({"captured_at": now - timedelta(minutes=120)})
+        db.session.commit()
+    # In show 1's window: a win the laptop saw, and one it missed.
+    order(shop, "lani808", "Red bundle", created=now - timedelta(minutes=120))
+    order(shop, "kat.c", "Red bundle", created=now - timedelta(minutes=110))
+    with app.app_context():
+        from app.models import ChatMessage
+
+        line = "lani808 won the auction for Red bundle for $25.00"
+        db.session.add(
+            ChatMessage(
+                show_id=shop["show"], client_id="c" * 16, seq=90, username="",
+                body=line, raw_text=line,
+                source="player", captured_at=now - timedelta(minutes=120) + timedelta(seconds=5),
+            )
+        )  # fmt: skip
+        db.session.commit()
+    run(app, shop["show"])
+    read(app, shop)
+    with app.app_context():
+        first = db.session.scalar(
+            select(WhatnotShow).where(WhatnotShow.whatnot_id == shop["wshow"])
+        )
+        assert sync.recordings_of(first) == []  # the recording went to the second show
+        made = sync.ensure_recording(first)
+        db.session.commit()
+        result = whatnot_orders.apply(made)
+        db.session.commit()
+        assert result["summary"] == {"unchanged": 1, "recorded": 1}
+        made_id = made.id
+    assert [(r[0], r[2]) for r in sale_rows(app)] == [("lani808", "paid"), ("kat.c", "paid")]
+    assert level(app, shop["red"]) == (1, 0)
+    # kat.c's win line turns up late in the same recording: evidence, not a third sale.
+    with app.app_context():
+        from app.models import ChatMessage
+
+        line = "kat.c won the auction for Red bundle for $25.00"
+        db.session.add(
+            ChatMessage(
+                show_id=shop["show"], client_id="d" * 16, seq=91, username="",
+                body=line, raw_text=line,
+                source="player", captured_at=now - timedelta(minutes=110) + timedelta(seconds=5),
+            )
+        )  # fmt: skip
+        db.session.commit()
+    assert run(app, shop["show"]).sales == 0 and len(sale_rows(app)) == 2
+    # And Whatnot's word on the payment still reaches the sale that lives in the other show.
+    lani = next(o for o in fake.orders.values() if o["buyer"]["username"] == "lani808")
+    fake.set_order_status(lani["id"], "failed")
+    read(app, shop)
+    with app.app_context():
+        assert whatnot_orders.apply(db.session.get(Show, made_id))["summary"]["decline"] == 1
+        db.session.commit()
+    assert sale_rows(app)[0][2] == "payment_failed" and level(app, shop["red"]) == (2, 0)
+    # None of it is called out as "no order" on the second show's own page.
+    assert reviews(app) == []
+
+
+def test_apply_and_the_parser_never_work_on_one_show_at_once(app, shop):
+    """Both make sales from the same wins. While Apply holds the show, the parser is told
+    it is busy (and comes back later, as it does when two parses meet); afterwards its win
+    line is the order's evidence. No second sale, no deadlock."""
+    import threading
+
+    order(shop, "lani808", "Red bundle", created=datetime.now(UTC) - timedelta(seconds=20))
+    read(app, shop)
+    shop["say"](app, [win("lani808", "Red bundle")])
+    seen = {}
+    real = whatnot_orders._plan
+
+    def plan_then_parse(show, ws):
+        def parse():
+            try:
+                run(app, shop["show"])
+                seen["parser"] = "ran"
+            except pipeline.ParseBusy:
+                seen["parser"] = "busy"
+
+        t = threading.Thread(target=parse)
+        t.start()
+        t.join(20)
+        return real(show, ws)
+
+    whatnot_orders._plan = plan_then_parse
+    try:
+        assert apply(app, shop) == {"recorded": 1}
+    finally:
+        whatnot_orders._plan = real
+    assert seen == {"parser": "busy"}
+    assert run(app, shop["show"]).sales == 0 and len(sale_rows(app)) == 1
+    assert level(app, shop["red"]) == (2, 0)
+
+
+def test_two_applies_at_once_record_each_sale_once(app, shop):
+    import threading
+
+    for buyer in ("lani808", "kat.c", "newbie"):
+        order(shop, buyer, "Red bundle")
+    read(app, shop)
+    gate = threading.Barrier(2, timeout=20)
+    out = []
+
+    def go():
+        with app.app_context():
+            gate.wait()
+            result = whatnot_orders.apply(db.session.get(Show, shop["show"]))
+            db.session.commit()
+            out.append(result["summary"])
+
+    threads = [threading.Thread(target=go) for _ in range(2)]
+    [t.start() for t in threads]
+    [t.join(30) for t in threads]
+    assert sorted(out, key=str) == [{"recorded": 3}, {"unchanged": 3}]
+    assert len(sale_rows(app)) == 3 and level(app, shop["red"]) == (0, 0)
+
+
+def test_an_order_whose_sale_was_closed_here_goes_to_a_person_not_to_a_second_sale(app, shop):
+    shop["say"](app, [win("lani808", "Red bundle")])
+    run(app, shop["show"])
+    o = order(shop, "lani808", "Red bundle")
+    read(app, shop)
+    apply(app, shop)
+    with app.app_context():  # someone cancelled it here; Whatnot still says paid
+        sale = db.session.scalar(select(Sale))
+        pipeline.set_sale_status(
+            sale, SaleStatus.cancelled, reason="by hand", actor=pipeline.RULE_ACTOR
+        )
+        db.session.commit()
+    rows, _, result = compare(app, shop)
+    assert rows == [("lani808", "paid", "unmatched")]
+    note = result["plan"].rows[0].note
+    assert note == "cancelled here, but paid on Whatnot"
+    assert apply(app, shop) == {"unmatched": 1}
+    assert len(sale_rows(app)) == 1 and level(app, shop["red"]) == (3, 0)
+    summary = reviews(app)[-1][1]
+    assert "cancelled here, but paid on Whatnot" in summary and "payment_failed" not in summary
+    assert o["id"]
+
+
+def test_an_amount_no_column_can_hold_does_not_stop_the_shows_orders_from_being_read(app, shop):
+    huge = order(shop, "whale", "Red bundle")
+    shop["fake"].orders[huge["id"]]["amounts"]["total"] = {
+        "amount": "99999999.99",
+        "currency": "USD",
+    }
+    shop["fake"].items_of(huge["id"])[0]["unit_price"] = {"amount": "1e30", "currency": "USD"}
+    order(shop, "lani808", "Red bundle")
+    read(app, shop)
+    with app.app_context():
+        got = {o.buyer_username: o.total_cents for o in db.session.scalars(select(WhatnotOrder))}
+        assert got == {"whale": None, "lani808": 3025}
+        assert sorted(
+            str(i.unit_price_cents) for i in db.session.scalars(select(WhatnotOrderItem))
+        ) == ["2500", "None"]
+
+
+def test_one_delivery_to_four_threads_is_stored_and_queued_once(app, shop, monkeypatch):
+    import threading
+
+    from app.models import WhatnotEvent
+
+    monkeypatch.delenv("JOBS_INLINE", raising=False)
+    body = {"type": "orders.updated", "seller_id": "1234567", "data": {"id": "999"}}
+    gate = threading.Barrier(4, timeout=20)
+    out = []
+
+    def go():
+        with app.app_context():
+            gate.wait()
+            out.append(webhooks.accept(body, "one-delivery"))
+
+    threads = [threading.Thread(target=go) for _ in range(4)]
+    [t.start() for t in threads]
+    [t.join(30) for t in threads]
+    assert sorted(out) == ["duplicate", "duplicate", "duplicate", "queued"]
+    with app.app_context():
+        assert db.session.scalar(select(func.count()).select_from(WhatnotEvent)) == 1
+        assert (
+            db.session.scalar(
+                select(func.count()).select_from(Job).where(Job.kind == "whatnot_event")
+            )
+            == 1
+        )
+
+
+def test_an_order_for_a_win_the_laptop_missed_never_takes_the_buyers_other_sale(app, shop):
+    """The buyer's only sale here is "Red bundle". Whatnot also has their "Mystery box",
+    which the laptop missed. Matching it to the Red sale (it was "the buyer's only sale")
+    left the Red order to make a second Red sale: two units out for one win."""
+    shop["say"](app, [win("lani808", "Red bundle")])
+    run(app, shop["show"])
+    now = datetime.now(UTC)
+    order(shop, "lani808", "Mystery box", 500, created=now - timedelta(minutes=10))
+    red = order(shop, "lani808", "Red bundle", created=now - timedelta(seconds=30))
+    read(app, shop)
+    assert apply(app, shop) == {"recorded": 1, "unchanged": 1}
+    assert [(r[1], r[2], r[4] == red["id"]) for r in sale_rows(app)] == [
+        ("Red bundle", "paid", True),
+        ("Mystery box", "detected", False),
+    ]
+    assert level(app, shop["red"]) == (2, 0)
+
+
+def test_a_failed_order_for_another_win_never_declines_the_buyers_paid_sale(app, shop):
+    """The same, with the missed order failed: it used to decline the captured, paid Red
+    sale and put its unit back on the shelf."""
+    shop["say"](app, [win("lani808", "Red bundle")])
+    run(app, shop["show"])
+    now = datetime.now(UTC)
+    shop["fake"].set_order_status(
+        order(shop, "lani808", "Mystery box", 500, created=now - timedelta(minutes=10))["id"],
+        "failed",
+    )
+    order(shop, "lani808", "Red bundle", created=now - timedelta(seconds=30))
+    read(app, shop)
+    assert apply(app, shop) == {"skip": 1, "unchanged": 1}
+    assert [(r[1], r[2]) for r in sale_rows(app)] == [("Red bundle", "paid")]
+    assert level(app, shop["red"]) == (2, 0)
+
+
+def test_a_chat_sale_at_list_price_still_meets_its_order_and_takes_its_price(app, shop):
+    """A sale read from chat with no price in the line carries the product's list price,
+    which says nothing about what was paid: it must not keep the order from matching."""
+    shop["say"](app, [("", "lani808 won Red bundle")])  # the platform's line, no price
+    run(app, shop["show"])
+    order(shop, "lani808", "Red bundle", 1900)  # won at $19, list price $25
+    read(app, shop)
+    assert apply(app, shop) == {"unchanged": 1}
+    assert len(sale_rows(app)) == 1 and level(app, shop["red"]) == (2, 0)
+
+
+def test_an_order_worded_unlike_the_sale_meets_it_through_the_product_both_name(app, shop):
+    """Chat called it by a name the shop taught the app; Whatnot's order has the listing
+    title. Both name the same product, at the same moment: one sale."""
+    with app.app_context():
+        from app.models import Sku
+        from app.services import catalog
+
+        catalog.add_alias(shop["org"], db.session.get(Sku, shop["red"]), "crimson set")
+        db.session.commit()
+    shop["say"](app, [("", "lani808 won crimson set")])
+    run(app, shop["show"])
+    assert [(r[1], r[2]) for r in sale_rows(app)] == [("crimson set", "paid")]
+    order(shop, "lani808", "Red bundle")
+    read(app, shop)
+    assert apply(app, shop) == {"unchanged": 1}
+    assert len(sale_rows(app)) == 1 and level(app, shop["red"]) == (2, 0)
+
+
+def test_a_line_total_no_column_can_hold_is_left_unread_not_applied(app, shop):
+    """500 × $100,000 is inside each limit but not their product: the dashboard's sums
+    would have failed for the whole show."""
+    shop["fake"].add_order(
+        show_id=shop["wshow"],
+        buyer="whale",
+        items=[{"title": "Red bundle", "price_cents": 10_000_000, "quantity": 500}],
+        created=datetime.now(UTC) - timedelta(seconds=20),
+    )
+    read(app, shop)
+    with app.app_context():
+        assert db.session.scalar(select(WhatnotOrderItem.unit_price_cents)) is None
+        from app.services import dashboard
+
+        apply(app, shop)
+        dashboard.show_tiles(db.session.get(Show, shop["show"]))  # no "integer out of range"

@@ -1,5 +1,6 @@
 from flask import Blueprint, g, jsonify, request
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import selectinload
 
 from .. import serializers
@@ -394,7 +395,18 @@ def whatnot_apply(show_id: int):
     if show is None:
         return jsonify({"error": "show not found"}), 404
     ratelimit.per_user("reconcile", g.u.id, 30, 600)
-    result = whatnot_orders.apply(show, user=g.u)
+    try:
+        result = whatnot_orders.apply(show, user=g.u)
+    except OperationalError as e:
+        # Two transactions each waiting on a buyer the other holds (this, and another
+        # show being read): Postgres stops one. Nothing was changed; say so and let the
+        # person press again.
+        db.session.rollback()
+        if "deadlock" not in str(getattr(e, "orig", e)).lower():
+            raise
+        return jsonify(
+            {"error": "The show is being read right now. Try again in a few seconds."}
+        ), 409
     audit.record(
         g.u.organization_id,
         "whatnot.orders_applied",

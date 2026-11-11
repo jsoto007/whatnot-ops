@@ -554,13 +554,15 @@ export interface WhatnotCompare {
 
 // ---------- Shipping: one package and one label per buyer (GET /api/shipping/shows/:id) ----------
 /** Where a buyer's shipping stands; the page turns the code into words (labels.ts). */
-export type ShippingState = 'none' | 'wait' | 'ready' | 'second' | 'split' | 'hold' | 'labelled' | 'shipped' | 'failed'
+export type ShippingState = 'none' | 'wait' | 'shared' | 'reading' | 'ready' | 'second' | 'split' | 'hold' | 'pickup' | 'labelled' | 'shipped' | 'failed' | 'other'
 export interface ShippingPackage {
   id: number
   status: string
   /** Items of this show in the package, and items of another show bundled with them. */
   items: number
   otherItems: number
+  /** Those other items belong to a show that is live now: the bundle is still filling. */
+  liveElsewhere: boolean
   tracking: string | null
   carrier: string | null
   labelReady: boolean
@@ -572,6 +574,8 @@ export interface ShippingPackage {
   url: string | null
   labelRequestedAt: string | null
   labelProblem: string | null
+  /** "Make labels" would ask for this package's label right now (the server decides). */
+  askable: boolean
 }
 export interface ShippingBuyer {
   buyer: string | null
@@ -589,9 +593,12 @@ export interface Shipping {
   connected: boolean
   matched: boolean
   mode?: 'shadow' | 'auto'
-  show?: { title: string; status: string; ended: boolean }
+  /** complete: the show ended and all its orders and packages were read after that. */
+  show?: { title: string; status: string; ended: boolean; complete: boolean }
   buyers: ShippingBuyer[]
   totals: Partial<Record<ShippingState | 'buyers', number>>
+  /** How many labels "Make labels" would ask Whatnot for right now. */
+  labelsToMake?: number
   /** Orders the carrier already has that the app still shows as waiting. */
   toMarkShipped?: number
   queued?: boolean

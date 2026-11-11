@@ -272,16 +272,24 @@ def test_a_rejected_token_settles_the_event_and_flags_the_connection(
         assert db.session.scalar(select(Job)).status.value == "done"  # not retried for nothing
 
 
-def test_old_handled_deliveries_are_pruned_and_waiting_ones_kept(
+def test_old_deliveries_are_pruned_and_one_nobody_handled_is_settled(
     app, client, connected, monkeypatch
 ):
     monkeypatch.delenv("JOBS_INLINE", raising=False)
-    deliver(client)
-    deliver(client)
+    for _ in range(3):
+        deliver(client)
     with app.app_context():
-        first, second = db.session.scalars(select(WhatnotEvent).order_by(WhatnotEvent.id)).all()
-        first.status = "done"
-        first.received_at = second.received_at = db.func.now() - db.text("interval '31 days'")
+        done, stuck, waiting = db.session.scalars(
+            select(WhatnotEvent).order_by(WhatnotEvent.id)
+        ).all()
+        done.status = "done"
+        done.received_at = db.func.now() - db.text("interval '31 days'")
+        stuck.received_at = db.func.now() - db.text("interval '4 days'")  # its job gave up
         db.session.commit()
-        assert retention.sweep()["whatnot_events"] == 1
-        assert [e.status for e in db.session.scalars(select(WhatnotEvent))] == ["queued"]
+        swept = retention.sweep()
+        assert (swept["whatnot_events"], swept["whatnot_events_stuck"]) == (1, 1)
+        left = [
+            (e.status, e.error)
+            for e in db.session.scalars(select(WhatnotEvent).order_by(WhatnotEvent.id))
+        ]
+        assert left == [("failed", "never handled"), ("queued", None)]
