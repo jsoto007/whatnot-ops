@@ -20,6 +20,7 @@ async function signup(page: Page) {
   await page.getByLabel('Your name').fill('Olive Owner')
   await page.getByLabel('Email').fill(EMAIL)
   await page.getByLabel('Password (10+ characters)').fill(PASSWORD)
+  await page.getByLabel('I have read and accept the Sales Ops License and Data Terms').check()
   await page.getByRole('button', { name: 'Create shop' }).click()
   await expect(page).toHaveURL(/\/app$/)
 }

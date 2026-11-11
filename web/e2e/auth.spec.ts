@@ -9,6 +9,7 @@ async function signup(page: Page, email: string, org: string) {
   await page.getByLabel('Your name').fill('Olive Owner')
   await page.getByLabel('Email').fill(email)
   await page.getByLabel('Password (10+ characters)').fill(PW)
+  await page.getByLabel('I have read and accept the Sales Ops License and Data Terms').check()
   await page.getByRole('button', { name: 'Create shop' }).click()
   await expect(page).toHaveURL(/\/app$/)
 }
@@ -77,6 +78,43 @@ test('owner signs up, creates a device key, invites fulfillment who gets a limit
   await page.getByLabel('Password').fill(PW)
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page).toHaveURL(/\/app$/)
+})
+
+test('the shop is created only with the licence ticked; the terms open beside the form', async ({ page, context }) => {
+  const email = `licence-${run}@shop.test`
+  await page.goto('/signup')
+  await page.getByLabel('Shop name').fill(`Licence ${run}`)
+  await page.getByLabel('Your name').fill('Olive Owner')
+  await page.getByLabel('Email').fill(email)
+  await page.getByLabel('Password (10+ characters)').fill(PW)
+  const box = page.getByLabel('I have read and accept the Sales Ops License and Data Terms')
+  await expect(box).not.toBeChecked()
+  // Unticked, the browser keeps the form (the API refuses it too: api/tests/test_licence.py).
+  await page.getByRole('button', { name: 'Create shop' }).click()
+  await expect(page).toHaveURL(/\/signup$/)
+  expect(await box.evaluate((el) => (el as HTMLInputElement).validity.valueMissing)).toBe(true)
+
+  // The terms open in a new tab, served with the app, readable as text; the form keeps what was typed.
+  const [terms] = await Promise.all([
+    context.waitForEvent('page'),
+    page.getByRole('link', { name: 'Sales Ops License and Data Terms' }).click(),
+  ])
+  await terms.waitForLoadState()
+  expect(new URL(terms.url()).pathname).toBe('/LICENSE.md')
+  await expect(terms.locator('body')).toContainText('Version 1.0')
+  await expect(terms.locator('body')).toContainText('Copyright © 2026 SotoDev')
+  await terms.close()
+  await expect(page.getByLabel('Email')).toHaveValue(email)
+
+  await box.check()
+  await page.getByRole('button', { name: 'Create shop' }).click()
+  await expect(page).toHaveURL(/\/app$/)
+  // Accepted at sign-up: no banner, and the activity log says so in words.
+  await expect(page.getByTestId('licence-banner')).toHaveCount(0)
+  await page.getByRole('link', { name: 'Settings' }).click()
+  await expect(page.getByText(/Accepted the Sales Ops License and Data Terms, version 1\.0/)).toBeVisible()
+  await expect(page.getByText('licence.accepted')).toHaveCount(0)
+  await expect(page.getByTestId('extension-licence')).toContainText('Sales Ops License and Data Terms')
 })
 
 test('password reset by link', async ({ page }) => {

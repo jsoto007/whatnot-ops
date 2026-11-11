@@ -2,14 +2,23 @@ import { readFileSync } from 'node:fs'
 import { defineConfig, type Plugin } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
-/** Puts the licence and the open-source notices beside the bundle, so /LICENSE.md is served with it. */
+const LEGAL_FILES = ['LICENSE.md', 'NOTICE.md', 'THIRD_PARTY_LICENSES.txt']
+const legalText = (fileName: string) => readFileSync(new URL(`../${fileName}`, import.meta.url), 'utf8')
+
+/** Puts the licence and the open-source notices beside the bundle, so /LICENSE.md is served with it
+ *  (sign-up links to it). The dev server serves them at the same paths. */
 const legalFiles = (): Plugin => ({
   name: 'legal-files',
-  apply: 'build',
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      const fileName = (req.url ?? '').split('?')[0]!.slice(1)
+      if (!LEGAL_FILES.includes(fileName)) return next()
+      res.setHeader('Content-Type', `text/${fileName.endsWith('.md') ? 'markdown' : 'plain'}; charset=utf-8`)
+      res.end(legalText(fileName))
+    })
+  },
   generateBundle() {
-    for (const fileName of ['LICENSE.md', 'NOTICE.md', 'THIRD_PARTY_LICENSES.txt']) {
-      this.emitFile({ type: 'asset', fileName, source: readFileSync(new URL(`../${fileName}`, import.meta.url), 'utf8') })
-    }
+    for (const fileName of LEGAL_FILES) this.emitFile({ type: 'asset', fileName, source: legalText(fileName) })
   },
 })
 

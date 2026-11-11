@@ -20,7 +20,13 @@ def owner(client):
     h = {"X-CSRF-Token": client.get("/api/auth/csrf").get_json()["token"]}
     client.post(
         "/api/auth/signup",
-        json={"organization": "Shop", "name": "O", "email": "o@shop.test", "password": PW},
+        json={
+            "acceptLicence": True,
+            "organization": "Shop",
+            "name": "O",
+            "email": "o@shop.test",
+            "password": PW,
+        },
         headers=h,
     )
     return h

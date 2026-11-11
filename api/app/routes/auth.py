@@ -14,7 +14,7 @@ from ..auth import (
 )
 from ..config import is_dev
 from ..models import Role
-from ..services import accounts, mail, ratelimit
+from ..services import accounts, licence, mail, ratelimit
 from ..services.accounts import AccountError
 
 bp = Blueprint("auth", __name__)
@@ -68,9 +68,20 @@ def signup():
         d.get("email", ""),
         d.get("password", ""),
         setup_code=d.get("setupCode"),
+        accept_licence=d.get("acceptLicence"),
+        ip=ratelimit.client_ip(),
     )
     start_session(user)
     return remember_device(jsonify(serializers.me(user)), user), 201
+
+
+@bp.post("/licence")
+@require("licence.accept")
+def accept_licence():
+    """An owner accepts the licence for the shop (services/licence.py)."""
+    d = request.get_json(silent=True) or {}
+    licence.accept(g.u, d.get("version"), ratelimit.client_ip())
+    return jsonify(serializers.me(g.u))
 
 
 @bp.post("/login")

@@ -151,6 +151,7 @@ def _owner_client(app, client, world):
     client.post(
         "/api/auth/signup",
         json={
+            "acceptLicence": True,
             "organization": "O",
             "name": "O",
             "email": "o@x.test",

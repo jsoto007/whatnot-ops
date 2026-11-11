@@ -990,3 +990,8 @@ body.sheet-open, body.modal-open { overflow: hidden; }
 .on-whatnot { display: block; font-size: 12px; font-weight: 500; color: var(--text-muted); text-decoration: none; white-space: nowrap; }
 .on-whatnot.differs { color: var(--tint-amber-ink); }
 .link-pick { display: inline-flex; gap: var(--space-2); align-items: center; }
+
+/* ---------- licence (sign-up box, owner banner) ---------- */
+.field.check.licence-check { align-items: flex-start; margin-top: var(--space-1); }
+.field.check.licence-check input { margin-top: 3px; flex: none; }
+.field.check.licence-check span { font-weight: 500; font-size: 14px; color: var(--text); line-height: 1.4; }
