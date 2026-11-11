@@ -88,6 +88,21 @@ test('the list: one row per person, in words, with the team flag and the names t
   expect(fetch).not.toHaveBeenCalledWith('/api/buyers?sort=problems&q=ka&flag=watch', expect.anything())
 })
 
+test('a filter changed while a search is still on its way is kept, not undone', async () => {
+  const fetch = vi.fn(async () => json(list))
+  vi.stubGlobal('fetch', fetch)
+  page(<Buyers />)
+  await screen.findByTestId('buyer-kat_new')
+  fireEvent.click(screen.getByRole('button', { name: /Watch list/ }))
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/buyers?sort=spent&flag=watch', expect.anything()))
+  // Typing starts the search's short wait; the filter is switched back before it fires.
+  fireEvent.change(screen.getByLabelText('Find a buyer'), { target: { value: 'kat' } })
+  fireEvent.click(screen.getByRole('button', { name: /Everyone/ }))
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/buyers?sort=spent&q=kat', expect.anything()))
+  const asked = fetch.mock.calls.map((c) => String((c as unknown[])[0]))
+  expect(asked.filter((u) => u.includes('q=kat') && u.includes('flag=watch'))).toEqual([])
+})
+
 test('nobody by that name: the team can flag them anyway', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => json({ ...list, buyers: [], total: 0, counts: { all: 0, vip: 0, watch: 0, noted: 0 } })))
   page(<Buyers />, '/app/buyers?q=newcomer')
