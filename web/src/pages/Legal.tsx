@@ -104,6 +104,13 @@ export function Terms() {
         shipment or a wrong count.
       </p>
 
+      <h3>The shop's own agreement</h3>
+      <p>
+        This page is for each person who signs in. The shop may also have a license or other written agreement with the maker of Sales Ops,
+        covering things such as who owns the shop's data and who owns the software. Where that agreement and this page say different things,
+        the shop's agreement applies.
+      </p>
+
       <h3>Changes to this agreement</h3>
       <p>
         This agreement can be updated, for example when Whatnot's policies change. The date at the top shows the latest version. Using Sales Ops
@@ -130,7 +137,8 @@ export function Privacy() {
           cannot be read back.
         </li>
         <li>
-          <b>What the team does.</b> A record of changes, with who made each one and when.
+          <b>What the team does.</b> A record of changes and sign-ins, with who made each one and when. Each sign-in, and each failed attempt
+          to sign in to an account, is recorded with the network address it came from.
         </li>
         <li>
           <b>The shop's records.</b> Shows, products, stock, sales, orders, shipments and notes.
@@ -144,8 +152,8 @@ export function Privacy() {
           saved.
         </li>
         <li>
-          <b>Technical details.</b> The network address you connect from is counted for a short time to block abuse, and may appear in server
-          logs.
+          <b>Technical details.</b> The network address you connect from is counted for a short time to block abuse, is kept with the record
+          of sign-ins described above, and may appear in server logs.
         </li>
       </ul>
 
@@ -160,7 +168,10 @@ export function Privacy() {
         <li>The shop's team, each person according to their role.</li>
         <li>Whatnot. Sales Ops reads the shop's own Whatnot data and sends Whatnot the shop's requests, such as asking for a shipping label.</li>
         <li>The developer who builds and maintains Sales Ops, to keep it running and fix problems.</li>
-        <li>The companies that run it for the shop: hosting, and email delivery for invitations and password resets.</li>
+        <li>
+          The companies that run it for the shop: hosting, the network service in front of the hosting that carries every request to it and
+          guards it against attacks, and email delivery for invitations and password resets.
+        </li>
         <li>An AI service, when AI suggestions are turned on. Show chat and sales are sent to it so it can suggest matches.</li>
         <li>Google Fonts. The page loads its typeface from Google, so your browser contacts Google when a page opens.</li>
       </ul>
@@ -173,8 +184,9 @@ export function Privacy() {
 
       <h3>How long it is kept</h3>
       <p>
-        The shop's records, the captured chat and the record of changes are kept for as long as the shop uses Sales Ops. Expired sign-in links and
-        laptop pairing codes are deleted after about a month.
+        The shop's records, the captured chat and the record of changes and sign-ins, with the network addresses in it, are kept for as long as
+        the shop uses Sales Ops. The counts used to block abuse are deleted after about a day. Expired sign-in links and laptop pairing codes are
+        deleted after about a month.
       </p>
 
       <h3>Your choices</h3>
