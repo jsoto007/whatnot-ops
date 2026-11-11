@@ -474,3 +474,85 @@ def _low_stock(org_id: int) -> list[dict]:
         }
         for s in skus
     ]
+
+
+# ---------- Whatnot's own numbers (services/whatnot/results.py reads them) ----------
+
+
+def _camel(name: str) -> str:
+    head, *rest = name.split("_")
+    return head + "".join(w.title() for w in rest)
+
+
+def whatnot_show(show: Show) -> dict | None:
+    """What Whatnot itself says about the show: its results (viewers, reach, buyers, sales)
+    and its ledger (earnings, fees, refunds, tips). None when the show is not matched to a
+    show on Whatnot. Shown as Whatnot states them; nothing here is worked out by the app
+    except sums of Whatnot's own lines."""
+    from ..models import WhatnotShow
+    from .whatnot import connection, results
+
+    ws = db.session.get(WhatnotShow, show.whatnot_show_id) if show.whatnot_show_id else None
+    if ws is None:
+        return None
+    state = connection.sync_state(show.organization_id, "analytics")
+    return {
+        "title": ws.title,
+        # The access token may not read reports: the page says so instead of "not yet".
+        "resultsNotAllowed": (state.last_error or "").startswith("Forbidden"),
+        "resultsStatus": ws.analytics_status,
+        "resultsAt": ws.analytics_at.isoformat() if ws.analytics_at else None,
+        "results": {_camel(k): v for k, v in (ws.analytics or {}).items()} or None,
+        "ledger": results.figures(show.organization_id, whatnot_show_id=ws.whatnot_id),
+    }
+
+
+def whatnot_ledger(org_id: int, *, days: int = 30, shows: int = 12) -> dict:
+    """Reports → Whatnot's ledger: the last `days` days as Whatnot states them, and the
+    net of each recent show."""
+    from ..models import WhatnotLedgerEntry, WhatnotShow
+    from .whatnot import results
+
+    since = datetime.now(UTC) - timedelta(days=days)
+    start = func.coalesce(WhatnotShow.started_at, WhatnotShow.scheduled_start_at)
+    rows = db.session.execute(
+        select(WhatnotShow.id, WhatnotShow.whatnot_id, WhatnotShow.title, start)
+        .where(
+            WhatnotShow.organization_id == org_id,
+            select(WhatnotLedgerEntry.id)
+            .where(
+                WhatnotLedgerEntry.organization_id == org_id,
+                WhatnotLedgerEntry.whatnot_show_id == WhatnotShow.whatnot_id,
+            )
+            .exists(),
+        )
+        .order_by(start.desc().nulls_last(), WhatnotShow.id.desc())
+        .limit(shows)
+    ).all()
+    # Each show's figures exactly as its own page shows them (results.figures), so the
+    # list and the page can never disagree.
+    nets = {ws_id: results.figures(org_id, whatnot_show_id=wid) for ws_id, wid, _, _ in rows}
+    # The app's own page for each (its first recording), when there is one.
+    local = dict(
+        db.session.execute(
+            select(Show.whatnot_show_id, func.min(Show.id))
+            .where(Show.organization_id == org_id, Show.whatnot_show_id.in_([r[0] for r in rows]))
+            .group_by(Show.whatnot_show_id)
+        ).all()
+    )
+    return {
+        **results.status(org_id),
+        "days": days,
+        "recent": results.figures(org_id, since=since),
+        "shows": [
+            {
+                "showId": local.get(ws_id),
+                "title": title,
+                "startedAt": began.isoformat() if began else None,
+                "netCents": nets[ws_id]["netCents"],
+                "lines": sum(k["lines"] for k in nets[ws_id]["kinds"]),
+            }
+            for ws_id, _, title, began in rows
+            if nets[ws_id] is not None
+        ],
+    }

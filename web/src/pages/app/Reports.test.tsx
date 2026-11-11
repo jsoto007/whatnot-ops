@@ -1,8 +1,25 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router'
 import { afterEach, expect, test, vi } from 'vitest'
+import { AuthContext, type AuthState } from '../../auth/context'
 import type { Show } from '../../lib/api'
 import { Reports } from './Reports'
+
+const auth: AuthState = {
+  me: {
+    user: { id: 1, email: 'm@x.test', name: 'Mia', role: 'viewer', disabled: false, createdAt: '', lastLoginAt: null },
+    organization: { id: 1, name: 'Demo', slug: 'demo', hostUsername: null },
+    permissions: ['reports.view'],
+  },
+  loading: false,
+  signupsOpen: false,
+  signupAdminOnly: false,
+  setupCodeRequired: false,
+  can: (p) => p === 'reports.view',
+  setMe: () => {},
+  logout: async () => {},
+}
 
 const day = (back: number) => new Date(Date.now() - back * 86_400_000).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' })
 const shows: Show[] = Array.from({ length: 14 }, (_, i) => ({
@@ -23,7 +40,11 @@ function open() {
   )
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <Reports />
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter>
+          <Reports />
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }

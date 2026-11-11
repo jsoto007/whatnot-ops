@@ -179,3 +179,36 @@ const LABEL_PROBLEM: Record<string, string> = {
   unknown: 'Whatnot did not confirm it took the request. Check the package in Seller Hub before asking again',
 }
 export const labelProblemLabel = (p: string): string => LABEL_PROBLEM[p] ?? LABEL_PROBLEM.unknown!
+
+/** The kinds of line in Whatnot's financial ledger. */
+const LEDGER_KIND: Record<string, string> = {
+  ORDER_EARNINGS: 'Order earnings',
+  SHIPPING_CHARGE: 'Shipping charged to the shop',
+  CARRIER_ADJUSTMENT: 'Carrier adjustments',
+  CARRIER_ADJUSTMENT_REFUND: 'Carrier adjustments refunded',
+  ORDER_REFUND: 'Refunds',
+  ORDER_REFUND_SHIPPING_COSTS: 'Shipping on refunded orders',
+  APPEALED_ORDER_REFUND: 'Refunds won back on appeal',
+  APPEALED_ORDER_REFUND_SHIPPING_COSTS: 'Shipping won back on appeal',
+  TIP: 'Tips',
+}
+export const ledgerKindLabel = (k: string): string => LEDGER_KIND[k] ?? 'Other'
+
+/** The fees Whatnot lists on an order's earnings. */
+const LEDGER_FEE: Record<string, string> = {
+  commission: 'Commission',
+  commission_tax: 'Tax on commission',
+  processing_fee: 'Payment processing',
+  processing_fee_tax: 'Tax on processing',
+  seller_shipping: 'Shipping paid by the shop',
+  coupon: 'Coupons',
+}
+export const ledgerFeeLabel = (f: string): string => LEDGER_FEE[f] ?? 'Other'
+
+/** Why a show's results from Whatnot are not there (yet). */
+const RESULTS_STATUS: Record<string, string> = {
+  PENDING: 'Whatnot is still working out this show’s results. They usually arrive within a few hours of the show.',
+  NOT_ENDED: 'Whatnot works out a show’s results after it ends.',
+  WILL_NOT_BE_CALCULATED: 'Whatnot does not work out results for this show (cancelled, private or a rehearsal).',
+}
+export const resultsStatusLabel = (s: string | null): string => (s ? (RESULTS_STATUS[s] ?? 'Whatnot has no results for this show yet.') : 'Whatnot’s results for this show have not been read yet.')

@@ -64,5 +64,20 @@ def seed():
                 fake.finish_label(shipment_id)
     for change in d.get("setShipments") or []:
         fake.set_shipment(str(change["id"]), status=change["status"])
+    for spec in d.get("results") or []:  # how Whatnot says a show did
+        show = fake.shows[spec["showId"]]
+        fake.analytics[show["id"]] = {
+            "show_id": show["id"],
+            "title": show["title"],
+            "start_time": show["scheduled_start_at"],
+            "calculation_status": "GENERATED",
+            **spec.get("data", {}),
+        }
+    if d.get("finishReports") is not None:  # Whatnot finishes building each report asked for
+        from ..services.whatnot.fake import ledger_csv
+
+        for report_id, report in fake.reports.items():
+            if report["status"] == "pending":
+                fake.finish_report(report_id, ledger_csv(d["finishReports"]))
     out["labelsRequested"] = list(fake.labels_requested)
     return jsonify(out), 201

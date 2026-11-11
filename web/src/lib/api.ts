@@ -605,3 +605,47 @@ export interface Shipping {
   requested?: number
   marked?: number
 }
+
+// ---------- Whatnot's own numbers: a show's results and the financial ledger ----------
+/** Whatnot's ledger for a show or a span of days, as Whatnot states it (cents, signed). */
+export interface WhatnotFigures {
+  /** The shop's currency: the only one summed. Lines in any other are counted, not added. */
+  currency?: string
+  otherCurrencyLines?: number
+  /** The sum of Whatnot's own ledger lines. */
+  netCents: number
+  kinds: { kind: string; lines: number; cents: number }[]
+  /** The fees Whatnot lists on order earnings (codes; labels.ts has the words). */
+  fees: Record<string, number>
+  itemPricesCents: number
+  costOfGoodsCents: number | null
+  through: string | null
+}
+/** GET /api/dashboard/shows/:id → `whatnot` (null for those who may not read reports). */
+export interface WhatnotRecap {
+  title: string
+  /** The access token may not read reports, so Whatnot will not give the show's results. */
+  resultsNotAllowed?: boolean
+  /** GENERATED | PENDING | NOT_ENDED | WILL_NOT_BE_CALCULATED | null (never asked) */
+  resultsStatus: string | null
+  resultsAt: string | null
+  results: Record<string, number> | null
+  ledger: WhatnotFigures | null
+}
+/** GET /api/whatnot/ledger */
+export interface WhatnotLedger {
+  connected: boolean
+  lines?: number
+  building?: boolean
+  lastImportedAt?: string | null
+  /** The access token may not read reports. */
+  notAllowed?: boolean
+  lastFailed?: boolean
+  unreadable?: boolean
+  /** Lines of the latest report that are not in the figures: unreadable, or repeating a transaction id. */
+  skippedLines?: number
+  repeatedLines?: number
+  days?: number
+  recent?: WhatnotFigures | null
+  shows?: { showId: number | null; title: string; startedAt: string | null; netCents: number; lines: number }[]
+}

@@ -643,6 +643,12 @@ class FakeWhatnot:
         report.update(status="completed", report_url=url, updated_at=_iso(self.tick()))
         return report
 
+    def fetch(self, url: str) -> bytes:
+        """What downloading a link Whatnot handed out returns: a report's CSV, or a label."""
+        if url in self.report_files:
+            return self.report_files[url].encode()
+        return label_pdf(url)
+
     def _get_reports(self, rest, params, body) -> Response:
         if denied := self._needs("read:reports", "write:reports"):
             return denied
@@ -678,3 +684,27 @@ def label_pdf(url: str) -> bytes:
         xref,
     )
     return out
+
+
+LEDGER_COLUMNS = (
+    "transaction_completed_at_utc,order_placed_at_utc,seller_id,transaction_type,"
+    "transaction_message,order_id,listing_title,listing_description,product_category,"
+    "buy_format,sale_type,quantity_sold,sku,cost_of_goods,livestream_id,livestream_title,"
+    "buyer_name,buyer_state,buyer_country,shipment_id,transaction_currency,transaction_amount,"
+    "buyer_paid,original_item_price,coupon_cost,post_coupon_price,seller_shipping_charge,"
+    "commission_fee,commission_tax,processing_fee,processing_fee_tax,ledger_transaction_id"
+).split(",")
+
+
+def ledger_csv(rows: list[dict]) -> str:
+    """A financial report as Whatnot documents it (the columns on developers.whatnot.com
+    /reports, read 2026-11-10). Each row gives only the columns it cares about."""
+    import csv
+    import io
+
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=LEDGER_COLUMNS)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({"transaction_currency": "USD", "seller_id": "1234567", **row})
+    return out.getvalue()

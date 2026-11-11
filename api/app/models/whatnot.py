@@ -139,6 +139,12 @@ class WhatnotShow(db.Model):
     url: Mapped[str | None] = mapped_column(String(512))
     # When every order since the show began was last read; None before the first full read.
     orders_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Whatnot's own results for the show (viewers, reach, buyers, sales), money in cents.
+    # `analytics_status` is Whatnot's word on them: GENERATED, PENDING (still being worked
+    # out), NOT_ENDED, or WILL_NOT_BE_CALCULATED (cancelled, private or a rehearsal).
+    analytics: Mapped[dict | None] = mapped_column(JSON)
+    analytics_status: Mapped[str | None] = mapped_column(String(24))
+    analytics_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
@@ -224,3 +230,88 @@ class WhatnotOrderItem(db.Model):
     sale_id: Mapped[int | None] = mapped_column(ForeignKey("sales.id", ondelete="SET NULL"))
 
     order: Mapped[WhatnotOrder] = relationship(back_populates="items")
+
+
+class WhatnotReport(db.Model):
+    """A report the app asked Whatnot to build (it is made in the background and then
+    offers a CSV to download). Today: the financial ledger for a span of days."""
+
+    __tablename__ = "whatnot_reports"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "whatnot_id", name="uq_whatnot_reports_org_id"),
+        Index("ix_whatnot_reports_org_status", "organization_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    whatnot_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    report_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    # pending | in_progress | completed | failed | cancelled (Whatnot's), then "imported"
+    # once its file is in the ledger, or "unreadable" when the file was not what we expect.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    requested_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rows: Mapped[int | None] = mapped_column(Integer)
+    # Lines of the file that are NOT in the ledger, so the page can say the figures are
+    # short: `skipped` had no readable id or amount; `repeated` shared a transaction id
+    # with an earlier line of the same file (only the first of each is kept).
+    skipped: Mapped[int | None] = mapped_column(Integer)
+    repeated: Mapped[int | None] = mapped_column(Integer)
+
+
+class WhatnotLedgerEntry(db.Model):
+    """One line of Whatnot's financial ledger: what it credited or charged the seller, and
+    for an order's earnings the fees it took. Amounts are integer cents, signed as Whatnot
+    signs them (a charge or a refund is negative). `ledger_transaction_id` is Whatnot's id
+    for the line: importing a report again, or an overlapping one, changes nothing.
+
+    Read-only bookkeeping: nothing here changes a sale, an order or stock. Of the buyer
+    only the username is kept."""
+
+    __tablename__ = "whatnot_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "ledger_transaction_id", name="uq_whatnot_ledger_org_txn"
+        ),
+        Index("ix_whatnot_ledger_org_show", "organization_id", "whatnot_show_id"),
+        Index("ix_whatnot_ledger_org_completed", "organization_id", "completed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    ledger_transaction_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # ORDER_EARNINGS, SHIPPING_CHARGE, CARRIER_ADJUSTMENT, ORDER_REFUND, TIP, …
+    transaction_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    order_placed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    whatnot_order_id: Mapped[str | None] = mapped_column(String(20))
+    whatnot_show_id: Mapped[str | None] = mapped_column(String(40))
+    whatnot_shipment_id: Mapped[str | None] = mapped_column(String(20))
+    listing_title: Mapped[str | None] = mapped_column(String(240))
+    sku_code: Mapped[str | None] = mapped_column(String(80))
+    buy_format: Mapped[str | None] = mapped_column(String(24))
+    quantity: Mapped[int | None] = mapped_column(Integer)
+    buyer_username: Mapped[str | None] = mapped_column(String(80))
+    currency: Mapped[str | None] = mapped_column(String(3))
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    buyer_paid_cents: Mapped[int | None] = mapped_column(Integer)
+    item_price_cents: Mapped[int | None] = mapped_column(Integer)
+    coupon_cents: Mapped[int | None] = mapped_column(Integer)
+    seller_shipping_cents: Mapped[int | None] = mapped_column(Integer)
+    commission_cents: Mapped[int | None] = mapped_column(Integer)
+    commission_tax_cents: Mapped[int | None] = mapped_column(Integer)
+    processing_fee_cents: Mapped[int | None] = mapped_column(Integer)
+    processing_fee_tax_cents: Mapped[int | None] = mapped_column(Integer)
+    cost_of_goods_cents: Mapped[int | None] = mapped_column(Integer)
+    report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("whatnot_reports.id", ondelete="SET NULL")
+    )
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )

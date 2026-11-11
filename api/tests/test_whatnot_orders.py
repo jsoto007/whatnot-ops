@@ -702,7 +702,7 @@ def test_the_timer_reads_shows_catches_up_ended_ones_and_rereads_unsettled_order
             s["resource"]
             for s in __import__("app").services.whatnot.connection.status(shop["org"])["sync"]
         }
-        assert states == {"shows", "orders", "open_orders", "shipments"}
+        assert states == {"shows", "orders", "open_orders", "shipments", "analytics", "ledger"}
     # Days later the order settles. Nothing lists it near the top any more; it is re-read by id.
     shop["fake"].set_order_status(o["id"], "completed")
     with app.app_context():

@@ -18,8 +18,10 @@ from .shipments import WhatnotLot, WhatnotShipment
 from .whatnot import (
     WhatnotConnection,
     WhatnotEvent,
+    WhatnotLedgerEntry,
     WhatnotOrder,
     WhatnotOrderItem,
+    WhatnotReport,
     WhatnotShow,
     WhatnotSyncState,
 )
@@ -54,9 +56,11 @@ __all__ = [
     "User",
     "WhatnotConnection",
     "WhatnotEvent",
+    "WhatnotLedgerEntry",
     "WhatnotLot",
     "WhatnotOrder",
     "WhatnotOrderItem",
+    "WhatnotReport",
     "WhatnotShipment",
     "WhatnotShow",
     "WhatnotSyncState",

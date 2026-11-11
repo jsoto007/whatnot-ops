@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiGet, type Show } from '../../lib/api'
 import { SHOP_TZ, plural } from '../../lib/format'
+import { useAuth } from '../../auth/useAuth'
+import { WhatnotLedger } from './WhatnotNumbers'
 
 /** As the API enforces them (api/app/routes/reports.py). */
 const OVERVIEW_DAYS = 30
@@ -10,6 +12,7 @@ const MAX_OVERVIEW_SHOWS = 12
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toLocaleDateString('en-CA', { timeZone: SHOP_TZ })
 
 export function Reports() {
+  const { can } = useAuth()
   const shows = useQuery({ queryKey: ['shows'], queryFn: () => apiGet<{ shows: Show[] }>('/api/shows') })
   const [showId, setShowId] = useState('')
   // The last 30 days to start with: a workbook of every show ever made is too big to build at once.
@@ -69,6 +72,7 @@ export function Reports() {
             : `${plural(inRange, 'show', 'shows')} in these dates. One report holds up to ${MAX_OVERVIEW_SHOWS} shows.`}
         </p>
       </div>
+      <WhatnotLedger canRead={can('whatnot.view')} />
     </section>
   )
 }

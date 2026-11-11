@@ -7,6 +7,7 @@ from ..auth import require
 from ..db import db
 from ..models import Show
 from ..services import audit, dashboard, ratelimit, reports, showdate
+from ..services.permissions import allowed
 
 bp = Blueprint("reports", __name__)
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -42,6 +43,9 @@ def get_show_dashboard(show_id: int):
             "topBuyers": dashboard.top_buyers(g.u.organization_id, show_id=show.id),
             "topSkus": dashboard.top_skus(g.u.organization_id, show_id=show.id),
             "winnersWithoutPurchase": dashboard.winners_without_purchase(show),
+            # Whatnot's own results and ledger for the show: money, so for those who may
+            # read reports (not the packing role).
+            "whatnot": dashboard.whatnot_show(show) if allowed(g.u.role, "reports.view") else None,
         }
     )
 

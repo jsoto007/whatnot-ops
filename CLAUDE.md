@@ -177,6 +177,11 @@ commands.
   buyer per show** (`whatnot/shipping.py`): labels only after the show ended, never
   for a buyer in two open packages; label PDFs and links are fetched when printed
   and never stored (they show the address). Only the buyer's id and username are kept.
+  A show's results and the financial ledger (`whatnot/results.py`, read-only, shown via
+  `dashboard.whatnot_show` / `whatnot_ledger` to roles with `reports.view`): ledger
+  lines are stored once by Whatnot's transaction id; the "net" is the sum of Whatnot's
+  own signed lines in the shop's currency, and the app never derives one from the fee
+  columns.
 - **Numbers.** Dashboard tiles and the Excel sheets both read
   `services/dashboard.py`; add a metric there, never inline in a route or
   the workbook builder. Reports are built synchronously with openpyxl

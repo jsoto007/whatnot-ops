@@ -35,6 +35,7 @@ from ..showdate import show_date
 from . import connection, webhooks
 from .client import (
     MAX_CENTS,
+    Forbidden,
     NotFound,
     WhatnotClient,
     WhatnotError,
@@ -519,8 +520,11 @@ def _on_show(event: WhatnotEvent) -> None:
 # ---------- jobs ----------
 
 
-def _run(org_id: int, resource: str, fn):
-    """Run one kind of reading and keep its bookkeeping: when it last worked, or why not."""
+def _run(org_id: int, resource: str, fn, *, flag: bool = True):
+    """Run one kind of reading and keep its bookkeeping: when it last worked, or why not.
+    `flag=False` is for a reading the shop can live without (a show's results, the fee
+    ledger): a missing permission is recorded for its own page and swallowed, instead of
+    telling every page that the connection stopped working."""
     state = connection.sync_state(org_id, resource)
     state.last_started_at = datetime.now(UTC)
     db.session.commit()
@@ -528,10 +532,14 @@ def _run(org_id: int, resource: str, fn):
         counts = fn()
     except WhatnotError as e:
         db.session.rollback()
-        connection.note_failure(org_id, e)
+        optional = not flag and isinstance(e, Forbidden)
+        if not optional:
+            connection.note_failure(org_id, e)
         state = connection.sync_state(org_id, resource)
         state.last_error = f"{type(e).__name__} {e.problem}".strip()[:240]
         db.session.commit()
+        if optional:
+            return None
         raise
     state = connection.sync_state(org_id, resource)
     state.last_ok_at, state.last_error = datetime.now(UTC), None
@@ -557,9 +565,10 @@ def sync_show_job(payload: dict) -> None:
 
     _run(org_id, "orders", read)
     _after_orders(org_id, {whatnot_show_id})
-    from . import shipping
+    from . import results, shipping
 
     shipping.schedule(org_id, whatnot_show_id)  # and the parcels those orders are in
+    results.schedule_results(org_id, whatnot_show_id)  # and how Whatnot says the show did
 
 
 def _due(org_id: int, resource: str, every: timedelta) -> bool:
@@ -608,10 +617,14 @@ def sync_job(payload: dict) -> None:
         after = _open_by_show(org_id)
         changed |= {show for show in before if before[show] != after.get(show)}
     _after_orders(org_id, changed)
-    from . import shipping
+    from . import results, shipping
 
     if shipping.due(org_id):
         shipping.schedule(org_id)
+    for whatnot_show_id in results.results_due(org_id):
+        results.schedule_results(org_id, whatnot_show_id)
+    if results.ledger_due(org_id):
+        results.schedule_ledger(org_id)
 
 
 def _open_by_show(org_id: int) -> dict:

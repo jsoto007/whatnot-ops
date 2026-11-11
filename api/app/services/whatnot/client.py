@@ -22,7 +22,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 import requests
 
@@ -140,7 +140,7 @@ def cents(money) -> int | None:
         value = Decimal(str(amount).strip())
         if not value.is_finite() or value.adjusted() > 9:
             return None
-        result = int((value * 100).quantize(Decimal(1)))
+        result = int((value * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
     except (InvalidOperation, ArithmeticError, ValueError):
         return None
     return result if abs(result) <= MAX_CENTS else None

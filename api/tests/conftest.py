@@ -144,9 +144,11 @@ def fake_whatnot(app):
         WHATNOT_TRANSPORT=fake.transport,
         WHATNOT_API_TOKEN=TOKEN,
         WHATNOT_SLEEP=fake.sleeps.append,
+        WHATNOT_FETCH=fake.fetch,  # a link Whatnot hands out: a report's file, or a label
     )
     yield fake
     app.config.pop("WHATNOT_TRANSPORT", None)
+    app.config.pop("WHATNOT_FETCH", None)
     app.config.pop("WHATNOT_SLEEP", None)
     app.config["WHATNOT_API_TOKEN"] = ""
     app.config["WHATNOT_WEBHOOK_SECRET"] = ""

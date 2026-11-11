@@ -79,7 +79,12 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
     },
   })
   expect(seeded.status()).toBe(201)
-  const fake = (await seeded.json()) as { shipments: string[] }
+  const fake = (await seeded.json()) as { shows: string[]; shipments: string[] }
+  // How Whatnot says the show did (it works these out some time after the show).
+  const usd = (amount: string) => ({ amount, currency: 'USD' })
+  await request.post('/api/whatnot/fake', {
+    data: { results: [{ showId: fake.shows[0], data: { sales: usd('93.00'), estimated_earnings: usd('80.10'), orders_count: 4, average_order_value: usd('23.25'), buyers_count: 3, first_time_buyers_count: 1, returning_buyers_count: 2, distinct_viewers_count: 412, max_concurrent_viewers: 57, stream_minutes: 84 } }] },
+  })
 
   // Settings → Whatnot: the owner connects; the page says who the shop is on Whatnot.
   await page.getByRole('link', { name: 'Settings' }).click()
@@ -150,6 +155,39 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   await expect(page.getByTestId('order-newbie')).toContainText('CHOOSE ANY PRODUCT YOU WANT')
   await page.getByRole('tab', { name: /Payment declined/ }).click()
   await expect(page.getByTestId('order-kat.c')).toBeVisible()
+
+  // The show's Analytics tab: Whatnot's own results for it.
+  await page.getByRole('link', { name: 'Shows', exact: true }).click()
+  await page.getByRole('row').nth(1).getByRole('link').click()
+  await page.getByRole('tab', { name: 'Analytics' }).click()
+  await expect(page.getByTestId('wn-sales')).toContainText('$93.00')
+  await expect(page.getByTestId('wn-viewers')).toContainText('412')
+  await expect(page.getByTestId('wn-ledger-empty')).toBeVisible()
+
+  // Reports: the app asked Whatnot for its ledger when the shop was connected; Whatnot is
+  // still building the file. Once it is ready, the net per show is there.
+  await page.getByLabel('Sections').getByRole('link', { name: 'Reports' }).click()
+  await expect(page.getByTestId('whatnot-ledger-state')).toContainText('building the report now')
+  await expect(page.getByTestId('whatnot-ledger-read')).toHaveText('Check again')
+  const at = new Date().toISOString()
+  const built = await request.post('/api/whatnot/fake', {
+    data: {
+      finishReports: [
+        { transaction_type: 'ORDER_EARNINGS', ledger_transaction_id: `${run}-1`, livestream_id: fake.shows[0], transaction_completed_at_utc: at, transaction_amount: '21.97', original_item_price: '25.00', commission_fee: '2.00', processing_fee: '1.03' },
+        { transaction_type: 'SHIPPING_CHARGE', ledger_transaction_id: `${run}-2`, livestream_id: fake.shows[0], transaction_completed_at_utc: at, transaction_amount: '-5.25' },
+      ],
+    },
+  })
+  expect(built.status()).toBe(201)
+  await page.getByTestId('whatnot-ledger-read').click()
+  await expect(page.getByTestId('whatnot-ledger-state')).toContainText('2 ledger lines read')
+  await expect(page.getByTestId('ledger-recent-net')).toHaveText('$16.72')
+  await expect(page.getByTestId('ledger-shows')).toContainText(`Friday night ${run}`)
+  await shot(page, '5-reports-ledger')
+  await page.getByTestId('ledger-shows').getByRole('link').click()
+  await expect(page.getByTestId('wn-ledger-net')).toHaveText('$16.72')
+  await expect(page.getByTestId('wn-ledger-fees')).toContainText('Commission $2.00 · Payment processing $1.03')
+  await shot(page, '6-show-on-whatnot')
 
   // The activity log says what happened, in words, with nothing internal.
   await page.getByRole('link', { name: 'Settings' }).click()

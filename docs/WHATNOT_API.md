@@ -101,10 +101,29 @@ placed. Each recording is matched on its own to the Whatnot show that was live w
    Making labels from the app needs `write:shipments` on the token. Without it the page says
    so, and labels made in Seller Hub show up here all the same.
 
+**The numbers** (for those who may read reports; the packing role does not see them):
+
+- **A show's Analytics tab → "On Whatnot".** How Whatnot says the show did: sales, its
+  estimate of earnings, buyers (first time and returning), viewers, reach. Whatnot works
+  these out some time after the show; the app asks when the show ends and keeps asking for
+  a few hours.
+- **Money, from Whatnot's ledger** (the same tab, and Reports → "Fees and payouts, from
+  Whatnot"). Whatnot's financial report lists what it credited and charged the shop, line
+  by line: order earnings, shipping charges, refunds, carrier adjustments, tips. The app
+  asks for it once a day (and on "Read from Whatnot now"), stores each line once by
+  Whatnot's own transaction id, and shows each kind of line, their sum, and the fees
+  Whatnot lists on the orders.
+  **The net is the sum of Whatnot's own signed lines. The app does not work out a net of
+  its own from the fee columns**: whether an order's ledger amount is before or after its
+  fees is not documented, so adding or subtracting them could count fees twice. Only the
+  shop's own currency is summed; lines in any other are counted and said.
+  Refunds and carrier adjustments can arrive days later: a show's net can still move.
+
 ## What is kept, and what is not
 
 - Kept: Whatnot's ids, statuses, listing titles, prices, the buyer's **id and username**,
-  tracking numbers, whether a label exists.
+  tracking numbers, whether a label exists, each show's results, and the ledger's lines
+  (amounts, fees, the buyer's username; not the buyer's state or country).
 - Never kept: addresses, emails, phone numbers, label PDFs, label links, the webhook body
   (only the ids it names), the token, the signing secret.
 
@@ -118,6 +137,7 @@ placed. Each recording is matched on its own to the Whatnot show that was live w
 | Mirror of shows and orders; matching recordings to shows; the timer | `sync.py` |
 | Orders against sales: compare, apply, "auto" | `orders.py` (through `services/reconcile.py` and `pipeline.py`) |
 | Parcels, the one-label rule, label requests and printing, carrier status | `shipping.py`, `routes/shipping.py` |
+| A show's results and the financial ledger (request, download, import by transaction id, sums) | `results.py`; shown through `services/dashboard.py` |
 | Read-only look at the live shop | `probe.py` (`flask whatnot-probe`) |
 | In-memory Whatnot for tests | `fake.py` |
 
@@ -150,3 +170,6 @@ Rules that hold everywhere:
 7. Does making a label behave as documented (closes the bundle; result by webhook)? Does the
    shop's account need seller verification for it?
 8. How long a label link lives; how fast webhooks arrive in a busy show.
+9. The financial report's real file: its columns are the documented ones, but no report has
+   been downloaded. In particular whether an ORDER_EARNINGS amount is before or after its
+   fees (compare one order's line with Seller Hub the first time).

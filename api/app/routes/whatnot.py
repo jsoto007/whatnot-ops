@@ -7,8 +7,8 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import WhatnotShow
-from ..services import audit, ratelimit
-from ..services.whatnot import WhatnotError, connection
+from ..services import audit, dashboard, ratelimit
+from ..services.whatnot import WhatnotError, connection, results
 
 bp = Blueprint("whatnot", __name__)
 
@@ -107,3 +107,31 @@ def shows():
             "upcoming": [serializers.whatnot_show(w) for w in rows if w.status == "scheduled"],
         }
     )
+
+
+# A press asks Whatnot to build a report only when none is being built; otherwise it
+# just looks whether the one in progress is ready.
+LEDGER_READS_PER_HOUR = 30
+
+
+@bp.get("/ledger")
+@require("reports.view", heavy=True)
+def ledger():
+    """Whatnot's financial ledger as the app holds it: fees, refunds, tips, net per show."""
+    org_id = g.u.organization_id
+    if connection.active(org_id) is None:
+        return jsonify({"connected": False})
+    return jsonify({"connected": True, **dashboard.whatnot_ledger(org_id)})
+
+
+@bp.post("/ledger/read")
+@require("whatnot.view")
+def read_ledger():
+    """Ask Whatnot for the ledger now (it builds the file in the background)."""
+    org_id = g.u.organization_id
+    if connection.active(org_id) is None:
+        return jsonify({"error": "Connect the shop to Whatnot first."}), 409
+    ratelimit.per_org("whatnot-ledger", org_id, LEDGER_READS_PER_HOUR, 3600)
+    results.schedule_ledger(org_id, user_id=g.u.id)
+    db.session.commit()
+    return jsonify({"connected": True, **dashboard.whatnot_ledger(org_id)})

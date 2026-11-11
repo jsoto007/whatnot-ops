@@ -166,6 +166,7 @@ def create_app(config: Config | None = None) -> Flask:
     from .services.whatnot import (  # noqa: F401 - register their jobs and webhook topics
         orders as _whatnot_orders,
     )
+    from .services.whatnot import results as _whatnot_results  # noqa: F401
     from .services.whatnot import shipping as _whatnot_shipping  # noqa: F401
     from .services.whatnot import sync as _whatnot_sync  # noqa: F401
     from .services.whatnot import webhooks  # noqa: F401
@@ -178,7 +179,7 @@ def create_app(config: Config | None = None) -> Flask:
         app.config.update(
             WHATNOT_TRANSPORT=shop.transport,
             WHATNOT_API_TOKEN=fake.TOKEN,
-            WHATNOT_FETCH=fake.label_pdf,
+            WHATNOT_FETCH=shop.fetch,
         )
         from .routes.whatnot_fake import bp as whatnot_fake_bp
 

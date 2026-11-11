@@ -780,7 +780,7 @@ def _public(host: str) -> bool:
         return False
 
 
-def _fetch(url: str) -> bytes:
+def _fetch(url: str, *, max_bytes: int = MAX_LABEL_BYTES) -> bytes:
     from flask import current_app
 
     fetch = current_app.config.get("WHATNOT_FETCH")
@@ -800,7 +800,7 @@ def _fetch(url: str) -> bytes:
             for chunk in r.iter_content(64 * 1024):
                 size += len(chunk)
                 # A response that is too large, or dribbles in forever, is cut off.
-                if size > MAX_LABEL_BYTES or time.monotonic() > deadline:
+                if size > max_bytes or time.monotonic() > deadline:
                     raise failed
                 chunks.append(chunk)
     except requests.RequestException:
