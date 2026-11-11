@@ -58,4 +58,11 @@ def seed():
         out["shipments"].append(shipment["id"])
     for change in d.get("setOrders") or []:
         fake.set_order_status(str(change["id"]), change["status"])
+    if d.get("finishLabels"):  # what Whatnot's worker does after a label was asked for
+        for shipment_id in list(fake.labels_requested):
+            if fake.shipments[shipment_id]["status"] == "created":
+                fake.finish_label(shipment_id)
+    for change in d.get("setShipments") or []:
+        fake.set_shipment(str(change["id"]), status=change["status"])
+    out["labelsRequested"] = list(fake.labels_requested)
     return jsonify(out), 201

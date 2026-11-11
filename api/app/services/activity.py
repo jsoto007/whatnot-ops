@@ -384,6 +384,19 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
             else "Whatnot's orders are now only compared until a person applies them"
         ),
     ),
+    "whatnot.orders_shipped": (
+        "Marked orders shipped",
+        lambda d, t: (
+            f"Marked {_plural(d['orders'], 'order')} shipped: the carrier has them"
+            if d.get("orders")
+            else "Marked orders shipped: the carrier has them"
+        ),
+    ),
+    "labels.requested": (
+        "Asked Whatnot for shipping labels",
+        lambda d, t: f"Asked Whatnot to make {_plural(d['packages'], 'shipping label')}",
+    ),
+    "label.printed": ("Opened a shipping label to print", None),
     "ai.sale_confirmed": ("Confirmed a sale", None),
     "ai.applied": ("Applied a suggestion", None),
 }

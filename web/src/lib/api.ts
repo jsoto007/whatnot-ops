@@ -551,3 +551,50 @@ export interface WhatnotCompare {
   queued?: boolean
   applied?: Record<string, number>
 }
+
+// ---------- Shipping: one package and one label per buyer (GET /api/shipping/shows/:id) ----------
+/** Where a buyer's shipping stands; the page turns the code into words (labels.ts). */
+export type ShippingState = 'none' | 'wait' | 'ready' | 'second' | 'split' | 'hold' | 'labelled' | 'shipped' | 'failed'
+export interface ShippingPackage {
+  id: number
+  status: string
+  /** Items of this show in the package, and items of another show bundled with them. */
+  items: number
+  otherItems: number
+  tracking: string | null
+  carrier: string | null
+  labelReady: boolean
+  dueAt: string | null
+  /** What Whatnot wants done before it ships (codes; labels.ts has the words). */
+  holds: string[]
+  pickup: boolean
+  /** The package in Seller Hub. */
+  url: string | null
+  labelRequestedAt: string | null
+  labelProblem: string | null
+}
+export interface ShippingBuyer {
+  buyer: string | null
+  items: number
+  /** Items not in any package on Whatnot yet. */
+  unplaced: number
+  packages: ShippingPackage[]
+  state: ShippingState
+  orderId: number | null
+  orderStatus: OrderStatus | null
+}
+export interface Shipping {
+  showId: number
+  showDate?: string
+  connected: boolean
+  matched: boolean
+  mode?: 'shadow' | 'auto'
+  show?: { title: string; status: string; ended: boolean }
+  buyers: ShippingBuyer[]
+  totals: Partial<Record<ShippingState | 'buyers', number>>
+  /** Orders the carrier already has that the app still shows as waiting. */
+  toMarkShipped?: number
+  queued?: boolean
+  requested?: number
+  marked?: number
+}

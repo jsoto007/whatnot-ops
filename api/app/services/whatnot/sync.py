@@ -17,7 +17,7 @@ newest first, until the orders are older than the show.
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from ...db import db
@@ -301,6 +301,17 @@ def upsert_order(org_id: int, data: dict) -> tuple[int | None, bool]:
     ).scalar()
     if row_id is None and existing is not None:
         row_id = existing.id  # ours is the newer copy; nothing written
+    elif values["status"] in ("cancelled", "failed"):
+        # Nothing to pack any more: its lots leave the order slips' pick list.
+        from ...models import WhatnotLot
+
+        db.session.execute(
+            delete(WhatnotLot).where(
+                WhatnotLot.organization_id == org_id,
+                (WhatnotLot.whatnot_order_id == values["whatnot_id"])
+                | WhatnotLot.whatnot_order_id.like(values["whatnot_id"] + "-%"),
+            )
+        )
     return row_id, existing is None
 
 
@@ -529,6 +540,9 @@ def sync_show_job(payload: dict) -> None:
 
     _run(org_id, "orders", read)
     _after_orders(org_id, {whatnot_show_id})
+    from . import shipping
+
+    shipping.schedule(org_id, whatnot_show_id)  # and the parcels those orders are in
 
 
 def _due(org_id: int, resource: str, every: timedelta) -> bool:
@@ -577,6 +591,10 @@ def sync_job(payload: dict) -> None:
         after = _open_by_show(org_id)
         changed |= {show for show in before if before[show] != after.get(show)}
     _after_orders(org_id, changed)
+    from . import shipping
+
+    if shipping.due(org_id):
+        shipping.schedule(org_id)
 
 
 def _open_by_show(org_id: int) -> dict:

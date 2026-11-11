@@ -21,6 +21,7 @@ from .routes.orders import bp as orders_bp
 from .routes.pair import bp as pair_bp
 from .routes.reports import bp as reports_bp
 from .routes.review import bp as review_bp
+from .routes.shipping import bp as shipping_bp
 from .routes.shows import bp as shows_bp
 from .routes.team import bp as team_bp
 from .routes.webhooks import bp as webhooks_bp
@@ -165,6 +166,7 @@ def create_app(config: Config | None = None) -> Flask:
     from .services.whatnot import (  # noqa: F401 - register their jobs and webhook topics
         orders as _whatnot_orders,
     )
+    from .services.whatnot import shipping as _whatnot_shipping  # noqa: F401
     from .services.whatnot import sync as _whatnot_sync  # noqa: F401
     from .services.whatnot import webhooks  # noqa: F401
 
@@ -173,7 +175,11 @@ def create_app(config: Config | None = None) -> Flask:
         from .services.whatnot import fake
 
         app.extensions["whatnot_fake"] = shop = fake.FakeWhatnot()
-        app.config.update(WHATNOT_TRANSPORT=shop.transport, WHATNOT_API_TOKEN=fake.TOKEN)
+        app.config.update(
+            WHATNOT_TRANSPORT=shop.transport,
+            WHATNOT_API_TOKEN=fake.TOKEN,
+            WHATNOT_FETCH=fake.label_pdf,
+        )
         from .routes.whatnot_fake import bp as whatnot_fake_bp
 
         app.register_blueprint(whatnot_fake_bp, url_prefix="/api/whatnot/fake")
@@ -192,6 +198,7 @@ def create_app(config: Config | None = None) -> Flask:
     app.register_blueprint(orders_bp, url_prefix="/api/orders")
     app.register_blueprint(reports_bp, url_prefix="/api")
     app.register_blueprint(whatnot_bp, url_prefix="/api/whatnot")
+    app.register_blueprint(shipping_bp, url_prefix="/api/shipping")
     app.register_blueprint(webhooks_bp, url_prefix="/api/webhooks")
     register_spa(app)
     register_cli(app)

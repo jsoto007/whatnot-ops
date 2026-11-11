@@ -21,6 +21,8 @@ PERMISSIONS: dict[str, frozenset[Role]] = {
     "orders.view": ALL,
     "orders.fulfill": frozenset({Role.owner, Role.manager, Role.fulfillment}),
     "orders.reconcile": MANAGERS,  # importing payment records changes stock (commit)
+    # Asking Whatnot to make labels closes each buyer's bundle and cannot be undone.
+    "orders.labels": MANAGERS,
     "review.act": MANAGERS,
     "reports.view": frozenset({Role.owner, Role.manager, Role.viewer}),
 }

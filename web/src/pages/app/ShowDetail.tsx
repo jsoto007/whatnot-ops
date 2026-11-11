@@ -70,6 +70,11 @@ export function ShowDetail() {
               Order slips
             </Link>
           )}
+          {can('orders.view') && (
+            <Link className="btn ghost" to={`/app/orders/shipping/${id}`} data-testid="show-shipping-link">
+              Shipping
+            </Link>
+          )}
           {can('review.act') && (
             <>
               <button className="btn ghost" onClick={() => parse.mutate()} disabled={parse.isPending} data-testid="parse-now">

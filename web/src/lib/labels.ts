@@ -92,6 +92,7 @@ export const whatnotProblemLabel = (p: string): string => WHATNOT_PROBLEM[p] ?? 
 const WHATNOT_SYNC: Record<string, string> = {
   shows: 'Shows',
   orders: 'Orders and payments',
+  open_orders: 'Orders Whatnot had not settled',
   shipments: 'Shipments and tracking',
   catalog: 'Products and stock',
   analytics: 'Show results',
@@ -120,3 +121,46 @@ const WHATNOT_ORDER_ACTION: Record<string, string> = {
   uncovered: 'with no order on Whatnot',
 }
 export const whatnotOrderActionLabel = (a: string): string => WHATNOT_ORDER_ACTION[a] ?? 'left alone'
+
+/** Where a buyer's shipping stands for a show. One package and one label per buyer is the rule. */
+const SHIPPING_STATE: Record<string, string> = {
+  none: 'Not in a package on Whatnot yet',
+  wait: 'Bundle still open: the show is live',
+  ready: 'Ready for its label',
+  second: 'A later win needs its own label',
+  split: 'Two open packages: combine them in Seller Hub first',
+  hold: 'On hold',
+  labelled: 'Label ready',
+  shipped: 'With the carrier',
+  failed: 'Delivery failed',
+}
+export const shippingStateLabel = (s: string): string => SHIPPING_STATE[s] ?? 'Other'
+
+/** A package's own status on Whatnot. */
+const PACKAGE_STATUS: Record<string, string> = {
+  created: 'No label yet',
+  label_generated: 'Label ready',
+  dropped_off: 'Dropped off',
+  in_transit: 'In transit',
+  delivered: 'Delivered',
+  failed: 'Delivery failed',
+}
+export const packageStatusLabel = (s: string): string => PACKAGE_STATUS[s] ?? (s.startsWith('cancelled') ? 'Cancelled' : 'Other')
+
+/** What Whatnot wants done before a package ships. */
+const PACKAGE_HOLD: Record<string, string> = {
+  order_pending_cancellation: 'Do not pack: a cancellation is pending',
+  package_review_required: 'Whatnot wants this package reviewed',
+  country_of_origin_required: 'Country of origin is needed',
+  itn_required: 'An export number is needed',
+}
+export const packageHoldLabel = (h: string): string => PACKAGE_HOLD[h] ?? 'Whatnot needs something done first'
+
+/** Why Whatnot did not make a label when asked. */
+const LABEL_PROBLEM: Record<string, string> = {
+  needs_verification: 'Whatnot needs the seller to finish verification before it makes labels',
+  no_permission: 'The access token may not make labels yet. The account owner can add that permission in Seller Hub',
+  not_now: 'Whatnot cannot make this label right now. Open the package in Seller Hub to see why',
+  failed: 'Whatnot did not take the request. Try again',
+}
+export const labelProblemLabel = (p: string): string => LABEL_PROBLEM[p] ?? 'Whatnot did not take the request. Try again'

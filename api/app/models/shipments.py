@@ -1,6 +1,17 @@
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..db import db
@@ -8,14 +19,26 @@ from .core import Show, utcnow
 
 
 class WhatnotShipment(db.Model):
-    """One row of Whatnot's Seller Hub Shipments table, read by the scraper on the seller's
-    own laptop. Evidence only: it is compared with the show's order slips and never changes a
-    sale, an order or stock. No address is kept, only the recipient's username."""
+    """One Whatnot shipment (a parcel: everything one buyer's bundle holds). Read either by
+    the scraper from Seller Hub's Shipments table on the seller's own laptop, or from the
+    Seller API (`whatnot_id` set; services/whatnot/shipping.py), which also knows its
+    carrier status, whether a label exists, and what Whatnot wants done first.
+
+    It never changes a sale, a payment or stock. No address is kept, only the recipient's
+    username; the label itself (which carries the address) is never stored, only whether
+    there is one."""
 
     __tablename__ = "whatnot_shipments"
     __table_args__ = (
         UniqueConstraint("organization_id", "row_key", name="uq_whatnot_shipments_org_key"),
         Index("ix_whatnot_shipments_show", "show_id"),
+        Index(
+            "uq_whatnot_shipments_org_whatnot_id",
+            "organization_id",
+            "whatnot_id",
+            unique=True,
+            postgresql_where=text("whatnot_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -44,6 +67,32 @@ class WhatnotShipment(db.Model):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
+    # ---- from the Seller API (all None on a row only the scraper has read) ----
+    whatnot_id: Mapped[str | None] = mapped_column(String(20))
+    # created | label_generated | dropped_off | in_transit | delivered | failed | cancelled…
+    api_status: Mapped[str | None] = mapped_column(String(40))
+    carrier: Mapped[str | None] = mapped_column(String(60))
+    tracking_code: Mapped[str | None] = mapped_column(String(80))
+    # Whatnot has a label (and its combined label + packing slip) to print. Not the link:
+    # it is short-lived and shows the buyer's address, so it is fetched when someone prints.
+    label_ready: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    dropoff_due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # What Whatnot wants done before this ships (order_pending_cancellation, …).
+    required_actions: Mapped[list | None] = mapped_column(JSON)
+    fulfillment_method: Mapped[str | None] = mapped_column(String(16))  # shipping | pickup
+    # The shipment that took this one's items (a new label, a re-bundle), if any.
+    replaced_by: Mapped[str | None] = mapped_column(String(20))
+    url: Mapped[str | None] = mapped_column(String(512))  # its page in Seller Hub
+    whatnot_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When someone asked Whatnot, from the app, to make this shipment's label; and why
+    # Whatnot refused, as a short code the page turns into words.
+    label_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    label_requested_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", name="fk_whatnot_shipments_label_requested_by")
+    )
+    label_problem: Mapped[str | None] = mapped_column(String(40))
 
     show: Mapped[Show | None] = relationship()
 
@@ -67,6 +116,7 @@ class WhatnotLot(db.Model):
         ForeignKey("whatnot_shipments.id", ondelete="CASCADE"), nullable=False, index=True
     )
     # "Order #1462657228" on the page; unique per shop, so a second read updates the lot.
+    # From the API, a second and later item of one order is "<order>-2", "<order>-3".
     whatnot_order_id: Mapped[str] = mapped_column(String(20), nullable=False)
     recipient: Mapped[str] = mapped_column(String(80), nullable=False)
     title: Mapped[str] = mapped_column(String(240), nullable=False, default="")

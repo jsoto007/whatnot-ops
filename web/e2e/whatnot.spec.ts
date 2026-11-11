@@ -61,10 +61,20 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
         { buyer: 'lani808', items: [{ title: 'Red bundle', priceCents: 2500 }], minutesAgo: 80 },
         { buyer: 'kat.c', items: [{ title: 'Red bundle', priceCents: 2500 }], status: 'failed', minutesAgo: 70 },
         { buyer: 'newbie', items: [{ title: 'CHOOSE ANY PRODUCT YOU WANT #73', priceCents: 1700 }], minutesAgo: 60 },
+        { buyer: 'splitsy', items: [{ title: 'Red bundle', priceCents: 2500 }], minutesAgo: 50 },
+        { buyer: 'splitsy', items: [{ title: 'Red bundle', priceCents: 2600 }], minutesAgo: 40 },
+      ],
+      // One parcel per buyer is the rule; splitsy's two wins ended up in two open parcels.
+      shipments: [
+        { recipient: 'lani808', orders: [0] },
+        { recipient: 'newbie', orders: [2] },
+        { recipient: 'splitsy', orders: [3] },
+        { recipient: 'splitsy', orders: [4] },
       ],
     },
   })
   expect(seeded.status()).toBe(201)
+  const fake = (await seeded.json()) as { shipments: string[] }
 
   // Settings → Whatnot: the owner connects; the page says who the shop is on Whatnot.
   await page.getByRole('link', { name: 'Settings' }).click()
@@ -88,12 +98,45 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   // Comparing changed nothing: both units are still off the shelf.
   await page.getByTestId('whatnot-apply').click()
   await expect(page.getByTestId('whatnot-applied')).toContainText('1 mark the payment declined')
-  await expect(page.getByTestId('whatnot-applied')).toContainText('1 sale recorded')
+  await expect(page.getByTestId('whatnot-applied')).toContainText('3 sale recorded')
   await expect(page.getByTestId('whatnot-apply')).toHaveText('Nothing to apply')
 
-  // kat.c's unit is back on the shelf; newbie has an order waiting for its product to be named.
+  // Shipping: one package and one label per buyer.
+  await page.getByTestId('show-shipping-link').click()
+  await page.getByTestId('shipping-refresh').click()
+  await expect(page.getByTestId('ship-lani808').getByTestId('ship-state')).toHaveText('Ready for its label')
+  await expect(page.getByTestId('ship-splitsy').getByTestId('ship-state')).toHaveText('Two open packages: combine them in Seller Hub first')
+  await expect(page.getByTestId('ship-splitsy').getByTestId('ship-package')).toHaveCount(2)
+  // Two labels to make (lani808, newbie); the page asks first and says what it closes.
+  await expect(page.getByTestId('shipping-make-labels')).toHaveText('Make 2 labels')
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toContain("closes each buyer's bundle")
+    await dialog.accept()
+  })
+  await page.getByTestId('shipping-make-labels').click()
+  await expect(page.getByTestId('shipping-note')).toContainText('Asked Whatnot for 2 labels')
+  // Whatnot was asked for exactly those two parcels, never either of splitsy's.
+  const made = await request.post('/api/whatnot/fake', { data: { finishLabels: true } })
+  expect(((await made.json()) as { labelsRequested: string[] }).labelsRequested.sort()).toEqual([fake.shipments[0], fake.shipments[1]].sort())
+  await page.getByTestId('shipping-refresh').click()
+  await expect(page.getByTestId('ship-lani808').getByTestId('ship-state')).toHaveText('Label ready')
+  const print = page.getByTestId('ship-lani808').getByTestId('ship-print')
+  const pdf = await page.request.get((await print.getAttribute('href'))!)
+  expect(pdf.status()).toBe(200)
+  expect(pdf.headers()['content-type']).toContain('application/pdf')
+  expect((await pdf.body()).subarray(0, 4).toString()).toBe('%PDF')
+  // The carrier takes lani808's parcel: the order can be marked shipped without clicking through picking.
+  await request.post('/api/whatnot/fake', { data: { setShipments: [{ id: fake.shipments[0], status: 'dropped_off' }] } })
+  await page.getByTestId('shipping-refresh').click()
+  await page.getByTestId('shipping-mark-shipped').click()
+  await expect(page.getByTestId('shipping-note')).toHaveText('1 order marked shipped.')
+
+  // kat.c's unit is back on the shelf (lani808 and splitsy's two are gone: 5 − 3 = 2).
   await page.getByRole('link', { name: 'Inventory' }).click()
-  await expect(cell(page, 'RED', 'on-hand')).toHaveText('4')
+  await expect(cell(page, 'RED', 'on-hand')).toHaveText('2')
+  await page.getByRole('link', { name: /^Orders/ }).click()
+  await page.getByRole('tab', { name: /Shipped/ }).click()
+  await expect(page.getByTestId('order-lani808')).toBeVisible()
   await page.getByRole('link', { name: /^Orders/ }).click()
   await page.getByRole('tab', { name: /Needs review/ }).click()
   await expect(page.getByTestId('order-newbie')).toContainText('CHOOSE ANY PRODUCT YOU WANT')
@@ -102,6 +145,8 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
 
   // The activity log says what happened, in words, with nothing internal.
   await page.getByRole('link', { name: 'Settings' }).click()
-  await expect(page.getByText("Applied Whatnot's orders to a show: 1 payment declined, 1 sales recorded")).toBeVisible()
+  await expect(page.getByText("Applied Whatnot's orders to a show: 1 payment declined, 3 sales recorded")).toBeVisible()
+  await expect(page.getByText('Asked Whatnot to make 2 shipping labels')).toBeVisible()
+  await expect(page.getByText('Marked 1 order shipped: the carrier has them')).toBeVisible()
   await expect(page.getByText(`Connected the shop to Whatnot as @shop_${run}`)).toBeVisible()
 })

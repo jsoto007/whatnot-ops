@@ -124,6 +124,9 @@ export function Orders() {
                 <Icon name="clipboard" size={16} />
                 Pick list
               </Link>
+              <Link className="btn ghost" to={`/app/orders/shipping/${showId}`} data-testid="shipping-link">
+                Shipping
+              </Link>
             </>
           )}
         </div>
