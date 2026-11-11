@@ -160,6 +160,23 @@ commands.
   is the sale's SKU, else "No Pick" plus what the winner said in chat
   (`sale_chat`) — the winner picks the product in chat. Read-only: never
   changes a sale, order, payment or stock; only the username is kept.
+- **Whatnot Seller API** (`services/whatnot/`, `docs/WHATNOT_API.md`). Whatnot decides
+  what was sold, whether it was paid and where a parcel is; the app decides which
+  product, the gifts, picking and packing. `client.py` is the only code that calls
+  Whatnot (shared 8 req/s budget in `throttle.py`; a write is retried only when safe).
+  The token and the webhook signing secret come from env (`WHATNOT_API_TOKEN`,
+  `WHATNOT_WEBHOOK_SECRET`) and are never stored; there is no sandbox, so no test may
+  reach the real API (`fake.py`, the `fake_whatnot` fixture; `WHATNOT_API=fake` for
+  dev and e2e). A webhook is a hint: handlers read the resource again and never act
+  on the body (`webhooks.py`, stored once by `webhook-id`). Orders run through the
+  payment-file engine (`whatnot/orders.py` → `reconcile.py`, actor `whatnot`):
+  `orders_mode` "shadow" only compares (Payments tab, a person applies), "auto"
+  applies as they arrive; an order with no sale becomes one
+  (`pipeline.create_sale_from_order`), and a later win line claims it
+  (`claim_order_sale`) instead of making a second. **One package and one label per
+  buyer per show** (`whatnot/shipping.py`): labels only after the show ended, never
+  for a buyer in two open packages; label PDFs and links are fetched when printed
+  and never stored (they show the address). Only the buyer's id and username are kept.
 - **Numbers.** Dashboard tiles and the Excel sheets both read
   `services/dashboard.py`; add a metric there, never inline in a route or
   the workbook builder. Reports are built synchronously with openpyxl

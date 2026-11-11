@@ -311,8 +311,10 @@ Build
 - Render Blueprint (web service, background worker, Postgres paid plan),
   env checklist, Mailgun domain, backups, runbook (`docs/RUNBOOK.md`),
   extension packaged for the team with the production URL as the default.
-- Later: shipping labels and tracking (EasyPost or Shippo) as Phase 11 once
-  the fulfillment flow is stable.
+- Shipping labels and tracking come from Whatnot's own Seller API, not from
+  EasyPost or Shippo: Whatnot's labels are prepaid by the buyer, and a label
+  bought elsewhere can stop tracking and delay the payout. See
+  `docs/WHATNOT_API.md` (built 2026-11-10: orders, shipments, labels).
 
 Verify
 - Smoke test against staging with a real show before anything points at
