@@ -220,12 +220,22 @@ commands.
   functions as a human action, actor `ai`, audited. Never call a provider
   outside `supervisor.ask()` (it logs `ai_calls`). Tests use `FakeProvider`;
   no test may reach a real vendor.
+- **Footer and legal pages** (`web/src/components/Footer.tsx`, `pages/Legal.tsx`:
+  `/terms` and `/privacy`, open to everyone). The footer closes every page and is
+  never printed. It says Sales Ops is *built to follow* Whatnot's policies and may
+  change with them; never word that as a guarantee or as Whatnot's endorsement.
+  Privacy lists what is really stored and who really receives it: change it, and
+  `LEGAL_UPDATED` in `lib/legal.ts`, in the same PR that starts storing a new kind of
+  data or sends data to a new service. The wording is a plain-language draft, not
+  reviewed by a lawyer.
 - **Licence.** Proprietary (`LICENSE.md`): the shop owns its data, SotoDev owns
   the software. Its promises are product rules: no client data in the repo
   (fixtures stay synthetic; `claude-reports/` is gitignored), no Client Data to
   an AI provider or tool not listed in §7.2/§7.4, and a new service that receives
-  Client Data is a subprocessor (update §7.4 and tell Javier). After changing a
-  runtime dependency of `web/` or `extension/`, run `make licenses` and update
+  Client Data is a subprocessor (update §7.4, keep "Who else handles it" on the
+  Privacy page saying the same, and tell Javier). After changing a runtime
+  dependency of `web/` or `extension/`, run `make licenses` (`make lint` and CI
+  fail while `THIRD_PARTY_LICENSES.txt` is out of date) and update
   `NOTICE.md`; keep the copyright banners in `web/vite.config.ts` and
   `extension/build.mjs`.
 - **Licence acceptance** (`services/licence.py`, `licence_acceptances`): the shop's

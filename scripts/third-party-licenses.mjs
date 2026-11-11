@@ -3,6 +3,8 @@
 // dependencies, with their own dependencies). MIT and ISC require these texts to
 // travel with the copies, so both builds put this file next to their bundles.
 // Run after changing web/ or extension/ dependencies: `make licenses`.
+// With --check it writes nothing and fails when the committed file is not what it
+// would write (`make lint`, and the `extension` CI job, which installs both apps).
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,7 +30,11 @@ function collect(app) {
     const meta = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
     const key = `${meta.name}@${meta.version}`
     if (found.has(key)) return
-    const file = readdirSync(dir).find((f) => /^licen[cs]e(\.(md|txt))?$/i.test(f))
+    // Sorted: directory order differs between file systems, and --check must give the
+    // same answer on a laptop and in CI when a package ships more than one such file.
+    const file = readdirSync(dir)
+      .filter((f) => /^licen[cs]e(\.(md|txt))?$/i.test(f))
+      .sort()[0]
     if (!file) throw new Error(`${key} has no licence file`)
     const license = typeof meta.license === 'string' ? meta.license : (meta.license?.type ?? 'see text')
     found.set(key, { key, license, text: readFileSync(join(dir, file), 'utf8').trim() })
@@ -54,5 +60,25 @@ for (const [title, app] of [
   out += `\n\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}\n`
   for (const p of collect(app)) out += `\n${rule}\n${p.key} (${p.license})\n${rule}\n\n${p.text}\n`
 }
-writeFileSync(join(root, 'THIRD_PARTY_LICENSES.txt'), out)
-console.log('wrote THIRD_PARTY_LICENSES.txt')
+const target = join(root, 'THIRD_PARTY_LICENSES.txt')
+if (process.argv.includes('--check')) {
+  // `make lint` and CI: the committed file must be exactly what the installed packages
+  // give. A dependency added, removed or upgraded without `make licenses` fails here,
+  // instead of shipping a bundle whose licence texts are missing or out of date.
+  const committed = existsSync(target) ? readFileSync(target, 'utf8') : ''
+  if (committed !== out) {
+    const packages = (text) => new Set(text.match(/^\S+@\S+ \(.*\)$/gm) ?? [])
+    const [have, want] = [packages(committed), packages(out)]
+    const missing = [...want].filter((p) => !have.has(p))
+    const stale = [...have].filter((p) => !want.has(p))
+    console.error('THIRD_PARTY_LICENSES.txt is out of date. Run `make licenses` and commit the result.')
+    if (missing.length) console.error(`  not in the file: ${missing.join(', ')}`)
+    if (stale.length) console.error(`  no longer shipped: ${stale.join(', ')}`)
+    if (!missing.length && !stale.length) console.error('  same packages; a licence text or the layout changed')
+    process.exit(1)
+  }
+  console.log('THIRD_PARTY_LICENSES.txt is up to date')
+} else {
+  writeFileSync(target, out)
+  console.log('wrote THIRD_PARTY_LICENSES.txt')
+}

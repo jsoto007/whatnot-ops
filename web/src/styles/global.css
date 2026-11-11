@@ -34,10 +34,31 @@ code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background
 .brand-link { color: inherit; text-decoration: none; display: inline-flex; align-items: center; gap: 10px; }
 .brand-link:hover { color: inherit; }
 .brand-logo { width: 32px; height: 32px; border-radius: 10px; display: block; box-shadow: 0 4px 12px rgba(40, 50, 90, 0.15); }
-.app-main { max-width: 1100px; margin: 0 auto; padding: var(--space-6) var(--space-4); }
+.public { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+.app-main { flex: 1 0 auto; width: 100%; max-width: 1100px; margin: 0 auto; padding: var(--space-6) var(--space-4); }
 .auth-card { max-width: 420px; margin: 56px auto; padding: var(--space-8) 28px var(--space-6); border-radius: var(--radius-xl); }
 .auth-card h2 { margin-bottom: var(--space-2); }
 .auth-card .muted { margin-top: var(--space-4); }
+
+/* ---------- footer: quiet small print under every page, never printed ---------- */
+.site-footer { width: 100%; padding: var(--space-3) var(--space-2) var(--space-2); border-top: 1px solid var(--border); color: var(--text-faint); font-size: 12px; }
+.site-footer nav { display: flex; flex-wrap: wrap; gap: 0 var(--space-6); margin-bottom: var(--space-1); font-size: 13px; }
+.site-footer a { color: var(--text-muted); font-weight: 500; text-decoration: none; }
+.site-footer nav a { display: inline-flex; align-items: center; min-height: 32px; }
+.site-footer a:hover { color: var(--accent); text-decoration: underline; }
+.site-footer p { margin: 0 0 var(--space-1); max-width: 96ch; }
+.public .site-footer { max-width: 1100px; margin: 0 auto; padding: var(--space-3) var(--space-4) var(--space-4); text-align: center; }
+.public .site-footer nav { justify-content: center; }
+.public .site-footer p { margin-inline: auto; }
+
+/* ---------- user agreement and privacy pages ---------- */
+.legal { max-width: 760px; margin: var(--space-6) auto; padding: var(--space-8) 28px; border-radius: var(--radius-xl); }
+.legal h2 { margin-bottom: var(--space-1); }
+.legal p, .legal li { max-width: 68ch; }
+.legal ul { margin: var(--space-2) 0; padding-left: 20px; }
+.legal li { margin-bottom: var(--space-2); }
+.legal-back { display: inline-block; margin-bottom: var(--space-4); font-size: 14px; font-weight: 500; text-decoration: none; }
+.legal-back::before { content: '\2190\00a0'; }
 
 /* ---------- cards, forms, buttons ---------- */
 .card { border-radius: var(--radius-l); padding: var(--space-4) var(--space-6); }
@@ -151,7 +172,9 @@ code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background
 .app.collapsed .collapse-btn { gap: 0; padding: 0 12px; }
 .app.collapsed .collapse-btn svg { transform: none; }
 
-.content { padding: 0 0 var(--space-8); max-width: var(--content-max); width: 100%; min-width: 0; }
+.main-col { display: flex; flex-direction: column; min-width: 0; }
+.content { flex: 1 0 auto; padding: 0 0 var(--space-8); max-width: var(--content-max); width: 100%; min-width: 0; }
+.main-col .site-footer { max-width: var(--content-max); }
 .page-head {
   display: flex; justify-content: space-between; align-items: center; gap: var(--space-3) var(--space-4); margin-bottom: var(--space-4); flex-wrap: wrap;
   padding: 10px 10px 10px 22px; min-height: 64px; border-radius: var(--pill);
@@ -353,8 +376,10 @@ tr.short td { background: rgba(255, 59, 48, 0.06); }
 .warn-card > div { margin-top: var(--space-1); }
 @media print {
   body { background: #fff; }
-  .sidebar, .topbar, .toolbar, .btn, .app-header, .tabs, .no-print, .page-head .head-actions { display: none !important; }
-  .app { grid-template-columns: 1fr; padding: 0; } .content { padding: 0; max-width: none; }
+  .sidebar, .topbar, .toolbar, .btn, .app-header, .site-footer, .legal-back, .tabs, .no-print, .page-head .head-actions { display: none !important; }
+  /* Both selectors: `.app.collapsed` (the default) outranks `.app`, and would keep the 76px sidebar
+     column on landscape paper and the phone padding on portrait. */
+  .app, .app.collapsed { grid-template-columns: 1fr; padding: 0; } .content { padding: 0; max-width: none; }
   .card, .page-head, .table { background: #fff; box-shadow: none; border-color: #ccc; -webkit-backdrop-filter: none; backdrop-filter: none; }
   /* A printed page is narrower than the phone breakpoint: keep tables tables, not scrollers. */
   .table { display: table; white-space: normal; overflow: visible; }
