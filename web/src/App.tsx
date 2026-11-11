@@ -2,7 +2,9 @@ import { BrowserRouter, Link, Navigate, Outlet, Route, Routes } from 'react-rout
 import { AuthProvider } from './auth/AuthProvider'
 import { useAuth } from './auth/useAuth'
 import { RedirectIfAuthed, RequireAuth, RequirePermission } from './auth/guards'
+import { Footer } from './components/Footer'
 import { AcceptInvite } from './pages/AcceptInvite'
+import { Privacy, Terms } from './pages/Legal'
 import { Login } from './pages/Login'
 import { Forgot, Reset } from './pages/Password'
 import { Signup } from './pages/Signup'
@@ -24,7 +26,7 @@ import { WhatnotListings } from './pages/app/WhatnotListings'
 
 function PublicShell({ children }: { children: React.ReactNode }) {
   return (
-    <>
+    <div className="public">
       <header className="app-header">
         <h1>
           <Link to="/" className="brand-link">
@@ -34,7 +36,8 @@ function PublicShell({ children }: { children: React.ReactNode }) {
         </h1>
       </header>
       <main className="app-main">{children}</main>
-    </>
+      <Footer />
+    </div>
   )
 }
 
@@ -70,6 +73,8 @@ export function App() {
           >
             <Route path="/invite/:token" element={<AcceptInvite />} />
             <Route path="/reset/:token" element={<Reset />} />
+            <Route path="/terms" element={<Terms />} />
+            <Route path="/privacy" element={<Privacy />} />
           </Route>
           <Route path="/app" element={<RequireAuth />}>
             <Route element={<AppLayout />}>

@@ -64,6 +64,16 @@ test('starts compact, with tooltips, and the toggle opens it and is remembered',
   expect(localStorage.getItem('wn.sidebar')).toBe('collapsed')
 })
 
+test('the footer sits under the page, outside main, as its own landmark', () => {
+  const { container } = mount()
+  const footer = screen.getByRole('contentinfo')
+  expect(footer).toHaveTextContent("Sales Ops is built to follow Whatnot's policies")
+  expect(screen.getByRole('main')).not.toContainElement(footer)
+  expect(container.querySelector('.main-col > main.content + footer.site-footer')).toBe(footer)
+  // The sidebar's own links are untouched: the footer adds none to the Sections nav.
+  expect(screen.getByRole('navigation', { name: 'Sections' }).querySelectorAll('a').length).toBe(9)
+})
+
 test('starts open when that was saved', () => {
   localStorage.setItem('wn.sidebar', 'expanded')
   const { container } = mount()
