@@ -1,7 +1,9 @@
 """Settings → Whatnot: connect the shop to its Whatnot seller account and see how it is doing."""
 
+from datetime import UTC, datetime, timedelta
+
 from flask import Blueprint, g, jsonify, request
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from .. import serializers
 from ..auth import require
@@ -14,6 +16,9 @@ bp = Blueprint("whatnot", __name__)
 
 # Each of these calls Whatnot once.
 CHECKS_PER_10_MIN = 20
+# The Shows page lists what is coming next on Whatnot, not the seller's whole calendar.
+UPCOMING_SHOWN = 5
+UPCOMING_LATE = timedelta(hours=3)  # a show still "scheduled" this long after its time is stale
 
 
 @bp.errorhandler(WhatnotError)
@@ -79,6 +84,8 @@ def settings():
         return jsonify({"error": "choose how Whatnot's orders are used"}), 400
     if conn.orders_mode != mode:
         conn.orders_mode = mode
+        # From now on: a show that was over before this is left to a person.
+        conn.auto_since = datetime.now(UTC) if mode == "auto" else None
         audit.record(
             g.u.organization_id,
             "whatnot.mode",
@@ -97,20 +104,33 @@ def shows():
     """What is live on Whatnot now and what is scheduled next."""
     if connection.active(g.u.organization_id) is None:
         return jsonify({"connected": False, "live": [], "upcoming": []})
-    rows = db.session.scalars(
+    mine = WhatnotShow.organization_id == g.u.organization_id
+    live = db.session.scalars(
+        select(WhatnotShow)
+        .where(mine, WhatnotShow.status.in_(("live", "stopped")))
+        .order_by(WhatnotShow.scheduled_start_at.asc().nulls_last(), WhatnotShow.id)
+        .limit(10)
+    ).all()
+    # A seller's list holds dozens of placeholders, many left "scheduled" long after their
+    # date: only the next few that are still to come (or due within the last hours).
+    upcoming = db.session.scalars(
         select(WhatnotShow)
         .where(
-            WhatnotShow.organization_id == g.u.organization_id,
-            WhatnotShow.status.in_(("live", "stopped", "scheduled")),
+            mine,
+            WhatnotShow.status == "scheduled",
+            or_(
+                WhatnotShow.scheduled_start_at >= datetime.now(UTC) - UPCOMING_LATE,
+                WhatnotShow.scheduled_start_at.is_(None),  # no time set yet: listed last
+            ),
         )
         .order_by(WhatnotShow.scheduled_start_at.asc().nulls_last(), WhatnotShow.id)
-        .limit(50)
+        .limit(UPCOMING_SHOWN)
     ).all()
     return jsonify(
         {
             "connected": True,
-            "live": [serializers.whatnot_show(w) for w in rows if w.status != "scheduled"],
-            "upcoming": [serializers.whatnot_show(w) for w in rows if w.status == "scheduled"],
+            "live": [serializers.whatnot_show(w) for w in live],
+            "upcoming": [serializers.whatnot_show(w) for w in upcoming],
         }
     )
 

@@ -12,7 +12,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.db import db
 from app.models import (
@@ -55,7 +55,13 @@ def shop(app, world, fake_whatnot):
         ended=now - timedelta(minutes=5),
     )
     with app.app_context():
-        db.session.add(WhatnotConnection(organization_id=world["org"], seller_id="1234567"))
+        db.session.add(
+            WhatnotConnection(
+                organization_id=world["org"],
+                seller_id="1234567",
+                connected_at=datetime.now(UTC) - timedelta(days=1),  # before any show here
+            )
+        )
         show = db.session.get(Show, world["show"])
         show.started_at = now - timedelta(hours=3)
         db.session.commit()
@@ -1263,3 +1269,238 @@ def test_a_line_total_no_column_can_hold_is_left_unread_not_applied(app, shop):
 
         apply(app, shop)
         dashboard.show_tiles(db.session.get(Show, shop["show"]))  # no "integer out of range"
+
+
+# ---------- found on the live shop, 2026-11-12 (the first connection) ----------
+
+
+def test_a_recording_of_another_stream_is_never_tied_by_the_clock_to_a_show_with_its_own(app, shop):
+    """A laptop had recorded another seller's stream on the night of the shop's show. The
+    clock tied it to the shop's show, and all its wins then read "no order on Whatnot"."""
+    from app.models import ChatMessage
+
+    with app.app_context():
+        mine = db.session.get(Show, shop["show"])
+        mine.source_url = f"https://www.whatnot.com/live/{shop['wshow'].upper()}"  # any case
+        other = Show(
+            organization_id=shop["org"],
+            show_key="another-sellers-stream",
+            started_at=shop["now"] - timedelta(hours=3),
+            show_date=shop["now"].date(),
+            source_url=f"https://www.whatnot.com/dashboard/live/{uuid.uuid4()}",
+        )
+        db.session.add(other)
+        db.session.flush()
+        db.session.add(
+            ChatMessage(
+                show_id=other.id, client_id="e" * 16, seq=1, username="someone", body="hi",
+                raw_text="someone hi", source="chat", captured_at=datetime.now(UTC),
+            )
+        )  # fmt: skip
+        db.session.commit()
+        other_id = other.id
+    read(app, shop, orders=False)
+    with app.app_context():
+        ws = db.session.scalar(select(WhatnotShow))
+        mine = db.session.get(Show, shop["show"])
+        assert (mine.whatnot_show_id, mine.whatnot_link) == (ws.id, "auto")  # by its address
+        other = db.session.get(Show, other_id)
+        assert (other.whatnot_show_id, other.whatnot_link) == (None, None)
+        # One the clock had tied earlier (before the show's own recording was known) is let go.
+        other.whatnot_show_id, other.whatnot_link = ws.id, "auto"
+        db.session.commit()
+    read(app, shop, orders=False)
+    with app.app_context():
+        ws = db.session.scalar(select(WhatnotShow))
+        other = db.session.get(Show, other_id)
+        assert (other.whatnot_show_id, other.whatnot_link) == (None, None)
+        # A person's choice stands, whatever the address says.
+        other.whatnot_show_id, other.whatnot_link = ws.id, "manual"
+        db.session.commit()
+    read(app, shop, orders=False)
+    with app.app_context():
+        other = db.session.get(Show, other_id)
+        assert other.whatnot_show_id is not None and other.whatnot_link == "manual"
+
+
+def test_tying_a_recording_to_its_show_is_not_chat_arriving(app, client, shop, sign_in):
+    """Two four-day-old recordings were tied to their show at the connect: both read "Live"
+    for ten minutes and "94 h" long from then on, because the write stamped "now" on the
+    time the app reads as the last chat line."""
+    old = shop["now"] - timedelta(days=4)
+    with app.app_context():
+        db.session.execute(update(Show).where(Show.id == shop["show"]).values(updated_at=old))
+        db.session.commit()
+    read(app, shop, orders=False)
+    with app.app_context():
+        show = db.session.get(Show, shop["show"])
+        assert show.whatnot_link == "auto" and show.updated_at == old
+    h = sign_in(shop["org"], role="manager")
+    url = f"/api/shows/{shop['show']}/whatnot/link"
+    assert client.post(url, json={"whatnotShowId": None}, headers=h).status_code == 200
+    with app.app_context():
+        show = db.session.get(Show, shop["show"])
+        assert show.whatnot_link == "manual" and show.updated_at == old
+        # ... and a chat batch another request saved in the meantime keeps its newer time.
+        newer = shop["now"] - timedelta(minutes=1)
+        with db.engine.begin() as elsewhere:
+            elsewhere.execute(update(Show).where(Show.id == show.id).values(updated_at=newer))
+        sync.tie(show, None, "manual")
+        db.session.commit()
+        assert db.session.get(Show, shop["show"]).updated_at == newer
+
+
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
+def test_apply_as_they_arrive_leaves_a_show_from_before_that_choice_alone(
+    app, client, shop, sign_in
+):
+    """Orders of old shows keep changing for days (shipped, delivered). Twenty ended shows
+    were read at the connect: in "auto", each change would have turned an old show into
+    hundreds of sales waiting for a product."""
+    app.config["WHATNOT_WEBHOOK_SECRET"] = SECRET
+    h = sign_in(shop["org"], role="owner")
+    read(app, shop)
+    # Connected a day ago, comparing only. Its show ended five minutes ago; now it chooses.
+    url = "/api/whatnot/settings"
+    assert client.patch(url, json={"ordersMode": "auto"}, headers=h).status_code == 200
+    with app.app_context():
+        conn = db.session.scalar(select(WhatnotConnection))
+        assert conn.auto_since is not None and conn.auto_since > conn.connected_at
+    o = order(shop, "lani808", "Red bundle")
+    before = snapshot(app)
+    deliver(client, "orders.updated", {"id": o["id"], "show_id": shop["wshow"]})
+    assert snapshot(app) == before and sale_rows(app) == []
+    with app.app_context():  # the copy is still kept current
+        assert db.session.scalar(select(WhatnotOrder.status)) == "pending_fulfillment"
+    # A show nobody recorded, weeks old: no show is made for it either.
+    long_ago = shop["now"] - timedelta(days=20)
+    past = shop["fake"].add_show(
+        title="Weeks ago", start=long_ago, ended=long_ago + timedelta(hours=2)
+    )
+    o2 = shop["fake"].add_order(
+        show_id=past["id"], buyer="kat.c", created=long_ago + timedelta(hours=1),
+        items=[{"title": "Red bundle", "price_cents": 2500}],
+    )  # fmt: skip
+    deliver(client, "orders.updated", {"id": o2["id"], "show_id": past["id"]})
+    with app.app_context():
+        assert db.session.scalar(select(func.count()).select_from(WhatnotOrder)) == 2
+        assert db.session.scalar(select(Show).where(Show.whatnot_link == "made")) is None
+    assert sale_rows(app) == []
+    # A person may still apply the first one from its show's Payments tab.
+    apply(app, shop)
+    assert sale_rows(app) == [("lani808", "Red bundle", "paid", "paid on Whatnot", o["id"])]
+    # Back to comparing only: the line is forgotten, and drawn again at the next choice.
+    assert client.patch(url, json={"ordersMode": "shadow"}, headers=h).status_code == 200
+    with app.app_context():
+        assert db.session.scalar(select(WhatnotConnection)).auto_since is None
+
+
+@pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line
+def test_reconnecting_does_not_stop_following_a_show_already_applied(app, client, shop):
+    """Connecting again stamps a new "connected at". A show applied before that must keep
+    following Whatnot: a cancelled order still cancels its sale and returns the stock."""
+    app.config["WHATNOT_WEBHOOK_SECRET"] = SECRET
+    set_mode(app, shop, "auto")
+    with app.app_context():  # "Apply as they arrive" was chosen yesterday
+        conn = db.session.scalar(select(WhatnotConnection))
+        conn.auto_since = conn.connected_at
+        db.session.commit()
+    read(app, shop)
+    o = order(shop, "lani808", "Red bundle")
+    deliver(client, "orders.created", {"id": o["id"], "show_id": shop["wshow"]})
+    assert sale_rows(app)[0][2] == "paid" and level(app, shop["red"]) == (2, 0)
+    with app.app_context():  # what connection.connect() does to a shop that reconnects
+        db.session.scalar(select(WhatnotConnection)).connected_at = datetime.now(UTC)
+        db.session.commit()
+    shop["fake"].set_order_status(o["id"], "failed")
+    deliver(client, "orders.updated", {"id": o["id"], "show_id": shop["wshow"]})
+    assert sale_rows(app)[0][2] == "payment_failed" and level(app, shop["red"]) == (3, 0)
+
+
+def test_what_counts_as_a_show_from_before_the_choice():
+    chose = datetime(2026, 11, 12, 6, 0, tzinfo=UTC)
+    conn = WhatnotConnection(connected_at=chose - timedelta(days=7), auto_since=chose)
+
+    def show(status, *, start=None, ended=None):
+        return WhatnotShow(status=status, scheduled_start_at=start, ended_at=ended)
+
+    hour = timedelta(hours=1)
+    assert sync.history(conn, show("ended", start=chose - 3 * hour, ended=chose - hour)) is True
+    # On air when the choice was made, over after it: followed.
+    assert sync.history(conn, show("ended", start=chose - hour, ended=chose + hour)) is False
+    assert sync.history(conn, show("live", start=chose - 30 * hour)) is False
+    assert sync.history(conn, show("scheduled", start=chose + hour)) is False
+    # An ended show Whatnot gives no end time for is judged by its start; with no time at
+    # all it is history (it never applies itself by accident).
+    assert sync.history(conn, show("ended", start=chose - hour)) is True
+    assert sync.history(conn, show("ended", start=chose + hour)) is False
+    assert sync.history(conn, show("ended")) is True
+    # A shop on "auto" since before this was recorded: the line is the day it connected.
+    conn.auto_since = None
+    assert sync.history(
+        conn, show("ended", start=chose - 9 * 24 * hour, ended=chose - 8 * 24 * hour)
+    )
+    assert not sync.history(conn, show("ended", start=chose - 3 * hour, ended=chose - hour))
+
+
+@pytest.mark.parametrize("ended_lately", [True, False])
+def test_without_a_webhook_the_timer_reads_an_ended_shows_parcels_in_full(
+    app, shop, monkeypatch, ended_lately
+):
+    """Production runs without the webhook for now. The Shipping page said the show's
+    packages "have not been read yet" until someone pressed Read again: the timer read the
+    orders of a show that had ended, but only the "show ended" webhook read its parcels."""
+    monkeypatch.delenv("JOBS_INLINE", raising=False)
+    from app.services import jobs
+    from app.services.whatnot import shipping
+
+    order(shop, "lani808", "Red bundle")
+    if not ended_lately:  # one of the weeks of shows a first connection reads
+        ended = shop["now"] - timedelta(days=10)
+        shop["fake"].shows[shop["wshow"]].update(
+            scheduled_start_at=(ended - timedelta(hours=2)).isoformat().replace("+00:00", "Z"),
+            ended_at=ended.isoformat().replace("+00:00", "Z"),
+        )
+    with app.app_context():
+        sync.schedule_all()
+        while (job := jobs.run_once("t")) is not None:  # the timer's pass, and what it queued
+            assert job.status.value == "done"
+        ws = db.session.scalar(select(WhatnotShow))
+        reads = db.session.scalars(select(Job).where(Job.kind == "whatnot_sync_shipments")).all()
+        asked = [j.payload.get("whatnot_show_id") for j in reads]
+        if ended_lately:
+            assert shop["wshow"] in asked and shipping._complete(shop["org"], ws) is True
+        else:  # never one old show at a time: the read of recent parcels covers it
+            assert shop["wshow"] not in asked and shipping._complete(shop["org"], ws) is False
+
+
+def test_only_the_next_few_shows_still_to_come_are_listed(app, client, shop, sign_in):
+    """The live shop's list held 44 "scheduled" shows, several dated days ago: the Shows
+    page opened with all of them above the shows the shop had recorded."""
+    sign_in(shop["org"], role="viewer")
+    now = datetime.now(UTC)
+    fake = shop["fake"]
+    for days in (9, 3, 2):
+        fake.add_show(
+            title=f"{days} days ago", status="scheduled", start=now - timedelta(days=days)
+        )
+    fake.add_show(title="An hour late", status="scheduled", start=now - timedelta(hours=1))
+    for days in range(4, 0, -1):
+        fake.add_show(title=f"In {days} days", status="scheduled", start=now + timedelta(days=days))
+    unset = fake.add_show(title="No time yet", status="scheduled")
+    fake.shows[unset["id"]]["scheduled_start_at"] = None
+    fake.add_show(title="Right now", status="live", start=now - timedelta(days=1))
+    read(app, shop, orders=False)
+    got = client.get("/api/whatnot/shows").get_json()
+    assert [s["title"] for s in got["live"]] == ["Right now"]
+    assert [s["title"] for s in got["upcoming"]] == [
+        "An hour late", "In 1 days", "In 2 days", "In 3 days", "In 4 days",
+    ]  # fmt: skip
+    for show in list(fake.shows.values()):  # two of them happen: room for the one with no time
+        if show["title"] in ("In 1 days", "In 2 days"):
+            show["status"] = "ended"
+    read(app, shop, orders=False)
+    got = client.get("/api/whatnot/shows").get_json()
+    assert [s["title"] for s in got["upcoming"]] == [
+        "An hour late", "In 3 days", "In 4 days", "No time yet",
+    ]  # fmt: skip

@@ -20,6 +20,7 @@ from ..models import (
 from ..services import audit, jobs, pipeline, ratelimit, sale_chat
 from ..services.whatnot import WhatnotError, connection
 from ..services.whatnot import orders as whatnot_orders
+from ..services.whatnot import sync as whatnot_sync
 
 bp = Blueprint("shows", __name__)
 
@@ -347,8 +348,8 @@ def whatnot_link(show_id: int):
         ws = db.session.get(WhatnotShow, target) if isinstance(target, int) else None
         if ws is None or ws.organization_id != g.u.organization_id:
             return jsonify({"error": "that Whatnot show was not found"}), 404
-    show.whatnot_show_id = ws.id if ws is not None else None
-    show.whatnot_link = "manual"
+    # A link is not chat arriving: the show's "last update" stays as it was.
+    whatnot_sync.tie(show, ws.id if ws is not None else None, "manual")
     audit.record(
         g.u.organization_id,
         "whatnot.show_linked",

@@ -171,9 +171,15 @@ commands.
   on the body (`webhooks.py`, stored once by `webhook-id`). Orders run through the
   payment-file engine (`whatnot/orders.py` → `reconcile.py`, actor `whatnot`):
   `orders_mode` "shadow" only compares (Payments tab, a person applies), "auto"
-  applies as they arrive; an order with no sale becomes one
+  applies as they arrive, but never a show that was over before "auto" was chosen
+  (`sync.history`, `auto_since`: a first connection reads weeks of old shows whose orders
+  keep changing); an order with no sale becomes one
   (`pipeline.create_sale_from_order`), and a later win line claims it
-  (`claim_order_sale`) instead of making a second. **One package and one label per
+  (`claim_order_sale`) instead of making a second. A recording belongs to the show its page address names
+  (`/live/<id>`); the clock is only the fallback, never for a recording made on another
+  stream's page when the show has its own (`sync.link_recordings`). A link is written with
+  `sync.tie`, which leaves `Show.updated_at` alone: that column means "chat last arrived"
+  (the Live pill, the show's length). **One package and one label per
   buyer per show** (`whatnot/shipping.py`): labels only after the show ended, never
   for a buyer in two open packages; label PDFs and links are fetched when printed
   and never stored (they show the address). Only the buyer's id and username are kept.

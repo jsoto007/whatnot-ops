@@ -3,6 +3,7 @@
 import json
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -30,7 +31,13 @@ DOC_HEADERS = {"webhook-id": DOC_ID, "webhook-timestamp": DOC_TS, "webhook-signa
 def connected(app, world, fake_whatnot):
     app.config["WHATNOT_WEBHOOK_SECRET"] = SECRET
     with app.app_context():
-        db.session.add(WhatnotConnection(organization_id=world["org"], seller_id="1234567"))
+        db.session.add(
+            WhatnotConnection(
+                organization_id=world["org"],
+                seller_id="1234567",
+                connected_at=datetime.now(UTC) - timedelta(days=1),  # before any show here
+            )
+        )
         db.session.commit()
     return world
 
