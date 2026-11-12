@@ -228,6 +228,27 @@ commands.
   `LEGAL_UPDATED` in `lib/legal.ts`, in the same PR that starts storing a new kind of
   data or sends data to a new service. The wording is a plain-language draft, not
   reviewed by a lawyer.
+- **Licence.** Proprietary (`LICENSE.md`): the shop owns its data, SotoDev owns
+  the software. Its promises are product rules: no client data in the repo
+  (fixtures stay synthetic; `claude-reports/` is gitignored), no Client Data to
+  an AI provider or tool not listed in §7.2/§7.4, and a new service that receives
+  Client Data is a subprocessor (update §7.4, keep "Who else handles it" on the
+  Privacy page saying the same, and tell Javier). After changing a runtime
+  dependency of `web/` or `extension/`, run `make licenses` (`make lint` and CI
+  fail while `THIRD_PARTY_LICENSES.txt` is out of date) and update
+  `NOTICE.md`; keep the copyright banners in `web/vite.config.ts` and
+  `extension/build.mjs`.
+- **Licence acceptance** (`services/licence.py`, `licence_acceptances`): the shop's
+  click-to-accept record (§2.2): version, who, when (UTC), client address, once per
+  shop per version, written with a conditional INSERT and audited. Sign-up refuses
+  without the box ticked; a shop with no record for the current version asks its
+  owners (never staff, never the IT support account) with a banner until one accepts
+  (`POST /api/auth/licence`, the version the page showed). Publishing a new
+  `LICENSE.md` version means changing `LICENCE_VERSION` beside it (a test keeps them
+  equal); every shop is then asked again. People read the terms at `/license`
+  (`pages/LicenceTerms.tsx` draws the served `LICENSE.md` with `components/Markdown.tsx`,
+  as text, never HTML): keep the file to the Markdown `lib/markdown.ts` knows, or the
+  sign-up browser test fails. The Privacy page lists this record.
 - Commits only when asked, on a feature branch; stage by path.
 
 ## Commands

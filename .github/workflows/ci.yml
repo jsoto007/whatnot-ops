@@ -90,6 +90,8 @@ jobs:
       - run: npm run test:e2e
       # Portal → download → pair → capture → parsed sales; needs the web app built.
       - run: npm ci --prefix ../web
+      # Both apps are installed now: THIRD_PARTY_LICENSES.txt must match what they ship.
+      - run: node ../scripts/third-party-licenses.mjs --check
       - run: npm run test:full
       - uses: actions/upload-artifact@v4
         if: failure()

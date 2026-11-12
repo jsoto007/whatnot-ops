@@ -234,6 +234,7 @@ def login_owner(client):
     client.post(
         "/api/auth/signup",
         json={
+            "acceptLicence": True,
             "organization": "Shop",
             "name": "O",
             "email": "o@shop.test",

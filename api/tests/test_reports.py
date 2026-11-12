@@ -144,6 +144,7 @@ def test_report_routes_and_permissions(client, app, world):
     client.post(
         "/api/auth/signup",
         json={
+            "acceptLicence": True,
             "organization": "O",
             "name": "O",
             "email": "o2@x.test",
@@ -314,6 +315,7 @@ def test_overview_report_defaults_to_recent_shows_and_refuses_a_range_too_wide(
     client.post(
         "/api/auth/signup",
         json={
+            "acceptLicence": True,
             "email": "rng@x.test",
             "name": "O",
             "organization": "Rng",

@@ -1,5 +1,5 @@
 from .models import AuditLog, Device, Invite, Organization, Show, User
-from .services import activity, rules
+from .services import activity, licence, rules
 from .services.admin import is_protected
 from .services.permissions import allowed, permissions_for
 
@@ -26,6 +26,7 @@ def me(u: User) -> dict:
         "user": user(u),
         "organization": organization(u.organization),
         "permissions": permissions_for(u.role),
+        "licence": licence.status(u),
     }
 
 

@@ -21,7 +21,13 @@ def sign_in(client, app, org_id):
     h = {"X-CSRF-Token": client.get("/api/auth/csrf").get_json()["token"]}
     client.post(
         "/api/auth/signup",
-        json={"organization": "O", "name": "O", "email": "o@x.test", "password": "correct-horse"},
+        json={
+            "acceptLicence": True,
+            "organization": "O",
+            "name": "O",
+            "email": "o@x.test",
+            "password": "correct-horse",
+        },
         headers=h,
     )
     with app.app_context():

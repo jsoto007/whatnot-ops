@@ -1,7 +1,17 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..db import db
@@ -101,3 +111,26 @@ class AuditLog(db.Model):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
+
+
+class LicenceAcceptance(db.Model):
+    """The shop's click to accept one version of LICENSE.md (services/licence.py): which
+    version, who clicked, when and from which address. One row per shop per version, so
+    a new version asks again and the earlier rows stay as the record of what bound the
+    shop until then. Rows are never changed or deleted."""
+
+    __tablename__ = "licence_acceptances"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "version", name="uq_licence_acceptances_org_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    version: Mapped[str] = mapped_column(String(16), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    accepted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    client_ip: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    user: Mapped[User] = relationship()

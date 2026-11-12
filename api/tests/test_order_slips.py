@@ -107,6 +107,7 @@ def signed_in(app, client, org_id):
     client.post(
         "/api/auth/signup",
         json={
+            "acceptLicence": True,
             "organization": "O",
             "name": "O",
             "email": "o@x.test",

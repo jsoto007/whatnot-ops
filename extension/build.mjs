@@ -24,6 +24,8 @@ await build({
   target: 'chrome120',
   outdir: out,
   sourcemap: test ? 'inline' : false,
+  // Copyright notice at the top of every file that lands on a laptop.
+  banner: { js: '/*! Chat Scraper (Sales Ops). Copyright (c) 2026 SotoDev. All rights reserved. Proprietary and confidential; use only under LICENSE.md. */' },
   logLevel: 'info',
 })
 
@@ -48,5 +50,7 @@ if (portals.length) {
 }
 writeFileSync(`${out}/manifest.json`, JSON.stringify(manifest, null, 2))
 for (const f of ['search.html', 'options.html', 'icon16.png', 'icon32.png', 'icon48.png', 'icon128.png']) cpSync(f, `${out}/${f}`)
+// The licence travels with the extension zip the portal hands out.
+for (const f of ['LICENSE.md', 'NOTICE.md', 'THIRD_PARTY_LICENSES.txt']) cpSync(`../${f}`, `${out}/${f}`)
 writeFileSync(`${out}/defaults.json`, JSON.stringify(defaults))
 console.log(`built ${out}/`)

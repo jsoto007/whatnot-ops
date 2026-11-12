@@ -218,6 +218,7 @@ def test_order_routes_and_permissions(client, app, world):
     client.post(
         "/api/auth/signup",
         json={
+            "acceptLicence": True,
             "organization": "O",
             "name": "O",
             "email": "o@x.test",
@@ -346,6 +347,7 @@ def test_order_list_keeps_the_newest_and_says_when_it_is_cut(client, app, world,
     client.post(
         "/api/auth/signup",
         json={
+            "acceptLicence": True,
             "email": "cut@x.test",
             "name": "O",
             "organization": "Cut",

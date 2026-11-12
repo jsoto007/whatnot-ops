@@ -301,6 +301,7 @@ def test_ai_status_and_audit_routes(client, app, world, fake_ai):
     client.post(
         "/api/auth/signup",
         json={
+            "acceptLicence": True,
             "organization": "Other",
             "name": "O",
             "email": "o@x.test",

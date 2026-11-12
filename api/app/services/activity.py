@@ -294,6 +294,12 @@ Describe = Callable[[dict, str], str]
 # action code -> (plain label, optional sentence from the details and the target's name)
 ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "org.created": ("Created the shop", None),
+    "licence.accepted": (
+        "Accepted the Sales Ops License and Data Terms",
+        lambda d, t: _with_ip(
+            f"Accepted the Sales Ops License and Data Terms, version {d['version']}", d
+        ),
+    ),
     "login": ("Signed in", lambda d, t: _with_ip("Signed in", d)),
     "login.failed": (
         "Wrong password",

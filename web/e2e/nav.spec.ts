@@ -11,6 +11,7 @@ async function signup(page: Page) {
   await page.getByLabel('Your name').fill('Olive Owner')
   await page.getByLabel('Email').fill(`nav-${id}@shop.test`)
   await page.getByLabel('Password (10+ characters)').fill(PW)
+  await page.getByLabel('I have read and accept the Sales Ops License and Data Terms').check()
   await page.getByRole('button', { name: 'Create shop' }).click()
   await expect(page).toHaveURL(/\/app$/)
 }
@@ -57,6 +58,12 @@ test('phone: top bar, drawer navigation, and no page wider than the screen', asy
     const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, viewport: window.innerWidth }))
     expect(widths.page, path).toBeLessThanOrEqual(widths.viewport)
   }
+  // The licence is a long document fetched after the page opens: measure it once it is drawn
+  // (its file names and one web address must wrap, not push the page sideways).
+  await page.goto('/license')
+  await expect(page.getByRole('heading', { level: 3, name: '22. Contact' })).toBeVisible()
+  const licence = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, viewport: window.innerWidth }))
+  expect(licence.page, '/license').toBeLessThanOrEqual(licence.viewport)
   await page.goto('/app')
   // Signed in, the footer closes the page too, below everything else.
   const footer = page.getByRole('contentinfo')

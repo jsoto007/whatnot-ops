@@ -138,8 +138,20 @@ def signups_open() -> bool:
 
 
 def signup(
-    org_name: str, name: str, email: str, password: str, setup_code: str | None = None
+    org_name: str,
+    name: str,
+    email: str,
+    password: str,
+    setup_code: str | None = None,
+    *,
+    accept_licence: object = False,
+    ip: str = "unknown",
 ) -> User:
+    """Create the shop and its first owner. The person must tick the box accepting the
+    licence (LICENSE.md §2.2); the shop's acceptance is recorded with it
+    (services/licence.py)."""
+    from . import licence
+
     open_, admin_only = signup_state()
     if not open_:
         raise AccountError(
@@ -164,6 +176,8 @@ def signup(
     org_name, name = text.typed(org_name, 120), text.typed(name, 120)
     if not org_name or not name:
         raise AccountError("shop name and your name are required")
+    if accept_licence is not True:
+        raise AccountError(f"tick the box to accept the {licence.LICENCE_TITLE}")
     if db.session.scalar(select(User.id).where(User.email == email)) is not None:
         raise AccountError("an account with that email already exists", 409)
     org = Organization(name=org_name, slug=slugify(org_name))
@@ -181,6 +195,7 @@ def signup(
     db.session.add(user)
     db.session.flush()
     audit.record(org.id, "org.created", user=user, target_type="organization", target_id=org.id)
+    licence.record(user, ip)
     db.session.commit()
     from .support import ensure_support_account
 

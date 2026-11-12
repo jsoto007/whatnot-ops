@@ -19,7 +19,13 @@ def signup(client, email="owner@shop.test", org="My Shop", name="Olive Owner", p
     h = csrf(client)
     return client.post(
         "/api/auth/signup",
-        json={"organization": org, "name": name, "email": email, "password": password},
+        json={
+            "acceptLicence": True,
+            "organization": org,
+            "name": name,
+            "email": email,
+            "password": password,
+        },
         headers=h,
     ), h
 
@@ -44,13 +50,25 @@ def test_signup_validates_input(client):
     h = csrf(client)
     r = client.post(
         "/api/auth/signup",
-        json={"organization": "x", "name": "y", "email": "nope", "password": PW},
+        json={
+            "acceptLicence": True,
+            "organization": "x",
+            "name": "y",
+            "email": "nope",
+            "password": PW,
+        },
         headers=h,
     )
     assert r.status_code == 400 and "email" in r.get_json()["error"]
     r = client.post(
         "/api/auth/signup",
-        json={"organization": "x", "name": "y", "email": "a@b.co", "password": "short"},
+        json={
+            "acceptLicence": True,
+            "organization": "x",
+            "name": "y",
+            "email": "a@b.co",
+            "password": "short",
+        },
         headers=h,
     )
     assert r.status_code == 400 and "10 characters" in r.get_json()["error"]
@@ -420,6 +438,7 @@ def test_only_the_admin_email_with_the_setup_code_can_create_the_shop_once(
         r = client.post(
             "/api/auth/signup",
             json={
+                "acceptLicence": True,
                 "organization": "My Shop",
                 "name": "Boss",
                 "email": "boss@shop.test",
@@ -432,6 +451,7 @@ def test_only_the_admin_email_with_the_setup_code_can_create_the_shop_once(
         r = client.post(
             "/api/auth/signup",
             json={
+                "acceptLicence": True,
                 "organization": "My Shop",
                 "name": "Boss",
                 "email": "boss@shop.test",

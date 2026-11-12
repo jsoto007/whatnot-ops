@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Icon } from '../../../components/Icon'
+import { LicenceLink } from '../../../components/Licence'
 import { Sheet } from '../../../components/Sheet'
 import { ApiError, api, apiGet, type Device } from '../../../lib/api'
 import { isNewer, useExtensionInfo, useThisLaptop } from '../../../lib/extension'
@@ -53,6 +54,9 @@ export function Laptops({ manage }: { manage: boolean }) {
             <p className="muted small">
               Download and unzip it. Open <code>chrome://extensions</code>, turn on <b>Developer mode</b>, click <b>Load unpacked</b> and pick the unzipped folder. It is already set to this web app.
               Keep that folder: updates go into it, so the laptop stays connected.
+            </p>
+            <p className="muted small" data-testid="extension-licence">
+              Chat Scraper is part of Sales Ops and is used under the <LicenceLink />; a copy comes in the download.
             </p>
             {laptop && (
               <p className="small" data-testid="this-laptop">
