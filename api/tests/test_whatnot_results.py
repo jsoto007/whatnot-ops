@@ -6,7 +6,8 @@ after its fees) is not something these tests can say. That is why the app shows 
 amounts and fees side by side and adds up only Whatnot's own signed lines.
 """
 
-from datetime import UTC, datetime, timedelta
+import re
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import func, select
@@ -390,6 +391,23 @@ def test_a_report_is_asked_for_once_while_one_is_being_built(app, shop):
         span = a.period_end - a.period_start
         assert timedelta(days=34) < span <= timedelta(days=35)  # the first read: five weeks
         assert results.ledger_due(shop["org"]) is True  # one is being built: keep looking
+
+
+def test_a_report_request_writes_its_times_the_way_whatnot_accepts(app, shop):
+    """The first read on the live shop was refused ("invalid-parameter"): a time must be
+    written with exactly three decimals and a "Z", not Python's six (or none)."""
+    at = datetime(2026, 11, 12, 5, 59, 25, 123456, tzinfo=UTC)
+    assert results._stamp(at) == "2026-11-12T05:59:25.123Z"
+    assert results._stamp(at.replace(microsecond=0)) == "2026-11-12T05:59:25.000Z"
+    new_york = timezone(timedelta(hours=-5))
+    assert results._stamp(at.astimezone(new_york)) == "2026-11-12T05:59:25.123Z"
+    read(app, shop, orders=False)
+    with app.app_context():
+        run = results.request(shop["org"], client_for(shop["org"]))  # the fake refuses others
+        db.session.commit()
+        sent = shop["fake"].reports[run.whatnot_id]["report_parameters"]
+        for name in ("start_date", "end_date"):
+            assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", sent[name])
 
 
 @pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line

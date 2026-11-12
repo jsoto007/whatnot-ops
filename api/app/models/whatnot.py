@@ -57,6 +57,9 @@ class WhatnotConnection(db.Model):
     orders_mode: Mapped[str] = mapped_column(
         String(8), nullable=False, default="shadow", server_default="shadow"
     )
+    # When "auto" was last chosen. A show that was over before then is never applied on
+    # its own (see whatnot/sync.history). Reconnecting does not change it.
+    auto_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     organization: Mapped[Organization] = relationship()
 

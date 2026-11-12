@@ -381,8 +381,8 @@ def apply_show_job(payload: dict) -> None:
             WhatnotShow.whatnot_id == payload["whatnot_show_id"],
         )
     )
-    if ws is None:
-        return
+    if ws is None or sync.history(conn, ws):
+        return  # over before the shop connected: a person may apply it, nothing else does
     show = sync.ensure_recording(ws)
     if show is None:
         return  # too early to tell whether a laptop is recording it; the next order retries

@@ -7,10 +7,12 @@ build, is in `claude-reports/Whatnot-Seller-API/one-stop-shop-plan-2026-11-10.md
 **Whatnot decides what was sold, whether it was paid and where a parcel is. The app decides
 which product it was, the gifts, and the picking and packing.**
 
-> **Not yet run against the live API.** Everything here is built from Whatnot's published
-> OpenAPI description (copies in `claude-reports/Whatnot-Seller-API/spec-2026-11-10/`) and
-> tested against an in-memory fake that follows it. Whatnot has no sandbox. The first live
-> step is `flask whatnot-probe` (below); read its answers before switching anything to "auto".
+> **Read from the live API since 2026-11-12, not yet run through a live show.** It is built
+> from Whatnot's published OpenAPI description (copies in
+> `claude-reports/Whatnot-Seller-API/spec-2026-11-10/`) and tested against an in-memory fake
+> that follows it. Whatnot has no sandbox. The probe and the first connection of the live
+> shop are written up under "Seen on the live shop" below; a whole show with the
+> connection on, labels and webhooks are still unverified.
 
 ## Setup
 
@@ -204,15 +206,38 @@ Rules that hold everywhere:
 - **Words, not codes, on screen** (`web/src/lib/labels.ts`); errors never name a setting, a
   scope or Whatnot's own text.
 
-## Not verified (no live call has been made)
+## Seen on the live shop (2026-11-12)
 
-`flask whatnot-probe` answers 1–6; the rest need a real show.
+The probe, then the first connection in "Compare only" (reads only; one show compared).
 
-1. Is the API's order id the "Order #" the Shipments scraper stores? (Decides whether old
-   scraped lots join.)
-2. Does the live page's address carry the show's id? (Today recordings are matched by time.)
-3. What do a "choose any" lot's title, SKU and product id look like in an order?
-4. Are `buyer` and `documents` filled with `read:customers`?
+- **Ids.** The API's order id is the 10-digit "Order #" of Seller Hub's Shipments page. A
+  show's id is a UUID, and a viewer's page address (`/live/<id>`) carries it: a recording
+  is tied to its show by that address, with the clock only as a fallback.
+- **Lots.** Every auction lot is its own listing, "CHOOSE ANY PRODUCT YOU WANT #N", with
+  no SKU; an order item names its product and variant ids. The inventory is thousands of
+  such listings, so the daily catalog read stops at its cap and links nothing by code.
+- **One show compared** (269 orders, 55 giveaways, 226 sales recorded here): every sale
+  found its order; 25 sales held as paid were payment-failed on Whatnot (47 of the 269
+  orders failed); 21 paid orders had no sale here. 11 of 162 buyers had more than one
+  package.
+- **Report requests** take times as `YYYY-MM-DDTHH:MM:SS.mmmZ` exactly (anything else is
+  a 422).
+- **A first connection reads weeks of ended shows.** Their orders keep changing for days,
+  so a show that was over before the shop chose "Apply as they arrive" is never applied
+  on its own (`sync.history`, `whatnot_connections.auto_since`); a person still can.
+- **Known limit.** Orders are listed newest first with no filter, and a catch-up stops at
+  3,000 orders: shows older than that are marked read although they were not. None of
+  them has a recording, and none is applied on its own.
+
+## Not verified
+
+The probe answered 1–4; the rest need a real show with the connection on.
+
+1. ~~Is the API's order id the "Order #" the Shipments scraper stores?~~ Yes.
+2. ~~Does the live page's address carry the show's id?~~ Yes for a viewer's page (one
+   show); the seller's own `/dashboard/live/` page is taken to carry it too, unverified.
+3. ~~What do a "choose any" lot's title, SKU and product id look like in an order?~~ See above.
+4. ~~Are `buyer` and `documents` filled with `read:customers`?~~ Yes, on every row read.
 5. What is a won auction's status at the win, and when does it become `pending_fulfillment`?
    (The app treats `pending` as "sold, payment still being taken".)
 6. Is the title in Whatnot's order exactly the title the video player shows? **This decides

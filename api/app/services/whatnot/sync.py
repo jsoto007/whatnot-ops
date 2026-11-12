@@ -15,9 +15,10 @@ newest first, until the orders are older than the show.
 """
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from ...db import db
@@ -59,6 +60,9 @@ RECORDING_LEAD = timedelta(minutes=30)
 RECORDING_LEAD_SCHEDULED = timedelta(hours=2)
 RECENT_SHOWS = timedelta(days=21)  # ended shows older than this are not re-read
 OPEN_ORDER_AGE = timedelta(days=14)
+# A show that ended this lately gets its parcels read in full by the timer (the first
+# connection reads weeks of ended shows: only the latest need their Shipping page ready).
+PARCELS_AFTER = timedelta(days=3)
 MAX_ORDER_PAGES = 60  # 3,000 orders in one catch-up; a show has a few hundred
 MAX_OPEN_REFRESH = 150  # orders re-read one by one per timer run
 SHOWS_EVERY = timedelta(minutes=15)
@@ -152,9 +156,36 @@ def _overlap(a_start, a_end, b_start, b_end) -> float:
     return (min(a_end, b_end) - max(a_start, b_start)).total_seconds()
 
 
+_STREAM = re.compile(r"/live/([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})", re.I)
+
+
+def _stream_of(url: str | None) -> str | None:
+    """The live stream a recording's address names (whatnot.com/live/<id>, or the seller's
+    /dashboard/live/<id>), when it names one. On the live shop that id is the show's own."""
+    found = _STREAM.search(url or "")
+    return found.group(1).lower() if found else None
+
+
+def tie(show: Show, whatnot_show_id: int | None, link: str | None) -> None:
+    """Point a recording at a Whatnot show (or at none) and leave `Show.updated_at` alone.
+    That column is when chat last arrived: the Live pill and the show's length are read
+    from it, and an ordinary write stamps "now" on it (a days-old show then read as live).
+    The statement names the column's own value, so a chat batch saved in the meantime
+    keeps its newer time."""
+    db.session.execute(
+        update(Show)
+        .where(Show.id == show.id)
+        .values(whatnot_show_id=whatnot_show_id, whatnot_link=link, updated_at=Show.updated_at)
+        .execution_options(synchronize_session=False)
+    )
+    db.session.expire(show, ["whatnot_show_id", "whatnot_link", "updated_at"])
+
+
 def link_recordings(org_id: int) -> int:
-    """Point each recent recording at the Whatnot show it is a recording of: the show that
-    was live while it was recording. A link a person chose is never changed."""
+    """Point each recent recording at the Whatnot show it is a recording of: the show its
+    address names, else the show that was live while it was recording. A recording made on
+    ANOTHER stream's page (someone watching a different seller) is never tied by the clock
+    to a show that has a recording of its own. A link a person chose is never changed."""
     since = datetime.now(UTC) - RECENT_SHOWS
     recordings = db.session.scalars(
         select(Show).where(
@@ -172,15 +203,35 @@ def link_recordings(org_id: int) -> int:
             WhatnotShow.status.in_(ACTIVE + ("ended",)),
         )
     ).all()
+    # The shows some recording was made on: its address names that show. Looked for over
+    # twice the window, so a show's own recording does not age out before the others do.
+    addresses = [
+        url.lower()
+        for url in db.session.scalars(
+            select(Show.source_url).where(
+                Show.organization_id == org_id,
+                Show.started_at >= since - RECENT_SHOWS,
+                Show.source_url.is_not(None),
+            )
+        )
+    ]
+    recorded = {
+        ws.id for ws in candidates if any(ws.whatnot_id.lower() in url for url in addresses)
+    }
     now = datetime.now(UTC)
     linked = 0
     for rec in recordings:
+        # Its address names a stream: only that stream's show, or one nobody recorded.
+        elsewhere = _stream_of(rec.source_url) is not None
         rec_start, rec_end = _recording_window(rec)
         best: tuple[float, WhatnotShow] | None = None
+        address = (rec.source_url or "").lower()
         for ws in candidates:
-            if rec.source_url and ws.whatnot_id in rec.source_url:
+            if address and ws.whatnot_id.lower() in address:
                 best = (float("inf"), ws)
                 break
+            if elsewhere and ws.id in recorded:
+                continue  # this show has its own recording, and this is not it
             # The earliest the show can have been live. `started_at` may only be its first
             # order (the show began at or before it); the scheduled time is a rough guess.
             began = ws.begins_at
@@ -193,8 +244,16 @@ def link_recordings(org_id: int) -> int:
                 best = (seconds, ws)
         target = best[1].id if best else None
         if target is not None and rec.whatnot_show_id != target:
-            rec.whatnot_show_id, rec.whatnot_link = target, "auto"
+            tie(rec, target, "auto")
             linked += 1
+        elif (
+            target is None
+            and rec.whatnot_link == "auto"
+            and elsewhere
+            and rec.whatnot_show_id in recorded
+        ):
+            # Tied by the clock earlier, before the show's own recording was known.
+            tie(rec, None, None)
     return linked
 
 
@@ -575,6 +634,20 @@ def sync_show_job(payload: dict) -> None:
     results.schedule_results(org_id, whatnot_show_id)  # and how Whatnot says the show did
 
 
+def history(conn: WhatnotConnection, ws: WhatnotShow) -> bool:
+    """The show was over before the shop chose "Apply as they arrive". Its orders are still
+    read (they keep changing for days: shipped, delivered) and a person may apply them
+    from the show's Payments tab, but they are never applied on their own: "as they
+    arrive" means from that choice on, not weeks of old shows turning into sales to sort
+    out. Reconnecting does not move the line (a show already being followed stays
+    followed). An ended show Whatnot gives no end time for is judged by its start, and
+    one with no time at all is history."""
+    if ws.status in ACTIVE:
+        return False
+    over = ws.ended_at or ws.begins_at
+    return over is None or over < (conn.auto_since or conn.connected_at)
+
+
 def _due(org_id: int, resource: str, every: timedelta) -> bool:
     last = connection.sync_state(org_id, resource).last_started_at
     return last is None or datetime.now(UTC) - last >= every
@@ -610,9 +683,13 @@ def sync_job(payload: dict) -> None:
         )
     ).all()
     changed: set[str | None] = set()
+    over: list[str] = []  # shows that ended lately and whose orders this pass read in full
+    now = datetime.now(UTC)
     for ws in (live if quiet else []) + unread:
         _run(org_id, "orders", lambda ws=ws: sync_show_orders(org_id, client, ws))
         changed.add(ws.whatnot_id)
+        if ws.status == "ended" and ws.ended_at and ws.ended_at >= now - PARCELS_AFTER:
+            over.append(ws.whatnot_id)
         db.session.commit()
     if _due(org_id, "open_orders", OPEN_ORDERS_EVERY):
         before = _open_by_show(org_id)
@@ -623,6 +700,11 @@ def sync_job(payload: dict) -> None:
     _after_orders(org_id, changed)
     from . import results, shipping
 
+    for whatnot_show_id in over:
+        # What the "show ended" webhook starts, for a shop whose webhooks are not set up
+        # (or did not arrive): this show's parcels read in full after it ended, so its
+        # Shipping page is ready without anyone pressing "Read again".
+        shipping.schedule(org_id, whatnot_show_id)
     if shipping.due(org_id):
         shipping.schedule(org_id)
     for whatnot_show_id in results.results_due(org_id):

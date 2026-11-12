@@ -361,6 +361,14 @@ def _span(org_id: int) -> tuple[datetime, datetime]:
     return max(start, now - timedelta(days=90)), now
 
 
+def _stamp(at: datetime) -> str:
+    """A time the way a report request must carry it: UTC, exactly three decimals, "Z".
+    Whatnot refuses anything else (Python's own six decimals, or none) as an invalid
+    parameter; seen on the live API, 2026-11-12."""
+    at = at.astimezone(UTC)
+    return f"{at:%Y-%m-%dT%H:%M:%S}.{at.microsecond // 1000:03d}Z"
+
+
 def _expire_stale_runs(org_id: int) -> None:
     """A report Whatnot never finished must not block the ledger for good: after six hours
     it is given up, and the next read asks for a new one."""
@@ -401,8 +409,8 @@ def request(org_id: int, client: WhatnotClient, *, user=None) -> WhatnotReport:
     body = {
         "report_parameters": {
             "report_type": REPORT,
-            "start_date": start.isoformat().replace("+00:00", "Z"),
-            "end_date": end.isoformat().replace("+00:00", "Z"),
+            "start_date": _stamp(start),
+            "end_date": _stamp(end),
         }
     }
     # Whatnot returns the run already in flight for an identical request, so sending this

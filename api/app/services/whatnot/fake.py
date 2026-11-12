@@ -12,6 +12,7 @@ when this was written). Say so when quoting what a test here proves.
 
 import base64
 import itertools
+import re
 import uuid
 from collections import deque
 from datetime import UTC, datetime, timedelta
@@ -25,6 +26,8 @@ TOKEN = "wn_pat_tk_test"
 # here instead of written out so a secret scanner does not take a documentation example
 # for a leaked key.
 EXAMPLE_WEBHOOK_SECRET = "wn_wh_" + base64.b64encode(bytes(range(1, 33))).decode()
+# How a report request must write a time (FinancialReportParameters in the API description).
+_REPORT_TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$")
 
 
 def _iso(t: datetime | None) -> str | None:
@@ -622,6 +625,11 @@ class FakeWhatnot:
             "analytics_livestreams_report",
         ):
             return self._problem(422, "invalid-parameter", param="report_type")
+        for name in ("start_date", "end_date"):
+            # The pattern in Whatnot's API description; the live API enforces it.
+            value = parameters.get(name)
+            if value is not None and not (isinstance(value, str) and _REPORT_TIME.match(value)):
+                return self._problem(422, "invalid-parameter", param=name)
         now = self.tick()
         report_id = str(uuid.uuid4())
         self.reports[report_id] = {
