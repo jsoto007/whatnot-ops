@@ -24,9 +24,13 @@ def test_not_ready_before_any_migration(app, monkeypatch):
 def test_not_ready_while_the_database_is_behind(app, monkeypatch):
     scripts = worker._scripts()
     head = scripts.get_revision(scripts.get_current_head())
-    monkeypatch.setattr(worker, "_db_revision", lambda: head.down_revision)
-    with app.app_context():
-        assert worker.schema_ready() is False
+    # The head may be a merge revision (0027): then it has several parents, and a
+    # database standing on any one of them is behind.
+    parents = head.down_revision if isinstance(head.down_revision, tuple) else (head.down_revision,)
+    for behind in parents:
+        monkeypatch.setattr(worker, "_db_revision", lambda behind=behind: behind)
+        with app.app_context():
+            assert worker.schema_ready() is False, behind
 
 
 def test_ready_when_the_database_is_ahead_of_this_code(app, monkeypatch):
