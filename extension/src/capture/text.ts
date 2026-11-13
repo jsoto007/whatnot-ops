@@ -39,6 +39,9 @@ export interface SplitRow {
 const avatarLetter = (s: string[]): boolean =>
   s.length >= 3 && s[0]!.length === 1 && s[0]!.toLowerCase() === s[1]![0]!.toLowerCase() && USERNAME.test(s[1]!)
 
+/** Labels Whatnot shows right after a name, each its own element ("Mod", "Returning Buyer"): not the message. */
+const BADGES = new Set(['Mod', 'New Buyer', 'Returning Buyer'])
+
 /**
  * Best-effort username/body split. Whatnot renders the username in its own
  * element before the message, so the first text segment is the username when
@@ -49,7 +52,9 @@ export function splitRow(all: string[], rawText: string): SplitRow {
   const segments = avatarLetter(all) ? all.slice(1) : all
   const first = segments[0]
   if (segments.length >= 2 && first && USERNAME.test(first.replace(/:$/, ''))) {
-    return { username: first.replace(/:$/, ''), body: segments.slice(1).join(' ') }
+    let i = 1
+    while (i < segments.length - 1 && BADGES.has(segments[i]!)) i++
+    return { username: first.replace(/:$/, ''), body: segments.slice(i).join(' ') }
   }
   const m = /^([A-Za-z0-9._-]{1,40}):\s+(.+)$/.exec(rawText)
   if (m) return { username: m[1]!, body: m[2]! }

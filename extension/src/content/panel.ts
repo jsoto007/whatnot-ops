@@ -5,6 +5,8 @@ import { type DotState, type Notice, stockNotice } from './status'
 export const HOST_ID = 'cs-host'
 /** How long a notification stays up unless clicked away, and how long its fade takes. */
 export const NOTICE_MS = 5000
+/** A win stays up longer than a stock notice: it is the one the host looks for. */
+export const WIN_NOTICE_MS = 10000
 const NOTICE_FADE_MS = 450
 /** A notification the pointer rested on goes this long after it leaves. */
 const NOTICE_HOLD_MS = 1500
@@ -535,8 +537,14 @@ export class Panel {
    */
   notify(n: Notice): HTMLElement {
     const box = this.el('toasts')
-    while (box.children.length >= NOTICE_MAX) this.remove(box.firstElementChild as HTMLElement)
     const doc = box.ownerDocument
+    // Full: a stock notice goes first, so low-stock news never pushes a win out. With only wins
+    // up, a stock notice is not shown (the panel's own low-stock line still says it).
+    while (box.children.length >= NOTICE_MAX) {
+      const old = box.querySelector<HTMLElement>('[data-group="stock"]') ?? (n.group ? null : (box.firstElementChild as HTMLElement))
+      if (!old) return doc.createElement('div')
+      this.remove(old)
+    }
     const el = doc.createElement('div')
     el.className = `toast glass ${n.kind}` + (n.urgent ? ' urgent' : '')
     if (n.group) el.dataset.group = n.group
@@ -553,7 +561,7 @@ export class Panel {
     tx.append(b, s)
     el.append(ic, tx)
     box.append(el)
-    this.arm(el, NOTICE_MS)
+    this.arm(el, n.kind === 'win' ? WIN_NOTICE_MS : NOTICE_MS)
     el.addEventListener('pointerenter', () => this.disarm(el))
     el.addEventListener('pointerleave', () => this.arm(el, NOTICE_HOLD_MS))
     return el

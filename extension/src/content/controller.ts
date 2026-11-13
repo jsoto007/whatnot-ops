@@ -46,6 +46,12 @@ const PAGE_POLL_MS = 1000
  */
 const SELLER_LIVE = /^\/dashboard\/live\//
 const NO_WINS_HERE = 'Winners are not shown on the seller page. Record from the show opened in a buyer account.'
+/**
+ * No chat line for this long while the chat is on screen: Whatnot's chat may be scrolled up, and
+ * then it adds few or no new lines (the 2026-11-13 show: about 3 minutes lost on one laptop).
+ */
+export const QUIET_MS = 120_000
+const QUIET = "No new chat for 2 minutes. If Whatnot's chat is scrolled up, click its arrow to jump to the latest messages."
 /** Find buyer refreshes at most this often while new lines arrive. */
 export const FIND_MS = 300
 /** Watch words apply this long after the last keystroke. */
@@ -85,6 +91,9 @@ export class Controller {
   private declines: DeclineWatcher | null = null
   private lastPageScan = 0
   private winTimer: ReturnType<typeof setInterval> | null = null
+  /** When the last chat line arrived, and whether the panel says the chat went quiet. */
+  private lastChatAt = 0
+  private quiet = false
   private stockTimer: ReturnType<typeof setInterval> | null = null
   /** Last stock poll of this recording; null until the first one (the baseline). */
   private stockSeen: StockSeen | null = null
@@ -350,8 +359,13 @@ export class Controller {
     this.endCapture()
     const rec = new Recorder(this.startedAt!, { ignore: (n) => this.panel.contains(n) })
     rec.on((ev) => {
-      if (ev.type === 'row') return this.onRow(ev.row)
+      if (ev.type === 'row') {
+        this.chatArrived()
+        return this.onRow(ev.row)
+      }
       if (ev.type === 'healed') {
+        this.lastChatAt = Date.now() // the chat was away, not quiet
+        this.quiet = false
         this.panel.setStatus('Chat re-rendered; found the messages again.', 'good')
         if (this.spot && this.spot.selectors[0] !== ev.selector) {
           const rest = this.spot.selectors.filter((s) => s !== ev.selector)
@@ -367,6 +381,8 @@ export class Controller {
       this.render()
     })
     this.recorder = rec
+    this.lastChatAt = Date.now()
+    this.quiet = false
     // Whole show: whatever chat is still on screen is already saved. Wins are not chat lines.
     const known = this.log.filter((r) => r.source !== 'player').map((r) => r.rawText)
     if (box) rec.start(box, spot.selectors[0]!, this.log.length, known)
@@ -410,6 +426,7 @@ export class Controller {
   /** `timer`: the periodic check, which also looks outside the player for declines. */
   private checkPlayer(timer = false): void {
     if (!this.wins) return // not recording (a late observer callback after Stop)
+    if (timer) this.checkQuiet()
     this.watchPlayer()
     const rows: CapturedRow[] = []
     const win = this.wins.check(document)
@@ -426,6 +443,20 @@ export class Controller {
       if (notice) void this.whoWon(row, this.panel.notify(notice))
     }
     this.renderWins()
+  }
+
+  private checkQuiet(): void {
+    if (this.quiet || !this.recorder?.attached || Date.now() - this.lastChatAt < QUIET_MS) return
+    this.quiet = true
+    this.panel.setStatus(QUIET, 'info')
+  }
+
+  private chatArrived(): void {
+    this.lastChatAt = Date.now()
+    if (!this.quiet) return
+    this.quiet = false
+    // Only take back our own words: another status may have replaced them meanwhile.
+    if (this.panel.el('st').textContent === QUIET) this.panel.setStatus('Watching chat.', 'good')
   }
 
   /**
