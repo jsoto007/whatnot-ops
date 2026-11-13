@@ -389,7 +389,7 @@ test('minimises to a pill with the dot and the count; the menu holds what a show
   await expect(notice).toContainText('chonwhite828 won · $12.00')
   await expect(notice).toContainText('Lot #900')
   await expect(page.locator(panel('#pcnt'))).toHaveText('12')
-  await expect(notice).toBeHidden({ timeout: 8_000 })
+  await expect(notice).toBeHidden({ timeout: 13_000 }) // a win stays up 10 s (WIN_NOTICE_MS)
   await expect(page.locator(panel('#pdot'))).toHaveClass(/bad/) // the pill's dot says the same as the header's
   await page.locator(panel('#pill')).click()
   await expect(page.locator(panel('#p'))).toBeVisible()
