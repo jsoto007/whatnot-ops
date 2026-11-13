@@ -113,7 +113,34 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
             elif status == "unknown":
                 row.action, row.note = "skip", "an order state the app does not know"
             rows.append(row)
+    _skip_retried(rows)
     return rows, info
+
+
+def _skip_retried(rows: list[Row]) -> None:
+    """A card declined at the win and then paid on a retry is two orders on Whatnot: a failed
+    one, then a paid (or settling) one for the same win (the 2026-11-13 show: 10 of 20 lots).
+    The failed order is history, not a decline: left in, it would decline the win's sale while
+    the paid order recorded the win a second time. `rows` is oldest first; one pass from the
+    newest keeps each buyer's later payments, so the cost is linear in practice."""
+    paid_later: dict[str, list[Row]] = {}
+    for row in reversed(rows):
+        if row.action:  # already left out
+            continue
+        buyer = row.buyer.lower()
+        if row.status in ("paid", "pending"):
+            paid_later.setdefault(buyer, []).append(row)
+        elif row.status == "failed" and row.ordered_at is not None:
+            for paid in paid_later.get(buyer, ()):
+                # Both times known, so a retry is always within `same_win`'s half hour.
+                if paid.ordered_at is not None and pipeline.same_win(
+                    row.item, row.price_cents, row.ordered_at,
+                    paid.item, paid.price_cents, paid.ordered_at,
+                ) is not None:  # fmt: skip
+                    # The win's sale may already be tied to the failed order: the payment is its.
+                    paid.sale_hint = paid.sale_hint or row.sale_hint
+                    row.action, row.note = "skip", "declined, then paid in a later order"
+                    break
 
 
 def _complete(ws: WhatnotShow) -> bool:

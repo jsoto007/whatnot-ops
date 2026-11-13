@@ -2,7 +2,7 @@ from . import clean  # noqa: F401 - registers the free-text cleaners
 from .accounts import AuditLog, Invite, LicenceAcceptance, PasswordReset, Role, User
 from .ai import AiCall
 from .buyers import Buyer, BuyerName
-from .core import ChatMessage, Device, DevicePairing, Organization, RateLimit, Show
+from .core import ChatMessage, Device, DevicePairing, Organization, RateLimit, Show, ShowShelf
 from .inventory import InventoryMovement, MovementKind, Product, ProductAlias, Sku
 from .orders import Order, OrderStatus
 from .sales import (
@@ -57,6 +57,7 @@ __all__ = [
     "Sale",
     "SaleStatus",
     "Show",
+    "ShowShelf",
     "Sku",
     "User",
     "WhatnotConnection",

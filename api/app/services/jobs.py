@@ -114,7 +114,7 @@ def run_job(job_id: int, worker: str = "inline") -> Job:
         db.session.rollback()
         job = db.session.get(Job, job_id)
         job.error = error_line(e)[:2000]  # no row values from a database error's DETAIL
-        if job.attempts >= job.max_attempts:
+        if job.attempts >= job.max_attempts or getattr(e, "final", False):
             job.status = JobStatus.failed
             job.finished_at = datetime.now(UTC)
             log.error("job %s %s failed for good: %s", job.id, job.kind, job.error)

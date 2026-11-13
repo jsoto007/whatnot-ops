@@ -151,15 +151,17 @@ function ShowQueue({ group, elsewhere, skus, onDone }: { group: ShowGroup | unde
           )}
         </div>
       ) : (
-        visible.map((it) => <Item key={it.id} item={it} skus={skus} onDone={onDone} />)
+        // A shelf suggestion that arrives later starts the item afresh (its picker and "remember").
+        visible.map((it) => <Item key={`${it.id}:${it.shelf?.skuId ?? ''}`} item={it} skus={skus} onDone={onDone} />)
       )}
     </section>
   )
 }
 
 function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onDone: () => Promise<unknown> }) {
-  const [skuId, setSkuId] = useState('')
-  const [remember, setRemember] = useState(true)
+  // The spot the winner typed is a choice for this win, not a name for the product: not remembered.
+  const [skuId, setSkuId] = useState(item.shelf ? String(item.shelf.skuId) : '')
+  const [remember, setRemember] = useState(!item.shelf)
   const [error, setError] = useState<string | null>(null)
   const resolve = useMutation({
     mutationFn: (body: Record<string, unknown>) => api('POST', `/api/review/${item.id}/resolve`, body),
@@ -202,6 +204,11 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
       <div className="inline-form">
         {(item.reason === 'unmatched_item' || item.reason === 'insufficient_stock') && (
           <>
+            {item.shelf && (
+              <p className="small" data-testid="shelf-pick">
+                Typed <b>{item.shelf.spot}</b> in chat: {item.shelf.name} on this show’s shelves.
+              </p>
+            )}
             <div className="sku-field">
               <span className="sku-label">SKU</span>
               <SkuPicker skus={skus} value={skuId} onChange={setSkuId} label={`SKU for review ${item.id}`} />

@@ -3,6 +3,7 @@ export const fmtLongDate = (iso: string) => new Date(iso + 'T12:00:00').toLocale
 /** The shop's zone (America/Chicago): show times read the same on every laptop. */
 export const SHOP_TZ = 'America/Chicago'
 export const fmtShopTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit', timeZone: SHOP_TZ })
+export const fmtShopClock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: SHOP_TZ })
 /** "10-31-2026": how the shop's order slips write the auction date. */
 export const sheetDate = (iso: string) => {
   const [y, m, d] = iso.split('-')

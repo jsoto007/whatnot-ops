@@ -151,3 +151,65 @@ describe('Find buyer', () => {
     c.destroy()
   })
 })
+
+describe('wins line', () => {
+  it("says the seller's live page shows no winners, until a win is read", async () => {
+    stubChrome()
+    const { Controller } = await import('../src/content/controller')
+    const c = new Controller()
+    const priv = c as unknown as { wins: object | null; log: CapturedRow[]; renderWins(): void }
+    const line = () => (c.panel.el('wins').hidden ? '' : c.panel.el('wins').textContent)
+    history.replaceState(null, '', '/dashboard/live/show-1')
+    priv.renderWins()
+    expect(line()).toBe('') // not recording
+    priv.wins = {}
+    priv.renderWins()
+    expect(line()).toContain('Winners are not shown on the seller page')
+    const body = 'kat.c won the auction for CHOOSE ANY PRODUCT YOU WANT #11 for $13.00'
+    priv.log = [{ ...row(1), username: '', body, rawText: body, source: 'player' }]
+    priv.renderWins()
+    expect(line()).toBe(`wins 1 · last: ${body}`)
+    history.replaceState(null, '', '/live/show-1')
+    priv.log = []
+    priv.renderWins()
+    expect(line()).toBe('') // the buyer's page: nothing to warn about
+    c.destroy()
+  })
+})
+
+describe('quiet chat', () => {
+  it('says so after two minutes without a chat line, on the timer, and takes it back when chat arrives', async () => {
+    stubChrome()
+    const { Controller, QUIET_MS } = await import('../src/content/controller')
+    const c = new Controller()
+    const priv = c as unknown as {
+      wins: { check(): null } | null
+      recorder: { attached: boolean } | null
+      lastChatAt: number
+      checkPlayer(timer?: boolean): void
+      chatArrived(): void
+    }
+    const status = () => c.panel.el('st').textContent
+    priv.wins = { check: () => null } // recording, no win on screen
+    priv.recorder = { attached: false }
+    priv.lastChatAt = Date.now() - QUIET_MS
+    priv.checkPlayer(true)
+    expect(status()).not.toContain('No new chat') // the chat is not on screen: that has its own line
+    priv.recorder = { attached: true }
+    priv.checkPlayer() // a change in the player is not the timer
+    expect(status()).not.toContain('No new chat')
+    priv.checkPlayer(true)
+    expect(status()).toContain('No new chat for 2 minutes')
+    priv.chatArrived()
+    expect(status()).toBe('Watching chat.')
+    // Another status replaced the words: a chat line leaves that one alone.
+    priv.lastChatAt = Date.now() - QUIET_MS
+    priv.checkPlayer(true)
+    c.panel.setStatus('Downloaded 12 messages.', 'good')
+    priv.chatArrived()
+    expect(status()).toBe('Downloaded 12 messages.')
+    priv.recorder = null
+    priv.wins = null
+    c.destroy()
+  })
+})

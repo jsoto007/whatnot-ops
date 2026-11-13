@@ -127,7 +127,8 @@ commands.
   app.worker`. `parse_show` is claimed before other kinds; `requeue_stale`
   fails a stale `running` job whose last allowed attempt never finished
   (instead of re-queueing a job that kills its worker forever). The worker
-  survives a database outage (backs off) and never exits on one.
+  survives a database outage (backs off) and never exits on one. An error marked
+  `final` (Whatnot's `Invalid`: a 4xx request error) fails its job at once.
 - **Migrations.** `flask db migrate` prints the generated path — rename
   *that* file (never `ls -t`), and when a downgrade drops tables that use
   Postgres enums, drop the enum types too (see 0004).
@@ -146,6 +147,12 @@ commands.
   comes from the lot title (`rules.lot_label`); "Gift N" is
   `Sale.gift_count`, set only by a person; giveaways are "Gift" rows and
   count as items.
+- **Shelves** (`services/shelves.py`, `show_shelves`, the show's Shelves tab):
+  optional per-show layout, "B4" = shelf B spot 4 → a product, laid out by
+  people with `review.act`. Review only *suggests* the product on the spot a
+  winner typed in their own latest line after the win (never remembered as a
+  name); a person applies it. Its own table, so saving never moves
+  `Show.updated_at`.
 - **Whatnot shipments** (`services/shipments.py`, `POST /api/ingest/shipments`,
   `extension/src/shipments/`): after a show the host opens Seller Hub →
   Shipments, picks the show in Whatnot's show filter and presses "Send
@@ -173,7 +180,8 @@ commands.
   `orders_mode` "shadow" only compares (Payments tab, a person applies), "auto"
   applies as they arrive, but never a show that was over before "auto" was chosen
   (`sync.history`, `auto_since`: a first connection reads weeks of old shows whose orders
-  keep changing); an order with no sale becomes one
+  keep changing); a failed order that a later paid order of the same win retried is left
+  out (`orders._skip_retried`); an order with no sale becomes one
   (`pipeline.create_sale_from_order`), and a later win line claims it
   (`claim_order_sale`) instead of making a second. A recording belongs to the show its page address names
   (`/live/<id>`); the clock is only the fallback, never for a recording made on another
@@ -216,7 +224,8 @@ commands.
   and no money.
 - **Numbers.** Dashboard tiles and the Excel sheets both read
   `services/dashboard.py`; add a metric there, never inline in a route or
-  the workbook builder. Reports are built synchronously with openpyxl
+  the workbook builder. The gifts tile counts Whatnot's giveaway orders for a
+  show linked to Whatnot, else the host/platform chat lines. Reports are built synchronously with openpyxl
   (`services/reports.py`); move them to a job if a shop outgrows that.
 - **AI** only proposes. Providers implement `ai/base.py::AiProvider` and are
   chosen by `AI_PROVIDER` (`claude` via the official `anthropic` SDK with

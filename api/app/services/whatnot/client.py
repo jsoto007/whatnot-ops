@@ -42,6 +42,8 @@ class WhatnotError(Exception):
     #: What our own route answers with: 409 when the request cannot be done as things
     #: stand, 502 when the trouble is on the way to Whatnot (its answer, or our access).
     http_status = 409
+    #: The same request can never work (a 4xx request error): a job fails at once, not 5 times.
+    final = False
 
     def __init__(
         self,
@@ -91,6 +93,7 @@ class Conflict(WhatnotError):
 
 class Invalid(WhatnotError):
     words = "Whatnot did not accept that request."
+    final = True
 
 
 class Busy(WhatnotError):
@@ -103,7 +106,16 @@ class Unavailable(WhatnotError):
     http_status = 502
 
 
-_BY_STATUS = {401: Unauthorized, 403: Forbidden, 404: NotFound, 409: Conflict, 429: Busy}
+# 408 and 425 say "try again later", like a 5xx: not a request error (see `final`).
+_BY_STATUS = {
+    401: Unauthorized,
+    403: Forbidden,
+    404: NotFound,
+    408: Unavailable,
+    409: Conflict,
+    425: Unavailable,
+    429: Busy,
+}
 
 # A problem type that says something more useful than its status code does.
 PROBLEM_WORDS = {

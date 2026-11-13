@@ -120,3 +120,12 @@ test('an unrecognised item is matched to a SKU by searching the catalogue, then 
   await waitFor(() => expect(posts).toHaveLength(1))
   expect(posts[0]).toEqual({ url: '/api/review/7/resolve', body: { action: 'assign_sku', skuId: 4, remember: true } })
 })
+
+test('a winner who typed a shelf spot gets that product suggested, not remembered as a name', async () => {
+  const posts = mount([{ ...item, shelf: { spot: 'B4', skuId: 4, name: 'Holo slab Charizard' } }], '/app/review/3')
+  expect(await screen.findByTestId('shelf-pick')).toHaveTextContent('Typed B4 in chat: Holo slab Charizard')
+  expect(screen.getByRole('checkbox', { name: /remember this name/ })).not.toBeChecked()
+  fireEvent.click(screen.getByRole('button', { name: 'Use this SKU' }))
+  await waitFor(() => expect(posts).toHaveLength(1))
+  expect(posts[0]!.body).toEqual({ action: 'assign_sku', skuId: 4, remember: false })
+})

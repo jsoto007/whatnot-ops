@@ -1,4 +1,4 @@
-import { NOTICE_MAX, NOTICE_MS, Panel, clampLayout, readLayout } from '../src/content/panel'
+import { NOTICE_MAX, NOTICE_MS, Panel, WIN_NOTICE_MS, clampLayout, readLayout } from '../src/content/panel'
 
 const item = (code: string, name: string, available: number, skuId = 1) => ({ skuId, code, name, available })
 const notices = (p: Panel) => [...p.el('toasts').children] as HTMLElement[]
@@ -44,13 +44,13 @@ describe('panel notifications', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
-  it('shows a notice for five seconds, then fades it out', () => {
+  it('shows a win for ten seconds, then fades it out', () => {
     const p = new Panel(document)
     p.notify({ kind: 'win', title: 'tiffybid won · $19.00', detail: '$1 BEAUTY PULLS #1290' })
     const [n] = notices(p)
     expect(n!.textContent).toBe('tiffybid won · $19.00$1 BEAUTY PULLS #1290')
     expect(n!.className).toBe('toast glass win')
-    vi.advanceTimersByTime(NOTICE_MS - 1)
+    vi.advanceTimersByTime(WIN_NOTICE_MS - 1)
     expect(n!.classList.contains('gone')).toBe(false)
     vi.advanceTimersByTime(1)
     expect(n!.classList.contains('gone')).toBe(true)
@@ -64,7 +64,7 @@ describe('panel notifications', () => {
     p.amend(n, 'Back again · 12 items over 5 shows')
     expect(n.textContent).toBe('lani808 won · $25.00Lot #7Back again · 12 items over 5 shows')
     expect(n.querySelector('.more')!.textContent).toBe('Back again · 12 items over 5 shows')
-    vi.advanceTimersByTime(NOTICE_MS)
+    vi.advanceTimersByTime(WIN_NOTICE_MS)
     p.amend(n, 'too late')
     expect(n.textContent).not.toContain('too late')
   })
@@ -86,6 +86,26 @@ describe('panel notifications', () => {
     notices(p)[1]!.click()
     vi.advanceTimersByTime(500)
     expect(titles(p)).toEqual(['1 left', '3 left'])
+  })
+
+  it('a win stays up longer than a stock notice, and low stock never pushes it out', () => {
+    const p = new Panel(document)
+    p.notify({ kind: 'win', title: 'x won · $1.00', detail: 'Lot' })
+    for (let i = 0; i < NOTICE_MAX + 1; i++) p.notify({ kind: 'out', title: `Sold out ${i}`, detail: 'Mug', group: 'stock' })
+    expect(titles(p)).toEqual(['x won · $1.00', 'Sold out 2', 'Sold out 3'])
+    vi.advanceTimersByTime(NOTICE_MS + 500)
+    expect(titles(p)).toEqual(['x won · $1.00'])
+    vi.advanceTimersByTime(WIN_NOTICE_MS - NOTICE_MS)
+    expect(titles(p)).toEqual([])
+  })
+
+  it('with three wins up, a stock notice waits instead of pushing a win out', () => {
+    const p = new Panel(document)
+    for (let i = 0; i < NOTICE_MAX; i++) p.notify({ kind: 'win', title: `w${i}`, detail: 'Lot' })
+    p.notify({ kind: 'out', title: 'Sold out', detail: 'Mug', group: 'stock' })
+    expect(titles(p)).toEqual(['w0', 'w1', 'w2'])
+    p.notify({ kind: 'win', title: 'w3', detail: 'Lot' })
+    expect(titles(p)).toEqual(['w1', 'w2', 'w3'])
   })
 
   it('a notice the pointer rests on waits', () => {

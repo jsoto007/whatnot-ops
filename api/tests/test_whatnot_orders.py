@@ -30,6 +30,7 @@ from app.models import (
     WhatnotShow,
 )
 from app.services import activity, pipeline
+from app.services.reconcile import Row
 from app.services.whatnot import client_for, sync, webhooks
 from app.services.whatnot import orders as whatnot_orders
 from app.services.whatnot.fake import EXAMPLE_WEBHOOK_SECRET
@@ -401,6 +402,58 @@ def test_giveaways_are_not_sales(app, shop):
     rows, _, result = compare(app, shop)
     assert rows == [] and result["info"]["giveaways"] == 1
     assert apply(app, shop) == {} and sale_rows(app) == []
+
+
+def retried(shop, buyer, title, price, fails=1):
+    """A card declined at the win, then paid on a retry: Whatnot keeps each attempt as an
+    order of its own (the 2026-11-13 show: 10 of 20 lots), failed ones first."""
+    now = datetime.now(UTC)
+    for i in range(fails):
+        o = order(shop, buyer, title, price, created=now - timedelta(seconds=90 - 10 * i))
+        shop["fake"].set_order_status(o["id"], "failed")
+    return order(shop, buyer, title, price, created=now - timedelta(seconds=20))
+
+
+def test_a_win_declined_then_paid_on_a_retry_is_neither_declined_nor_recorded_twice(app, shop):
+    lot1, lot6 = "CHOOSE ANY PRODUCT YOU WANT #1", "CHOOSE ANY PRODUCT YOU WANT #6"
+    shop["say"](app, [win("lani808", lot1, "11.00"), win("pokemom_22", lot6, "13.00")])
+    run(app, shop["show"])
+    before = sale_rows(app)
+    retried(shop, "lani808", lot1, 1100)
+    retried(shop, "pokemom_22", lot6, 1300, fails=2)
+    read(app, shop)
+    rows, _, _ = compare(app, shop)
+    assert [a for _, s, a in rows if s == "failed"] == ["skip"] * 3
+    assert [a for _, s, a in rows if s == "paid"] == ["unchanged", "unchanged"]  # no "record"
+    apply(app, shop)
+    assert [r[:4] for r in sale_rows(app)] == [r[:4] for r in before]  # nothing declined or added
+
+
+def test_a_failed_order_for_another_lot_is_still_a_decline(app, shop):
+    lot6, lot7 = "CHOOSE ANY PRODUCT YOU WANT #6", "CHOOSE ANY PRODUCT YOU WANT #7"
+    shop["say"](app, [win("pokemom_22", lot6, "13.00"), win("pokemom_22", lot7, "13.00")])
+    run(app, shop["show"])
+    failed = order(shop, "pokemom_22", lot6, 1300)
+    shop["fake"].set_order_status(failed["id"], "failed")
+    order(shop, "pokemom_22", lot7, 1300)  # paid, but for the other win
+    read(app, shop)
+    apply(app, shop)
+    assert [(r[1], r[2]) for r in sale_rows(app)] == [(lot6, "payment_failed"), (lot7, "detected")]
+
+
+def test_a_retry_paid_after_the_decline_was_applied_restores_the_sale(app, shop):
+    shop["say"](app, [win("kat.c", "Red bundle")])
+    run(app, shop["show"])
+    failed = order(shop, "kat.c", "Red bundle", created=datetime.now(UTC) - timedelta(seconds=90))
+    shop["fake"].set_order_status(failed["id"], "failed")
+    read(app, shop)
+    assert apply(app, shop) == {"decline": 1}  # all Whatnot said so far
+    assert level(app, shop["red"]) == (3, 0)
+    order(shop, "kat.c", "Red bundle")  # the retry went through
+    read(app, shop)
+    assert apply(app, shop) == {"mark_paid": 1, "skip": 1}
+    assert [r[:3] for r in sale_rows(app)] == [("kat.c", "Red bundle", "paid")]  # one sale
+    assert level(app, shop["red"]) == (2, 0)
 
 
 def test_a_sale_with_no_order_is_only_called_out_once_the_show_is_over_and_fully_read(app, shop):
@@ -1504,3 +1557,29 @@ def test_only_the_next_few_shows_still_to_come_are_listed(app, client, shop, sig
     assert [s["title"] for s in got["upcoming"]] == [
         "An hour late", "In 3 days", "In 4 days", "No time yet",
     ]  # fmt: skip
+
+
+def test_a_retry_paid_after_a_decline_of_a_choose_any_lot_goes_to_a_person_not_a_second_sale(
+    app, shop
+):
+    shop["say"](app, [win("kat.c", LOT, "11.00")])
+    run(app, shop["show"])
+    failed = order(shop, "kat.c", LOT, 1100, created=datetime.now(UTC) - timedelta(seconds=90))
+    shop["fake"].set_order_status(failed["id"], "failed")
+    read(app, shop)
+    assert apply(app, shop) == {"decline": 1}
+    order(shop, "kat.c", LOT, 1100)  # the retry went through
+    read(app, shop)
+    apply(app, shop)
+    assert [r[:3] for r in sale_rows(app)] == [("kat.c", LOT, "payment_failed")]  # still one sale
+    assert any("paid" in summary for _, summary in reviews(app))  # a person restores it
+
+
+def test_an_order_with_no_time_never_hides_a_failed_one():
+    at = datetime(2026, 11, 13, 5, 40, tzinfo=UTC)
+    rows = [
+        Row(buyer="kat.c", item=LOT, price_cents=1100, status="failed", ordered_at=at),
+        Row(buyer="kat.c", item=LOT, price_cents=1100, status="paid", ordered_at=None),
+    ]
+    whatnot_orders._skip_retried(rows)
+    assert rows[0].action == ""  # nothing bounds it in time: still a decline

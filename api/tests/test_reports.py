@@ -66,6 +66,53 @@ def test_show_tiles_match_the_sheet_and_the_money(app, world):
     assert t["live"] is True
 
 
+def test_the_gifts_tile_counts_whatnots_giveaways_once_they_are_read(app, world):
+    """The 2026-11-13 show: Whatnot listed 8 giveaways, the chat named none."""
+    from app.models import WhatnotOrder, WhatnotShow
+
+    seed(app, world)  # the chat names one giveaway
+    with app.app_context():
+        show = db.session.get(Show, world["show"])
+        assert dashboard.show_tiles(show)["gifts"] == 1
+        ws = WhatnotShow(organization_id=world["org"], whatnot_id="ws-1", status="ended")
+        db.session.add(ws)
+        db.session.flush()
+        show.whatnot_show_id = ws.id
+        assert dashboard.show_tiles(show)["gifts"] == 1  # no giveaway orders read yet: the chat's
+        for i, (kind, status) in enumerate(
+            [
+                ("giveaway", "completed"),
+                ("giveaway", "pending"),
+                ("giveaway", "cancelled"),
+                ("auction", "completed"),
+            ]  # fmt: skip
+        ):
+            db.session.add(
+                WhatnotOrder(
+                    organization_id=world["org"],
+                    whatnot_id=f"o{i}",
+                    whatnot_show_id="ws-1",
+                    status=status,
+                    transaction_type=kind,
+                )  # fmt: skip
+            )
+        # Another shop's show with the same Whatnot id never counts here.
+        other = Organization(name="Other", slug="other-shop")
+        db.session.add(other)
+        db.session.flush()
+        db.session.add(
+            WhatnotOrder(
+                organization_id=other.id,
+                whatnot_id="x1",
+                whatnot_show_id="ws-1",
+                status="completed",
+                transaction_type="giveaway",
+            )  # fmt: skip
+        )
+        db.session.flush()
+        assert dashboard.show_tiles(show)["gifts"] == 2
+
+
 def test_overview_and_top_lists(app, world):
     seed(app, world)
     with app.app_context():

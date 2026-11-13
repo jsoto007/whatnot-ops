@@ -176,3 +176,66 @@ test('Parse now says so when the show is already being parsed (409)', async () =
   fireEvent.click(await screen.findByTestId('parse-now'))
   expect(await screen.findByTestId('parse-error')).toHaveTextContent(busy)
 })
+
+test('a manager lays out the shelves; the page lists them by spot', async () => {
+  const saved: unknown[] = []
+  const layout = [{ spot: 'B4', skuId: 4, code: 'HOLO', name: 'Holo slab Charizard' }]
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/auth/csrf') return new Response(JSON.stringify({ token: 't' }), { status: 200 })
+      if (url.endsWith('/shelves') && init?.method === 'POST') {
+        saved.push(JSON.parse(String(init.body)))
+        return new Response(JSON.stringify({ shelves: layout }), { status: 200 })
+      }
+      if (url.endsWith('/shelves')) return new Response(JSON.stringify({ shelves: [] }), { status: 200 })
+      if (url === '/api/shows/3') {
+        const show = { id: 3, key: 'k', date: '2026-11-12', startedAt: '2026-11-13T05:29:00Z', updatedAt: '2026-11-13T06:29:00Z', sourceUrl: null, messageCount: 9, title: null, recorded: true }
+        return new Response(JSON.stringify({ show, stats: {} }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }),
+  )
+  const manager = { ...auth, can: () => true }
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={qc}>
+      <AuthContext.Provider value={manager}>
+        <MemoryRouter initialEntries={['/app/shows/3?tab=shelves']}>
+          <Routes>
+            <Route path="/app/shows/:id" element={<ShowDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+  expect(await screen.findByText('No shelves laid out for this show.')).toBeInTheDocument()
+  // The header reads in the shop's zone, like every other time on the page (live show, 2026-11-13).
+  expect(await screen.findByText(/^Started 11:29\sPM/)).toBeInTheDocument()
+  fireEvent.change(screen.getByRole('textbox', { name: 'Shelf spots' }), { target: { value: ' b4  HOLO \n\n' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save shelves' }))
+  expect(await screen.findByText('Holo slab Charizard')).toBeInTheDocument()
+  expect(saved).toEqual([{ shelves: [{ spot: 'b4', code: 'HOLO' }] }])
+  expect(screen.getByRole('textbox', { name: 'Shelf spots' })).toHaveValue('B4 HOLO')
+})
+
+test('the shelves form waits for the saved layout: a failed read offers no save that would wipe it', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => (url.endsWith('/shelves') ? new Response(JSON.stringify({ error: 'Something went wrong.' }), { status: 500 }) : new Response('{}', { status: 404 }))),
+  )
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={qc}>
+      <AuthContext.Provider value={{ ...auth, can: () => true }}>
+        <MemoryRouter initialEntries={['/app/shows/3?tab=shelves']}>
+          <Routes>
+            <Route path="/app/shows/:id" element={<ShowDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+  expect(await screen.findByText('Something went wrong.')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Save shelves' })).toBeNull()
+})
