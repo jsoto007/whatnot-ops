@@ -40,6 +40,12 @@ const PAGE_SCAN_MS = 1000
 const STOCK_POLL_MS = 8000
 /** How often a recording checks the tab is still on the show's page. */
 const PAGE_POLL_MS = 1000
+/**
+ * The seller's own live page shows chat but not who won: wins are read only from the buyer's
+ * video player (capture/player.ts). Seen on the 2026-11-13 show: 45 minutes there, no wins.
+ */
+const SELLER_LIVE = /^\/dashboard\/live\//
+const NO_WINS_HERE = 'Winners are not shown on the seller page. Record from the show opened in a buyer account.'
 /** Find buyer refreshes at most this often while new lines arrive. */
 export const FIND_MS = 300
 /** Watch words apply this long after the last keystroke. */
@@ -378,6 +384,7 @@ export class Controller {
     void this.checkStock()
     if (rec.attached) this.panel.setStatus('Watching chat.', 'good')
     else this.panel.setStatus('Recording. Waiting for the chat to show on this page.', 'info')
+    this.renderWins()
   }
 
   /** Stop reading the page (chat, player, stock). The recording itself goes on while `spot` is set. */
@@ -494,7 +501,13 @@ export class Controller {
     const wins = player.filter((r) => !isDeclineBody(r.body))
     const declined = player.length - wins.length
     const last = wins[wins.length - 1]
-    this.panel.setWins(last ? `wins ${wins.length}` + (declined ? ` · declined ${declined}` : '') + ` · last: ${last.body}` : '')
+    this.panel.setWins(
+      last
+        ? `wins ${wins.length}` + (declined ? ` · declined ${declined}` : '') + ` · last: ${last.body}`
+        : this.wins && SELLER_LIVE.test(location.pathname)
+          ? NO_WINS_HERE
+          : '',
+    )
   }
 
   private onRow(row: CapturedRow): void {

@@ -37,6 +37,20 @@ describe('leafSegments / splitRow', () => {
     expect(splitRow(['has spaces', 'text'], 'has spaces text')).toEqual({ username: '', body: 'has spaces text' })
   })
 
+  it('skips the letter Whatnot draws for a user with no photo (live show, 2026-11-13)', () => {
+    const el = row('<div class="avatar">L</div><span>lani808</span><span>B4</span>')
+    expect(splitRow(leafSegments(el), rowText(el))).toEqual({ username: 'lani808', body: 'B4' })
+    expect(splitRow(['4', '4x4_deals', 'Do a buyers giveaway only.'], '')).toEqual({
+      username: '4x4_deals',
+      body: 'Do a buyers giveaway only.',
+    })
+  })
+
+  it('keeps a one-letter first segment that is not that name’s initial', () => {
+    expect(splitRow(['J', 'buyer77', 'joined'], '')).toEqual({ username: 'J', body: 'buyer77 joined' })
+    expect(splitRow(['B', 'buyer77'], 'B buyer77')).toEqual({ username: 'B', body: 'buyer77' })
+  })
+
   it('joins a body split across several elements (emoji images between text)', () => {
     const el = row('<span>buyer1</span><span>take</span><img alt=""><span>two</span>')
     expect(splitRow(leafSegments(el), rowText(el))).toEqual({ username: 'buyer1', body: 'take two' })

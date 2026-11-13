@@ -151,3 +151,28 @@ describe('Find buyer', () => {
     c.destroy()
   })
 })
+
+describe('wins line', () => {
+  it("says the seller's live page shows no winners, until a win is read", async () => {
+    stubChrome()
+    const { Controller } = await import('../src/content/controller')
+    const c = new Controller()
+    const priv = c as unknown as { wins: object | null; log: CapturedRow[]; renderWins(): void }
+    const line = () => (c.panel.el('wins').hidden ? '' : c.panel.el('wins').textContent)
+    history.replaceState(null, '', '/dashboard/live/show-1')
+    priv.renderWins()
+    expect(line()).toBe('') // not recording
+    priv.wins = {}
+    priv.renderWins()
+    expect(line()).toContain('Winners are not shown on the seller page')
+    const body = 'kat.c won the auction for CHOOSE ANY PRODUCT YOU WANT #11 for $13.00'
+    priv.log = [{ ...row(1), username: '', body, rawText: body, source: 'player' }]
+    priv.renderWins()
+    expect(line()).toBe(`wins 1 · last: ${body}`)
+    history.replaceState(null, '', '/live/show-1')
+    priv.log = []
+    priv.renderWins()
+    expect(line()).toBe('') // the buyer's page: nothing to warn about
+    c.destroy()
+  })
+})

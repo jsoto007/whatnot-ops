@@ -33,12 +33,20 @@ export interface SplitRow {
 }
 
 /**
+ * Whatnot draws a user with no profile photo as the first letter of their name, in its own
+ * element before the name: "L" "lani808" "B4". That letter is not the username.
+ */
+const avatarLetter = (s: string[]): boolean =>
+  s.length >= 3 && s[0]!.length === 1 && s[0]!.toLowerCase() === s[1]![0]!.toLowerCase() && USERNAME.test(s[1]!)
+
+/**
  * Best-effort username/body split. Whatnot renders the username in its own
  * element before the message, so the first text segment is the username when
  * it looks like one and something follows it. Falls back to "name: text",
  * then to no username at all. rawText is always kept alongside.
  */
-export function splitRow(segments: string[], rawText: string): SplitRow {
+export function splitRow(all: string[], rawText: string): SplitRow {
+  const segments = avatarLetter(all) ? all.slice(1) : all
   const first = segments[0]
   if (segments.length >= 2 && first && USERNAME.test(first.replace(/:$/, ''))) {
     return { username: first.replace(/:$/, ''), body: segments.slice(1).join(' ') }
