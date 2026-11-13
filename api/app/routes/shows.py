@@ -17,7 +17,7 @@ from ..models import (
     Show,
     WhatnotShow,
 )
-from ..services import audit, jobs, pipeline, ratelimit, sale_chat
+from ..services import audit, jobs, pipeline, ratelimit, sale_chat, shelves
 from ..services.whatnot import WhatnotError, connection
 from ..services.whatnot import orders as whatnot_orders
 from ..services.whatnot import sync as whatnot_sync
@@ -150,6 +150,45 @@ def ai_audit(show_id: int):
     )
     db.session.commit()
     return jsonify(_stats(show))
+
+
+@bp.get("/<int:show_id>/shelves")
+@require("shows.view")
+def get_shelves(show_id: int):
+    show = _show_or_404(show_id)
+    if show is None:
+        return jsonify({"error": "show not found"}), 404
+    return jsonify({"shelves": shelves.read(show)})
+
+
+@bp.post("/<int:show_id>/shelves")
+@require("review.act")
+def save_shelves(show_id: int):
+    """Lay out the show's shelves: `shelves` is [{spot: "B4", code: "<product code>"}]."""
+    show = _show_or_404(show_id)
+    if show is None:
+        return jsonify({"error": "show not found"}), 404
+    given = (request.get_json(silent=True) or {}).get("shelves")
+    if not isinstance(given, list) or not all(
+        isinstance(r, dict) and isinstance(r.get("spot"), str) and isinstance(r.get("code"), str)
+        for r in given
+    ):
+        return jsonify({"error": "Send the shelf spots as a list of spot and product code."}), 400
+    try:
+        layout = shelves.save(show, [(r["spot"], r["code"]) for r in given])
+    except shelves.ShelfError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), e.status
+    audit.record(
+        g.u.organization_id,
+        "show.shelves",
+        user=g.u,
+        target_type="show",
+        target_id=show.id,
+        details={"spots": len(layout)},
+    )
+    db.session.commit()
+    return jsonify({"shelves": layout})
 
 
 @bp.get("/<int:show_id>/events")

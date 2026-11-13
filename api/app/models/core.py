@@ -127,6 +127,20 @@ class Show(db.Model):
     whatnot_show: Mapped["WhatnotShow | None"] = relationship()  # noqa: F821 (models/whatnot.py)
 
 
+class ShowShelf(db.Model):
+    """Where a product sits for one show: "B4" is shelf B, spot 4 (services/shelves.py). A
+    table of its own, so saving a layout never touches the show's `updated_at` (read as the
+    time chat last arrived)."""
+
+    __tablename__ = "show_shelves"
+
+    show_id: Mapped[int] = mapped_column(
+        ForeignKey("shows.id", ondelete="CASCADE"), primary_key=True
+    )
+    code: Mapped[str] = mapped_column(String(4), primary_key=True)
+    sku_id: Mapped[int] = mapped_column(ForeignKey("skus.id"), nullable=False)
+
+
 class ChatMessage(db.Model):
     """One raw chat line, immutable. client_id is the extension's row id (idempotency key).
 

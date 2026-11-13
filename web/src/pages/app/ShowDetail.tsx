@@ -2,8 +2,8 @@ import { Fragment, useMemo, useState } from 'react'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
-import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleStatus, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway, type WhatnotRecap as WhatnotRecapData } from '../../lib/api'
-import { fmtLongDate, fmtShopTime } from '../../lib/format'
+import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleStatus, type Shelf, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway, type WhatnotRecap as WhatnotRecapData } from '../../lib/api'
+import { fmtLongDate, fmtShopClock, fmtShopTime } from '../../lib/format'
 import { lotLabel, saleStatusLabel } from '../../lib/labels'
 import { useDebounced } from '../../lib/useDebounced'
 import { Kpis, Tally, TopLists } from './Dashboard'
@@ -12,9 +12,9 @@ import { WhatnotRecap } from './WhatnotNumbers'
 import { WhatnotOrders } from './WhatnotOrders'
 
 const KIND_LABEL: Record<string, string> = { sale: 'Sale', claim: 'Claim', gift: 'Gift', cancel: 'Cancel', payment_failed: 'Payment failed', no_pick: 'No winner', listing: 'Listing', chatter: 'Chatter' }
-const TABS = ['sales', 'walkaways', 'payments', 'events', 'messages', 'analytics'] as const
+const TABS = ['sales', 'walkaways', 'payments', 'shelves', 'events', 'messages', 'analytics'] as const
 type Tab = (typeof TABS)[number]
-const TAB_LABEL: Record<Tab, string> = { sales: 'Sales', walkaways: 'Walked away', payments: 'Payments', events: 'Parsed lines', messages: 'Chat', analytics: 'Analytics' }
+const TAB_LABEL: Record<Tab, string> = { sales: 'Sales', walkaways: 'Walked away', payments: 'Payments', shelves: 'Shelves', events: 'Parsed lines', messages: 'Chat', analytics: 'Analytics' }
 
 export function ShowDetail() {
   const { id = '' } = useParams()
@@ -60,7 +60,7 @@ export function ShowDetail() {
           )}
           {s && (
             <div className="sub">
-              Started {started!.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · {t?.live ? `${mins} min so far` : `${mins} min of chat`} · {s.messageCount} messages
+              Started {fmtShopClock(s.startedAt)} · {t?.live ? `${mins} min so far` : `${mins} min of chat`} · {s.messageCount} messages
               {me?.organization.hostUsername ? ` · host ${me.organization.hostUsername}` : ''}
             </div>
           )}
@@ -118,6 +118,7 @@ export function ShowDetail() {
           {can('orders.reconcile') ? <Reconcile showId={id} /> : <p className="card muted">Only owners and managers can reconcile payments.</p>}
         </>
       )}
+      {tab === 'shelves' && <ShelvesTab showId={id} canEdit={can('review.act')} />}
       {tab === 'events' && <EventsTab showId={id} />}
       {tab === 'messages' && <MessagesTab showId={id} />}
       {tab === 'analytics' && dash.data && (
@@ -134,6 +135,67 @@ export function ShowDetail() {
         </>
       )}
     </section>
+  )
+}
+
+/**
+ * Optional, per show: where each product sits. A winner who types a spot ("B4") in chat gets
+ * that product suggested in Review; a person still decides (api/app/services/shelves.py).
+ */
+function ShelvesTab({ showId, canEdit }: { showId: string; canEdit: boolean }) {
+  const qc = useQueryClient()
+  const q = useQuery({ queryKey: ['shelves', showId], queryFn: () => apiGet<{ shelves: Shelf[] }>(`/api/shows/${showId}/shelves`) })
+  const [text, setText] = useState<string | null>(null)
+  const save = useMutation({
+    mutationFn: (shelves: { spot: string; code: string }[]) => api<{ shelves: Shelf[] }>('POST', `/api/shows/${showId}/shelves`, { shelves }),
+    onSuccess: (r) => {
+      qc.setQueryData(['shelves', showId], r)
+      setText(null)
+      void qc.invalidateQueries({ queryKey: ['review'] })
+    },
+  })
+  const rows = q.data?.shelves ?? []
+  const typed = text ?? rows.map((r) => `${r.spot} ${r.code}`).join('\n')
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault()
+    const lines = typed.split('\n').map((l) => l.trim().split(/\s+/)).filter((w) => w[0])
+    save.mutate(lines.map(([spot = '', ...code]) => ({ spot, code: code.join(' ') })))
+  }
+  return (
+    <div className="card" data-testid="shelves">
+      <p className="muted small">Optional. Where each product sits for this show: when a winner types a spot like B4 in chat, Review suggests that product. A person still decides.</p>
+      {rows.length > 0 ? (
+        <table className="table">
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.spot}>
+                <td>
+                  <b>{r.spot}</b>
+                </td>
+                <td>{r.name}</td>
+                <td className="muted small">{r.code}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="muted">{q.isPending ? 'Loading…' : q.isError ? '' : 'No shelves laid out for this show.'}</p>
+      )}
+      {q.isError && <p className="form-error">{(q.error as Error).message}</p>}
+      {/* Only once the saved layout is known: a save before that would wipe it. */}
+      {canEdit && q.isSuccess && (
+        <form onSubmit={submit}>
+          <label className="field">
+            <span>One spot per line: the spot, then the product code</span>
+            <textarea rows={8} value={typed} onChange={(e) => setText(e.target.value)} placeholder={'A1 RED\nB4 BLU-1'} aria-label="Shelf spots" />
+          </label>
+          <button className="btn primary" disabled={save.isPending}>
+            Save shelves
+          </button>
+          {save.isError && <p className="form-error">{(save.error as Error).message}</p>}
+        </form>
+      )}
+    </div>
   )
 }
 
@@ -461,7 +523,7 @@ function MessagesTab({ showId }: { showId: string }) {
         <div className="chat">
           {msgs.data.messages.map((m) => (
             <div className="chat-line" key={m.id}>
-              <span className="t">{new Date(m.capturedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
+              <span className="t">{fmtShopClock(m.capturedAt)}</span>
               <span className="u">{m.username || <span className="muted">platform</span>}</span>
               <span>{m.body}</span>
             </div>

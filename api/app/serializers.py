@@ -224,7 +224,8 @@ def chat_message(m) -> dict:
     }
 
 
-def review_item(r, context) -> dict:
+def review_item(r, context, shelf: dict | None = None) -> dict:
+    """`shelf`: the spot the winner named in chat, on a show with shelves (services/shelves.py)."""
     return {
         "id": r.id,
         "showId": r.show_id,
@@ -239,6 +240,7 @@ def review_item(r, context) -> dict:
             {"seq": m.seq, "username": m.username, "body": m.body} for m in context["lines"]
         ],
         "sale": sale(r.sale) if r.sale else None,
+        "shelf": shelf,
         "createdAt": r.created_at.isoformat(),
     }
 

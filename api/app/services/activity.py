@@ -341,6 +341,10 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "inventory.imported": ("Imported the stock sheet", _imported),
     "show.parsed": ("Re-read a show's chat", _parsed),
     "show.ai_audit_requested": ("Asked the AI to check a show", None),
+    "show.shelves": (
+        "Laid out the shelves for a show",
+        lambda d, t: f"Laid out {d.get('spots', 0)} shelf spots for a show",
+    ),
     "device.created": ("Added a laptop", lambda d, t: f"Added laptop {_q(d['name'])}"),
     "device.pairing_started": (
         "Started pairing a laptop",

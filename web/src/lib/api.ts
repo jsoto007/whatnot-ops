@@ -302,7 +302,16 @@ export interface ReviewItem {
   message: { id: number; seq: number; username: string; body: string; rawText: string; capturedAt: string } | null
   context: { seq: number; username: string; body: string }[]
   sale: Sale | null
+  /** The shelf spot the winner typed in chat ("B4"), on a show with shelves laid out. */
+  shelf?: { spot: string; skuId: number; name: string } | null
   createdAt: string
+}
+/** One spot of a show's shelf layout ("B4" = shelf B, spot 4) and the product on it. */
+export interface Shelf {
+  spot: string
+  skuId: number
+  code: string
+  name: string
 }
 export interface ParseStats {
   parsed: number
