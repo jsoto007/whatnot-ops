@@ -63,6 +63,9 @@ placed. Each recording is matched on its own to the Whatnot show that was live w
    - agrees with a sale → the sale is confirmed and tied to Whatnot's order number;
    - payment failed or cancelled → the sale closes and its stock returns, exactly as with a
      payment file (unless picking had begun: then a person decides);
+   - a failed order followed by a paid one for the same win is a card that was retried
+     (Whatnot keeps each attempt as an order: 10 of 20 lots on the 2026-11-13 show): the
+     paid order is the win's payment and the failed one is left out;
    - an order and a sale are the same win only when the lot matches by title (or both name
      the same known product), the price agrees when the sale knows what was paid, and the
      order was placed within half an hour of the win line. An order never takes "the

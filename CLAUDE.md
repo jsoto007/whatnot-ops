@@ -173,7 +173,8 @@ commands.
   `orders_mode` "shadow" only compares (Payments tab, a person applies), "auto"
   applies as they arrive, but never a show that was over before "auto" was chosen
   (`sync.history`, `auto_since`: a first connection reads weeks of old shows whose orders
-  keep changing); an order with no sale becomes one
+  keep changing); a failed order that a later paid order of the same win retried is left
+  out (`orders._skip_retried`); an order with no sale becomes one
   (`pipeline.create_sale_from_order`), and a later win line claims it
   (`claim_order_sale`) instead of making a second. A recording belongs to the show its page address names
   (`/live/<id>`); the clock is only the fallback, never for a recording made on another
