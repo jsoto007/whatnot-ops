@@ -287,9 +287,33 @@ LOT = re.compile(r"\s*#\s?(?P<lot>[0-9]{1,6})$", re.ASCII)
 
 def item_title(item: str) -> str:
     """The listing title without Whatnot's trailing lot number: what "$1 BEAUTY PULLS #520"
-    and "… #521" share. For grouping on screen only; a learned name keeps its lot number
-    (lot #761 may be another bottle)."""
+    and "… #521" share. For grouping on screen only: the rules never treat two lots as one
+    product (lot #761 may be another bottle), and never learn a numbered title as a name
+    (`names_a_lot`)."""
     return LOT.sub("", item or "").strip()
+
+
+# Whatnot's lot number closing a title, with nothing after it but punctuation or an emoji
+# ("… #520", "… #520!", "… #520 🔥").
+_ENDS_IN_LOT = re.compile(r"#\s?[0-9]{1,6}[^A-Za-z0-9]*$")
+
+
+def names_a_lot(item: str) -> bool:
+    """True when a listing title names one lot of one show, so it is never learned as a
+    product's name from a sale: it ends in Whatnot's lot number ("$1 BEAUTY PULLS #520"), is
+    only a lot with its number ("Quick Hit 12"), or says the winner chooses ("CHOOSE ANY
+    PRODUCT YOU WANT"). Lot numbers start again in every show: learned, the next show's #520
+    would get this product and be paid with nobody looking.
+
+    The number can also be the product ("Charizard #4"), and a title cannot say which. Such
+    a name is typed on the product's page instead, where a person means it. A title with
+    the product after the number ("Lot 5 - Pikachu") names its product and is learned."""
+    t = (item or "").strip()
+    return bool(
+        _ENDS_IN_LOT.search(t)
+        or is_choice_title(t)
+        or (_LOT_ONLY.match(t) and re.search(r"[0-9]", t))
+    )
 
 
 # The payment-file import treats more than $100,000 per item as a misread; so does this.

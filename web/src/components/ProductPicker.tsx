@@ -48,7 +48,9 @@ export function ProductPicker({ target, onClose, onDone }: { target: PickerTarge
   const products = useQuery({ queryKey: ['products'], queryFn: () => apiGet<{ products: Product[] }>('/api/products') })
   const skus: PickerSku[] = (products.data?.products ?? []).flatMap((p) => p.skus.map((s) => ({ ...s, productName: p.name })))
   const [skuId, setSkuId] = useState('')
-  const [remember, setRemember] = useState(true)
+  // A title that names one lot of one show ("… #520") is never learned: the box is not offered.
+  const canRemember = sale.rememberName !== false
+  const [remember, setRemember] = useState(canRemember)
   const [applyAll, setApplyAll] = useState(!!target.applyToSimilar && similar.length > 0)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -132,12 +134,14 @@ export function ProductPicker({ target, onClose, onDone }: { target: PickerTarge
             )}
           </p>
         )}
-        <label className="field check">
-          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-          <span>
-            Remember this name <span className="muted">— next time the chat says “{sale.item}”, no review is needed.</span>
-          </span>
-        </label>
+        {canRemember && (
+          <label className="field check">
+            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+            <span>
+              Remember this name <span className="muted">— next time the chat says “{sale.item}”, no review is needed.</span>
+            </span>
+          </label>
+        )}
         {similar.length > 0 && (
           <label className="field check">
             <input type="checkbox" checked={applyAll} onChange={(e) => setApplyAll(e.target.checked)} data-testid="apply-similar" />

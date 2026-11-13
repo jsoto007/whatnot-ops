@@ -146,13 +146,13 @@ def test_a_pick_lands_on_that_lot_only_unless_the_person_says_otherwise(client, 
     # Every lot that moved is in the activity log, not just the one clicked.
     said = [e["summary"] for e in client.get("/api/audit").get_json()["entries"]]
     assert said.count("Resolved a review item") == 3
-    # "Remember" learned each lot's exact title, lot number included: lot #761 may be
-    # another bottle, so the rules never widen a learned name on their own.
+    # "Remember" learned nothing from these titles: each names one lot of one show, and the
+    # next show's #521 may be another bottle (tests/test_lot_title_names.py).
     with app.app_context():
         from app.services import catalog
 
-        assert catalog.resolve_alias(world["org"], "$1 BEAUTY PULLS #521").code == "RED"
-        assert catalog.resolve_alias(world["org"], "$1 BEAUTY PULLS #522").code == "RED"
+        assert catalog.resolve_alias(world["org"], "$1 BEAUTY PULLS #521") is None
+        assert catalog.resolve_alias(world["org"], "$1 BEAUTY PULLS #522") is None
         assert catalog.resolve_alias(world["org"], "$1 BEAUTY PULLS #523") is None
 
 

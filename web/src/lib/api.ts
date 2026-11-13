@@ -255,6 +255,9 @@ export interface Sale {
   itemTitle?: string
   /** Whatnot's lot number from the listing title, when it has one. */
   lot?: number | null
+  /** False when the title names one lot of one show ("… #520", "CHOOSE ANY…"): the server
+   * never learns it as a product's name, so "remember this name" is not offered. */
+  rememberName?: boolean
   quantity: number
   priceCents: number | null
   auctionType: string

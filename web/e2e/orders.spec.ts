@@ -155,6 +155,8 @@ test('a lot nobody recognised is named from its row: that lot alone, or every lo
   const dialog = page.getByRole('dialog')
   await expect(dialog).toContainText('Which product is “$1 BEAUTY PULLS #520”?')
   await expect(dialog).toContainText('moonlove3 · lot #520')
+  // "… #520" names one lot of one show, so it is never learned: the box is not offered.
+  await expect(dialog.getByRole('checkbox', { name: /Remember this name/ })).toHaveCount(0)
   await expect(dialog.getByTestId('apply-similar')).not.toBeChecked()
   await dialog.getByRole('combobox').fill('mystery')
   await dialog.getByRole('option', { name: /Mystery Pull Bag/ }).click()

@@ -136,7 +136,12 @@ def _new_review(org_id, reason, summary, show_id, message_id, event_id, sale_id,
 
 
 def match_sku(org_id: int, item_text: str) -> Sku | None:
-    """Exact alias/code first, then the longest alias contained in the text (word-bounded)."""
+    """Exact alias/code first, then the longest alias contained in the text (word-bounded).
+
+    A title that says the winner chooses ("CHOOSE ANY PRODUCT YOU WANT #73") names no
+    product, whatever names were saved: the winner says which in chat."""
+    if rules.is_choice_title(item_text):
+        return None
     sku = catalog.resolve_alias(org_id, item_text)
     if sku is not None:
         return sku
@@ -1366,7 +1371,9 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
         sale.flagged = False
         if sale.price_cents is None:
             sale.price_cents = sku.price_cents
-        if body.get("remember") and sale.item_text:
+        # A title that names one lot of one show is never learned: lot numbers start again
+        # in every show, so the next show's #520 would get this product with nobody looking.
+        if body.get("remember") and sale.item_text and not rules.names_a_lot(sale.item_text):
             catalog.add_alias(item.organization_id, sku, sale.item_text, quiet=True)
         ok = _reserve(sale)
         autopay(sale, at=_won_at(sale.event) if sale.event else None)

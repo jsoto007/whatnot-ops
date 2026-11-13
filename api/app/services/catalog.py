@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 
 from ..db import db
 from ..models import Product, ProductAlias, Sku
-from . import inventory
+from . import inventory, rules
 from . import text as text_safe
 from .inventory import Actor
 
@@ -183,6 +183,14 @@ def add_alias(org_id: int, sku: Sku, alias: str, *, quiet: bool = False) -> Prod
         if quiet:
             return None
         raise CatalogError("alias is required")
+    if rules.is_choice_title(alias):
+        # A listing that says the winner chooses is never named from its title
+        # (pipeline.match_sku), so this name could never match anything.
+        if quiet:
+            return None
+        raise CatalogError(
+            "That reads as a listing where the winner picks the product, not as a product's name."
+        )
     existing = db.session.scalar(
         select(ProductAlias).where(
             ProductAlias.organization_id == org_id, ProductAlias.alias == alias
