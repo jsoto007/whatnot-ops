@@ -221,3 +221,28 @@ def test_a_failing_sweep_never_stops_the_queue(app, monkeypatch):
 
     _main_until(app, monkeypatch, run_once, sweep)
     assert runs == [1, 1, 1] and sweeps == [1]
+
+
+def test_a_request_whatnot_refused_fails_the_job_at_once(app, monkeypatch):
+    """The 2026-11-13 show: Whatnot answered 422 to the fee report and the job asked five
+    times in three minutes. A request error cannot work on a retry; a timer asks again later."""
+    from app.services import jobs
+    from app.services.whatnot.client import Invalid, Response, Unavailable, WhatnotClient
+
+    def refused(_payload):
+        raise Invalid(status=422)
+
+    def down(_payload):
+        raise Unavailable(status=503)
+
+    monkeypatch.setitem(jobs.HANDLERS, "test_refused", refused)
+    monkeypatch.setitem(jobs.HANDLERS, "test_down", down)
+    with app.app_context():
+        a, b = jobs.enqueue("test_refused", {}), jobs.enqueue("test_down", {})
+        db.session.commit()
+        assert jobs.run_job(a.id).status.value == "failed"
+        assert jobs.run_job(b.id).status.value == "queued"  # Whatnot down: try again
+    # 408 and 425 mean "later", like a 5xx: not a request error.
+    for status in (408, 425):
+        err = WhatnotClient._error(Response(status, {}, {}), "GET", "/x", "r")
+        assert isinstance(err, Unavailable) and not err.final

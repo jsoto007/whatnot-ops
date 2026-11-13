@@ -136,7 +136,7 @@ def show_tiles(show: Show) -> dict:
         "ultra": int(row.ultra),
         "mega": int(row.mega),
         "quickHit": int(row.quick_hit),
-        "gifts": int(events.get(EventKind.gift, 0)),
+        "gifts": _whatnot_giveaways(show) or int(events.get(EventKind.gift, 0)),
         "noPicks": int(no_picks),
         "noWinner": int(events.get(EventKind.no_pick, 0)),
         "cancelled": int(row.lost),
@@ -162,6 +162,35 @@ WALKAWAY = {
     "unpaid": "Not in the payment file",
     "unconfirmed": "Win not confirmed (in Review)",
 }
+
+
+def _whatnot_giveaways(show: Show) -> int:
+    """Giveaways Whatnot's own orders list for the show (0 until they are read). The chat names
+    a giveaway winner only when the host or Whatnot types it; on 2026-11-13 nobody did (0 here
+    against Whatnot's 8). Like the order slips, Whatnot's count replaces the chat's when it
+    has one."""
+    from ..models import WhatnotOrder, WhatnotShow
+    from .whatnot.orders import GIVEAWAY
+
+    if not show.whatnot_show_id:
+        return 0
+    return int(
+        db.session.scalar(
+            select(func.count())
+            .select_from(WhatnotOrder)
+            .join(
+                WhatnotShow,
+                (WhatnotShow.organization_id == WhatnotOrder.organization_id)
+                & (WhatnotShow.whatnot_id == WhatnotOrder.whatnot_show_id),
+            )
+            .where(
+                WhatnotShow.id == show.whatnot_show_id,
+                WhatnotOrder.transaction_type == GIVEAWAY,
+                WhatnotOrder.status.not_in(("cancelled", "failed")),
+            )
+        )
+        or 0
+    )
 
 
 def winners_without_purchase(show: Show) -> list[dict]:
