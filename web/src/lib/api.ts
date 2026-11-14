@@ -410,6 +410,12 @@ export interface BuyerSlip {
 export interface OrderSlips {
   showId: number
   showDate: string
+  /** 'ready': only the buyers whose order is Ready to pick; null: everyone in the show. */
+  only: 'ready' | null
+  /** Buyers of the show the filter left out (in progress, shipped, in Review, gift only, or a slip that still needs a person). */
+  leftOut: number
+  /** How many of the show's slips are ready to pick: the order is, and nothing on the slip waits for a person. */
+  ready?: number
   totals: { buyers: number; items: number; gifts: number }
   summary: { username: string; items: number; gifts: number }[]
   slips: BuyerSlip[]

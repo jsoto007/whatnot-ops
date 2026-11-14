@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useParams } from 'react-router'
+import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { api, apiGet, money, type BuyerSlip, type OrderSlips as Doc, type SlipRow } from '../../lib/api'
 import { fmtLongDate, sheetDate } from '../../lib/format'
@@ -17,27 +17,57 @@ const GIFT_CHOICES = [0, 1, 2, 3, 4, 5]
  */
 export function OrderSlips() {
   const { showId = '' } = useParams()
+  const [params, setParams] = useSearchParams()
+  // `?only=ready`: the Orders page's "Print ready slips" lands here with just the orders that are ready to pick.
+  const only = params.get('only') === 'ready' ? 'ready' : null
   const { can } = useAuth()
-  const q = useQuery({ queryKey: ['order-slips', showId], queryFn: () => apiGet<Doc>(`/api/orders/shows/${showId}/order-slips`) })
+  const q = useQuery({ queryKey: ['order-slips', showId, only], queryFn: () => apiGet<Doc>(`/api/orders/shows/${showId}/order-slips${only ? '?only=' + only : ''}`) })
+  const setOnly = (v: 'ready' | null) => {
+    const next = new URLSearchParams(params)
+    if (v) next.set('only', v)
+    else next.delete('only')
+    setParams(next)
+  }
   if (q.isPending) return <p className="muted">Loading…</p>
   if (q.isError) return <p className="form-error">Could not load the order slips.</p>
   const doc = q.data
   const review = doc.slips.filter((b) => b.needsReview).length
+  // The server decides what is ready: the order's state alone misses a lot that still needs its product.
+  const ready = only ? doc.slips.length : (doc.ready ?? doc.slips.filter((b) => b.orderStatus === 'paid').length)
+  const everyone = only ? doc.slips.length + doc.leftOut : doc.slips.length
   return (
     <section className="order-slips">
       <div className="no-print">
         <p>
-          <Link to={`/app/orders?view=all&show=${showId}`}>← Orders</Link>
+          <Link to={`/app/orders?view=${only ? 'queue' : 'all'}&show=${showId}`}>← Orders</Link>
         </p>
         <div className="page-head">
           <div>
             <h2>Order slips · {fmtLongDate(doc.showDate)}</h2>
-            <div className="sub">
-              One slip per buyer, ready to print. Cancelled and declined items are left out. {can('orders.fulfill') ? 'Set "Gift" on a lot when free gifts go in with it.' : ''}
+            <div className="sub" data-testid="slips-sub">
+              {only ? (
+                <>
+                  Only the orders that are ready to pick: every item paid and named, picking not started.
+                  {doc.leftOut > 0 && ` ${count(doc.leftOut, 'other buyer')} of this show ${doc.leftOut === 1 ? 'is' : 'are'} left out: in progress, shipped, waiting in Review, a gift alone, or a slip with a lot that still needs a person.`}
+                </>
+              ) : (
+                'One slip per buyer, ready to print. Cancelled and declined items are left out.'
+              )}{' '}
+              {can('orders.fulfill') ? 'Set "Gift" on a lot when free gifts go in with it.' : ''}
             </div>
           </div>
           <button className="btn primary" onClick={() => window.print()} disabled={!doc.slips.length}>
             Print order slips
+          </button>
+        </div>
+        <div className="tabs" role="tablist" aria-label="Which buyers">
+          <button type="button" role="tab" aria-selected={!only} className={only ? '' : 'active'} onClick={() => setOnly(null)}>
+            Everyone
+            <span className="tab-count">{everyone}</span>
+          </button>
+          <button type="button" role="tab" aria-selected={!!only} className={only ? 'active' : ''} onClick={() => setOnly('ready')}>
+            Ready to pick
+            <span className="tab-count">{ready}</span>
           </button>
         </div>
         <WhatnotCheck doc={doc} />
@@ -50,8 +80,8 @@ export function OrderSlips() {
       </div>
       {doc.slips.length === 0 ? (
         <div className="empty">
-          <b>No order slips yet</b>
-          Slips appear as soon as this show has a sale.
+          <b>{only ? 'Nothing ready to pick' : 'No order slips yet'}</b>
+          {only ? 'An order is ready as soon as every item in it is paid and named.' : 'Slips appear as soon as this show has a sale.'}
         </div>
       ) : (
         <>
@@ -127,6 +157,7 @@ function Cover({ doc }: { doc: Doc }) {
     <div className="card slip slips-cover" data-testid="slips-cover">
       <h3 className="slips-cover-title">Order Slips</h3>
       <div>Auction Date: {sheetDate(doc.showDate)}</div>
+      {doc.only === 'ready' && <div>Ready to pick only</div>}
       <div className="slips-totals" data-testid="slips-totals">
         <div>Total Buyers: {doc.totals.buyers}</div>
         <div>Total Items: {doc.totals.items}</div>

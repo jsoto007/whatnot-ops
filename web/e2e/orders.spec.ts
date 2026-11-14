@@ -60,6 +60,14 @@ test('wins are paid orders at once; a declined card comes off the queue; pick �
   await expect(page.getByTestId('order-lani808')).toContainText('3 × Red bundle')
   await expect(page.getByTestId('order-lani808')).toContainText('Ready to pick')
   await expect(page.getByTestId('order-kat.c')).toContainText('1 × Red bundle')
+  // "Print ready slips": both orders are ready and in one show, so the button opens that show's slips.
+  await expect(page.getByTestId('print-ready')).toContainText('Print 2 ready slips')
+  await page.getByTestId('print-ready').click()
+  await expect(page).toHaveURL(/\/app\/orders\/slips\/\d+\?only=ready$/)
+  await expect(page.getByTestId('slips-cover')).toContainText('Ready to pick only')
+  await expect(page.getByTestId('slips-cover')).toContainText('Total Buyers: 2')
+  await expect(page.getByRole('tab', { name: /Ready to pick/ })).toContainText('2')
+  await page.getByRole('link', { name: '← Orders' }).click()
   // Paid at the win: all four units left the shelf (5 − 3 − 1 = 1).
   await page.getByRole('link', { name: 'Inventory' }).click()
   await expect(cell(page, 'RED', 'on-hand')).toHaveText('1')

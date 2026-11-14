@@ -20,6 +20,11 @@ with Auction Date, Auction Number, Username, Product Checklist, Gift and Notes (
   flagged "not on Whatnot". Matching never changes a sale: it is read-only.
 - Without a lot read (or from an older scraper) the slips come from the app's sales, as
   before, with Whatnot's per-buyer counts beside them, and the same chat on "No Pick" rows.
+- `only="ready"` keeps the buyers whose order is Ready to pick (every item paid and named,
+  picking not started) and whose slip has nothing waiting for a person: no "No Pick" row (a
+  lot the app never recorded has no product), and no sale Whatnot does not list. It is the
+  Orders page's "Print ready slips". The cover's totals follow; the Whatnot check stays
+  show-wide, and `leftOut` says how many buyers were skipped.
 """
 
 import re
@@ -32,6 +37,7 @@ from ..models import (
     ChatMessage,
     EventKind,
     Order,
+    OrderStatus,
     ParsedEvent,
     Sale,
     SaleStatus,
@@ -43,6 +49,9 @@ from . import rules, sale_chat, shipments
 from .orders import STANDING
 
 NO_PICK = "No Pick"
+# `only=`: which buyers to keep. "ready" = the order is Ready to pick (the Orders page's queue).
+READY = "ready"
+FILTERS = frozenset({READY})
 # One printed line per unit of a lot, up to this many; past it the buyer is flagged.
 MAX_UNIT_ROWS = 50
 
@@ -131,7 +140,20 @@ def _said(lines: list[dict]) -> tuple[list[str], int]:
 _GIVEAWAY = re.compile(r"give\s*-?\s*away|gift", re.I)
 
 
-def build(show: Show) -> dict:
+def _ready(b: dict) -> bool:
+    """A slip that can be printed and picked as it is: the buyer's order is Ready to pick,
+    every row has its product, and every sale on it is one Whatnot lists (when its lots were
+    read). A gift row never holds a slip back."""
+    return (
+        b["orderStatus"] == OrderStatus.paid.value
+        and not b["needsReview"]
+        and all(r["onWhatnot"] for r in b["rows"] if r["kind"] == "sale")
+    )
+
+
+def build(show: Show, *, only: str | None = None) -> dict:
+    if only is not None and only not in FILTERS:
+        raise ValueError("unknown filter")
     sales = db.session.scalars(
         select(Sale)
         .where(Sale.show_id == show.id, Sale.status.in_(STANDING))
@@ -287,7 +309,19 @@ def build(show: Show) -> dict:
         )
         slips.append(b)
     slips.sort(key=lambda b: (-b["items"], b["username"].lower()))
+    left_out = 0
+    ready = sum(1 for b in slips if _ready(b))
+    if only == READY:
+        kept = [b for b in slips if _ready(b)]
+        left_out = len(slips) - len(kept)
+        slips = kept
     return {
+        "only": only,
+        # Buyers of the show the filter skipped (in progress, shipped, in Review, gift only,
+        # or with a row that still needs a person).
+        "leftOut": left_out,
+        # How many of the show's slips are ready to pick, whichever buyers this document holds.
+        "ready": ready,
         "whatnot": (
             {
                 "readAt": whatnot["readAt"],

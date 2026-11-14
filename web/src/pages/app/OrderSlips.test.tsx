@@ -40,6 +40,8 @@ const row = (over: Partial<SlipRow>): SlipRow => ({
 const doc: Doc = {
   showId: 3,
   showDate: '2026-10-31',
+  only: null,
+  leftOut: 0,
   totals: { buyers: 2, items: 4, gifts: 2 },
   summary: [
     { username: 'Jessica88aguirre', items: 3, gifts: 2 },
@@ -74,9 +76,9 @@ const doc: Doc = {
   whatnot: null,
 }
 
-function mount(permissions: string[], d: Doc = doc) {
+function mount(permissions: string[], d: Doc = doc, path = '/app/orders/slips/3') {
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
-    if (url.endsWith('/order-slips')) return new Response(JSON.stringify(d), { status: 200 })
+    if (url.includes('/order-slips')) return new Response(JSON.stringify(d), { status: 200 })
     if (url.endsWith('/api/auth/csrf')) return new Response(JSON.stringify({ token: 't' }), { status: 200 })
     if (init?.method === 'PATCH') return new Response(JSON.stringify({ saleId: 3, giftCount: 1 }), { status: 200 })
     return new Response('{}', { status: 404 })
@@ -86,7 +88,7 @@ function mount(permissions: string[], d: Doc = doc) {
   render(
     <QueryClientProvider client={qc}>
       <AuthContext.Provider value={auth(permissions)}>
-        <MemoryRouter initialEntries={['/app/orders/slips/3']}>
+        <MemoryRouter initialEntries={[path]}>
           <Routes>
             <Route path="/app/orders/slips/:showId" element={<OrderSlips />} />
           </Routes>
@@ -101,6 +103,10 @@ test('the cover and each buyer slip read like the shop sheet', async () => {
   mount(['orders.view'])
   const cover = await screen.findByTestId('slips-cover')
   expect(cover).toHaveTextContent('Auction Date: 10-31-2026')
+  expect(cover).not.toHaveTextContent('Ready to pick only')
+  expect(screen.getByRole('tab', { name: /Everyone/ })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.getByRole('tab', { name: /Ready to pick/ })).toHaveTextContent('1') // Tinalou13699's order is paid
+  expect(screen.getByRole('link', { name: '← Orders' })).toHaveAttribute('href', '/app/orders?view=all&show=3')
   expect(screen.getByTestId('slips-totals')).toHaveTextContent('Total Buyers: 2Total Items: 4Total Gifts: 2')
 
   const jess = screen.getByTestId('slip-Jessica88aguirre')
@@ -185,4 +191,40 @@ test('a long chat shows its first line, how many were left out, and the last one
   expect(within(first!).getByTestId('slip-said')).toHaveTextContent(
     'Chat: “congrats! what do you want?” · … 2 more … · “the Fitness Ball please” · “lol” · “gl all”',
   )
+})
+
+test('"ready to pick only" asks the server for just those slips and says who is left out', async () => {
+  const [, tina] = doc.slips
+  const fetch = mount(
+    ['orders.view'],
+    { ...doc, only: 'ready', leftOut: 1, totals: { buyers: 1, items: 1, gifts: 0 }, summary: [{ username: 'Tinalou13699', items: 1, gifts: 0 }], slips: [tina!] },
+    '/app/orders/slips/3?only=ready',
+  )
+  const cover = await screen.findByTestId('slips-cover')
+  expect(fetch.mock.calls.map((c) => c[0])).toContain('/api/orders/shows/3/order-slips?only=ready')
+  expect(cover).toHaveTextContent('Auction Date: 10-31-2026Ready to pick onlyTotal Buyers: 1')
+  expect(screen.getByTestId('slips-sub')).toHaveTextContent('Only the orders that are ready to pick: every item paid and named, picking not started. 1 other buyer of this show is left out')
+  expect(screen.queryByTestId('slip-Jessica88aguirre')).toBeNull()
+  expect(screen.getByTestId('slip-Tinalou13699')).toBeInTheDocument()
+  expect(screen.getByRole('tab', { name: /Ready to pick/ })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.getByRole('tab', { name: /Everyone/ })).toHaveTextContent('2')
+  expect(screen.getByRole('link', { name: '← Orders' })).toHaveAttribute('href', '/app/orders?view=queue&show=3')
+  // the switch is screen-only; the print button prints what is shown
+  expect(screen.getByRole('tablist').closest('.no-print')).not.toBeNull()
+  expect(screen.getByRole('button', { name: 'Print order slips' })).toBeEnabled()
+})
+
+test('the "Ready to pick" count is the server’s: a paid order whose slip still needs a person is not ready', async () => {
+  // One of the two buyers has a paid order, but the server found a lot on that slip with no product yet.
+  mount(['orders.view'], { ...doc, ready: 0 })
+  await screen.findByTestId('slips-cover')
+  expect(screen.getByRole('tab', { name: /Ready to pick/ })).toHaveTextContent('0')
+  expect(screen.getByRole('tab', { name: /Everyone/ })).toHaveTextContent('2')
+})
+
+test('nothing ready to pick: the page says so and the print button waits', async () => {
+  mount(['orders.view'], { ...doc, only: 'ready', leftOut: 2, totals: { buyers: 0, items: 0, gifts: 0 }, summary: [], slips: [] }, '/app/orders/slips/3?only=ready')
+  expect(await screen.findByText('Nothing ready to pick')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Print order slips' })).toBeDisabled()
+  expect(screen.getByRole('tab', { name: /Everyone/ })).toHaveTextContent('2')
 })
