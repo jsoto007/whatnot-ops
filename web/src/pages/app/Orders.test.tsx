@@ -375,6 +375,11 @@ test("in a winner's-pick show an unnamed item waits for the winner, then reads d
   expect(unknownWords([noPick, noPick])).toBe('2 did not pick')
   expect(unknownWords([other])).toBe('item not recognised')
   expect(unknownWords([waiting, noPick, other])).toBe('3 items not recognised')
+  // where each listing is one product, an unnamed win is a listing nobody linked yet
+  const listing = sale({ buyer: 'made_up_ann', orderId: 8, saleMode: 'listing', review: { id: 21, reason: 'unmatched_item' } })
+  expect(unknownWords([listing])).toBe('listing not linked')
+  expect(unknownWords([listing, listing])).toBe('2 listings not linked')
+  expect(unknownWords([listing, waiting])).toBe('2 items not recognised')
 })
 
 test('a sale that stands can get another product from its row menu', async () => {

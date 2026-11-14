@@ -538,6 +538,7 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
         "Linked a Whatnot listing",
         lambda d, t: (
             f"Linked the Whatnot listing {_q(d['listing'])} to {_q(d['product'])}"
+            + (f" (was {_q(d['was'])})" if d.get("was") else "")
             if d.get("product")
             else f"Said the Whatnot listing {_q(d['listing'])} is none of the shop's products"
         ),

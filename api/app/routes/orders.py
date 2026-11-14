@@ -36,6 +36,7 @@ from ..services.buyers import BuyerError
 from ..services.inventory import Actor, InventoryError
 from ..services.orders import OrderError
 from ..services.reconcile import ReconcileError
+from ..services.whatnot import catalog as whatnot_catalog
 from ..services.whatnot import shipping
 
 bp = Blueprint("orders", __name__)
@@ -143,6 +144,10 @@ def list_orders():
     reviews = _open_reviews(rows) if with_sales else {}
     if with_sales:
         sale_mode.prime({o.show_id for o in rows})  # each sale says how its show sells
+        # and each win still waiting for its product says which Whatnot listing it is for
+        whatnot_catalog.prime_listings(
+            [s for o in rows for s in o.sales if s.sku_id is None and s.external_order_id]
+        )
     parcels = _parcels(rows)
     return jsonify(
         {

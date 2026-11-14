@@ -9,7 +9,7 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import WhatnotShow
-from ..services import audit, dashboard, ratelimit
+from ..services import audit, dashboard, jobs, ratelimit
 from ..services.whatnot import WhatnotError, catalog, connection, results
 
 bp = Blueprint("whatnot", __name__)
@@ -67,7 +67,16 @@ def disconnect():
 @require("whatnot.view")
 def check():
     ratelimit.per_user("whatnot-check", g.u.id, CHECKS_PER_10_MIN, 600)
-    connection.check(g.u.organization_id)
+    conn = connection.check(g.u.organization_id)
+    if conn is not None and conn.problem is None:
+        # And a read right away (the show list when due, a live show's orders), rather than
+        # at the next timer: what a person pressing "Check now" during a show wants.
+        jobs.enqueue(
+            "whatnot_sync",
+            {"org_id": g.u.organization_id},
+            org_id=g.u.organization_id,
+            dedupe_key=f"whatnot_sync:{g.u.organization_id}",
+        )
     db.session.commit()
     return jsonify(connection.status(g.u.organization_id))
 

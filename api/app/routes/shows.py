@@ -108,6 +108,10 @@ def get_show(show_id: int):
             "noShelves": (
                 sale_mode.of_show(show)[0] == sale_mode.WINNERS_PICK and not shelves.spots(show)
             ),
+            # False: winners, items and payments all come from Whatnot's orders.
+            "laptopNeeded": sale_mode.laptop_needed(
+                sale_mode.of_show(show)[0], show.organization_id
+            ),
         }
     )
 

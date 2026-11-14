@@ -186,6 +186,19 @@ commands.
   is split evenly in whole cents over its products, the odd cents to the first
   (`sale_items.split`), so products add up to the show's total. `inventory.move` locks
   the product row with `populate_existing`: keep it (a stale copy lost units).
+- **One product at a time** (a show sold as "one product per listing"). The winner, the
+  item and the payment all come from Whatnot's orders, so such a show needs no laptop when
+  orders are applied as they arrive (`sale_mode.laptop_needed`; the show page and Settings
+  → Laptops say so). A linked listing names its sale (`catalog.resolver`). An unnamed win
+  reads "listing not linked"; naming it in Review offers "Always use this product for this
+  listing" (`linkListing` on the resolve route → `catalog.link_sale_listing`), which links
+  the listing and names the show's other waiting wins of it, each through
+  `pipeline.resolve` as the person. Never in a winner's-pick show (there the listing is a
+  "choose any" lot) and never for a listing marked "not one of ours". A listing made during
+  a show is read when its first order is (`catalog.learn_listings`, from
+  `sync._after_orders`, a few per pass inside a SAVEPOINT): the daily catalog read pauses
+  while a show is on air. "Check now" in Settings also queues a read. A product is changed
+  from the Orders row menu or the order's own page (`ChangeProduct`).
 - **Offers** (`services/offers.py`). A win holds one product unless the host or a trusted
   moderator (`Organization.trusted_mods`, set in Settings) types an offer that names the
   lot ("#45 bogo", "#45 is two for one"; the words are only in `rules.offer`), or a person

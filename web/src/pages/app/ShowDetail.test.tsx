@@ -283,7 +283,7 @@ test('the shelves form waits for the saved layout: a failed read offers no save 
 })
 
 /** The show page for a show that says how it sells; the server remembers each choice. */
-function mountShow(show: Partial<Show>, opts: { can?: (p: string) => boolean; usual?: SaleMode; path?: string } = {}) {
+function mountShow(show: Partial<Show>, opts: { can?: (p: string) => boolean; usual?: SaleMode; path?: string; laptopNeeded?: boolean } = {}) {
   const usual = opts.usual ?? 'winners_pick'
   const posts: unknown[] = []
   let current = { id: 3, key: 'k', date: '2026-11-12', startedAt: '2026-11-13T05:29:00Z', updatedAt: '2026-11-13T06:29:00Z', sourceUrl: null, messageCount: 9, title: null, recorded: true, ...show }
@@ -297,7 +297,7 @@ function mountShow(show: Partial<Show>, opts: { can?: (p: string) => boolean; us
         current = { ...current, saleMode: body.mode ?? usual, saleModeSet: body.mode !== null }
         return new Response(JSON.stringify({ show: current }), { status: 200 })
       }
-      if (url === '/api/shows/3') return new Response(JSON.stringify({ show: current, stats: {} }), { status: 200 })
+      if (url === '/api/shows/3') return new Response(JSON.stringify({ show: current, stats: {}, laptopNeeded: opts.laptopNeeded }), { status: 200 })
       if (url.endsWith('/shelves')) return new Response(JSON.stringify({ shelves: [] }), { status: 200 })
       if (url.endsWith('/sales')) return new Response(JSON.stringify({ sales: [] }), { status: 200 })
       return new Response('{}', { status: 404 })
@@ -397,4 +397,15 @@ test('a show whose laptops keep good time says nothing about clocks', async () =
   mountShow({ saleMode: 'winners_pick', saleModeSet: false })
   await screen.findByTestId('show-mode')
   expect(screen.queryByTestId('clock-warning')).toBeNull()
+})
+
+test('a show that needs no laptop says so; one that does says nothing', async () => {
+  mountShow({ saleMode: 'listing', saleModeSet: false }, { usual: 'listing', laptopNeeded: false })
+  expect(await screen.findByTestId('no-laptop')).toHaveTextContent('No laptop is needed for this show')
+})
+
+test('a show that needs its laptop has no such note', async () => {
+  mountShow({ saleMode: 'winners_pick', saleModeSet: false }, { laptopNeeded: true })
+  await screen.findByTestId('show-mode')
+  expect(screen.queryByTestId('no-laptop')).toBeNull()
 })

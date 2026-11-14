@@ -290,5 +290,7 @@ export function unknownWords(unk: { saleMode?: string | null; review?: { pick?: 
   const n = unk.length
   if (unk.every((s) => s.review?.pick === 'none')) return n === 1 ? 'did not pick' : `${n} did not pick`
   if (unk.every((s) => s.saleMode === 'winners_pick' && !s.review?.pick)) return n === 1 ? 'waiting for pick' : `${n} waiting for pick`
+  // Where each listing is one product, an unnamed win is a listing nobody has linked to a product yet.
+  if (unk.every((s) => s.saleMode === 'listing')) return n === 1 ? 'listing not linked' : `${n} listings not linked`
   return n === 1 ? 'item not recognised' : `${n} items not recognised`
 }

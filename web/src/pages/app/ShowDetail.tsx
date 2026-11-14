@@ -27,7 +27,7 @@ export function ShowDetail() {
     next.set('tab', t)
     setParams(next, { replace: true })
   }
-  const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats; clockProblems?: ClockProblem[]; noShelves?: boolean }>(`/api/shows/${id}`) })
+  const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats; clockProblems?: ClockProblem[]; noShelves?: boolean; laptopNeeded?: boolean }>(`/api/shows/${id}`) })
   const dash = useQuery({ queryKey: ['show-dashboard', id], queryFn: () => apiGet<{ tiles: ShowTiles; topBuyers: TopBuyer[]; topSkus: TopSku[]; winnersWithoutPurchase: WalkAway[]; whatnot?: WhatnotRecapData | null }>(`/api/dashboard/shows/${id}`) })
   const sales = useQuery({ queryKey: ['sales', id], queryFn: () => apiGet<{ sales: Sale[] }>(`/api/shows/${id}/sales`) })
   const parse = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/parse`), onSuccess: () => qc.invalidateQueries() })
@@ -68,6 +68,11 @@ export function ShowDetail() {
             </div>
           )}
           {s?.saleMode && <ShowSaleMode show={s} usual={me?.organization.saleMode} canEdit={can('review.act')} />}
+          {show.data?.laptopNeeded === false && (
+            <div className="sub muted small" data-testid="no-laptop">
+              No laptop is needed for this show: the winner, the item and the payment all come from Whatnot's orders.
+            </div>
+          )}
         </div>
         <span className="row-actions">
           {can('orders.view') && (

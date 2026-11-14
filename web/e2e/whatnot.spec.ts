@@ -11,11 +11,11 @@ const PW = 'correct-horse-battery'
 const run = Date.now().toString(36)
 const SHOW = new Date(Date.now() - 90 * 60_000).toISOString()
 
-async function signup(page: Page) {
+async function signup(page: Page, tag = '') {
   await page.goto('/signup')
-  await page.getByLabel('Shop name').fill(`Whatnot ${run}`)
+  await page.getByLabel('Shop name').fill(`Whatnot ${run}${tag}`)
   await page.getByLabel('Your name').fill('Olive Owner')
-  await page.getByLabel('Email').fill(`whatnot-${run}@shop.test`)
+  await page.getByLabel('Email').fill(`whatnot-${run}${tag}@shop.test`)
   await page.getByLabel('Password (10+ characters)').fill(PW)
   await page.getByLabel('I have read and accept the Sales Ops License and Data Terms').check()
   await page.getByRole('button', { name: 'Create shop' }).click()
@@ -243,4 +243,141 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   await expect(page.getByText('Asked Whatnot to make 2 shipping labels')).toBeVisible()
   await expect(page.getByText('Marked 1 order shipped: the carrier has them')).toBeVisible()
   await expect(page.getByText(`Connected the shop to Whatnot as @shop_${run}`)).toBeVisible()
+})
+
+// One product per listing, and no laptop: the winner, the item and the payment all come from
+// Whatnot's orders. Buyers and products are made up (and unlike the test above's, so the two
+// shops, which share the one in-memory Whatnot, never match each other's orders by title).
+test('a show nobody records: from the first order to the slip, with listings linked on the way', async ({ page, request }) => {
+  await signup(page, 'b')
+  for (const [name, code] of [
+    ['Ruby set', 'RUBY'],
+    ['Sky set', 'SKY'],
+    ['Moss set', 'MOSS'],
+  ]) {
+    await page.getByRole('link', { name: 'Products' }).click()
+    await page.getByLabel('Product name').fill(name)
+    await page.getByLabel('SKU code (optional)').fill(code)
+    await page.getByRole('button', { name: 'Add product' }).click()
+    await receive(page, code, 5)
+  }
+
+  // The shop sells one product per listing.
+  await page.getByRole('link', { name: 'Settings' }).click()
+  await page.getByRole('radio', { name: /One product per listing/ }).check()
+  await page.getByRole('button', { name: 'Save how you sell' }).click()
+
+  // On Whatnot: two listings (one carries the product's code), and a show on air for forty minutes with two orders.
+  const first = await request.post('/api/whatnot/fake', {
+    data: {
+      seller: { id: String(Date.now()), username: `shop_${run}b` },
+      products: [{ title: `Ruby special ${run}`, variants: [{ sku: 'RUBY', quantity: 9 }] }, { title: `Sky special ${run}`, variants: [{ quantity: 9 }] }],
+      shows: [{ title: `No laptop ${run}`, status: 'live', startedMinutesAgo: 40 }],
+      orders: [
+        { buyer: 'lani_b', items: [{ title: `Ruby special ${run}`, priceCents: 1200, product: 0 }], minutesAgo: 30 },
+        { buyer: 'kat_b', items: [{ title: `Sky special ${run}`, priceCents: 1400, product: 1 }], minutesAgo: 25 },
+      ],
+    },
+  })
+  expect(first.status()).toBe(201)
+  const show = ((await first.json()) as { shows: string[] }).shows[0]
+
+  // Connect, apply orders as they arrive, and read now.
+  await page.reload()
+  await page.getByTestId('whatnot-connect').click()
+  await expect(page.getByTestId('whatnot-state')).toContainText(`Connected as @shop_${run}b`)
+  // The radio follows the saved answer, so it turns only once the server has it.
+  await page.getByTestId('whatnot-mode').getByRole('radio', { name: /Apply as they arrive/ }).click()
+  await expect(page.getByTestId('whatnot-mode').getByRole('radio', { name: /Apply as they arrive/ })).toBeChecked()
+  const readNow = async () => {
+    const done = page.waitForResponse((r) => r.url().endsWith('/api/whatnot/check') && r.request().method() === 'POST')
+    await page.getByTestId('whatnot-check').click()
+    expect((await done).ok()).toBe(true)
+  }
+  await readNow()
+  // The set-up steps say this shop's shows need no laptop.
+  await page.reload()
+  await expect(page.getByTestId('no-laptop-needed')).toContainText('Your shows need no laptop.')
+
+  // The listing with the product's code named its sale. The other one waits: "listing not linked".
+  await page.goto('/app/orders?view=all')
+  await expect(page.getByTestId('order-lani_b')).toContainText('Ruby set')
+  const kat = page.getByTestId('order-kat_b')
+  await expect(kat).toContainText('listing not linked')
+  await kat.getByTestId('name-product').click()
+  await expect(page.getByTestId('link-listing')).toBeChecked()
+  const pick = async (name: string) => {
+    const box = page.getByRole('dialog').getByRole('combobox')
+    await box.fill(name)
+    await page.getByRole('option', { name: new RegExp(name) }).first().click()
+    await page.getByTestId('use-product').click()
+  }
+  await pick('Sky set')
+  await expect(page.getByRole('status')).toContainText('now always uses it')
+  await expect(page.getByTestId('order-kat_b')).toContainText('Sky set')
+
+  // A listing made during the show, with two wins: the app has never seen it.
+  const second = await request.post('/api/whatnot/fake', {
+    data: {
+      products: [{ title: `Moss drop ${run}`, variants: [{ quantity: 9 }] }],
+      orders: [
+        { showId: show, buyer: 'moe_b', items: [{ title: `Moss drop ${run}`, priceCents: 900, product: 0 }], minutesAgo: 6 },
+        { showId: show, buyer: 'nia_b', items: [{ title: `Moss drop ${run}`, priceCents: 900, product: 0 }], minutesAgo: 4 },
+      ],
+    },
+  })
+  expect(second.status()).toBe(201)
+  const moss = ((await second.json()) as { products: { id: string; variantId: string }[] }).products[0]
+  await page.getByRole('link', { name: 'Settings' }).click()
+  await readNow()
+  await page.goto('/app/orders?view=all')
+  await expect(page.getByTestId('order-nia_b')).toContainText('listing not linked')
+  await page.getByTestId('order-moe_b').getByTestId('name-product').click()
+  await pick('Moss set')
+  // Naming one win linked the listing and named its other win in the show.
+  await expect(page.getByRole('status')).toContainText('and 1 other lot')
+  await expect(page.getByTestId('order-nia_b')).toContainText('Moss set')
+
+  // The listing's next order names itself.
+  const third = await request.post('/api/whatnot/fake', {
+    data: { orders: [{ showId: show, buyer: 'ola_b', items: [{ title: `Moss drop ${run}`, priceCents: 900, productId: moss.id, variantId: moss.variantId }], minutesAgo: 1 }] },
+  })
+  expect(third.status()).toBe(201)
+  await page.getByRole('link', { name: 'Settings' }).click()
+  await readNow()
+  await page.goto('/app/orders?view=all')
+  await expect(page.getByTestId('order-ola_b')).toContainText('Moss set')
+  await expect(page.getByText('listing not linked')).toHaveCount(0)
+
+  // One product is changed on the order's own page: the old one goes back, the new one leaves.
+  await page.getByTestId('order-kat_b').getByRole('button', { name: 'More for kat_b' }).click()
+  await page.getByRole('menuitem', { name: 'Open the order and slip' }).click()
+  await page.getByTestId('order-products').getByRole('button', { name: /Change Sky set/ }).click()
+  const box = page.getByRole('dialog').getByRole('combobox')
+  await box.fill('Ruby set')
+  await page.getByRole('option', { name: /Ruby set/ }).first().click()
+  await page.getByTestId('change-product-save').click()
+  await expect(page.getByTestId('order-changed')).toContainText('is now Ruby set')
+  await page.getByRole('link', { name: 'Inventory' }).click()
+  await expect(cell(page, 'RUBY', 'on-hand')).toHaveText('3')
+  await expect(cell(page, 'SKY', 'on-hand')).toHaveText('5')
+  await expect(cell(page, 'MOSS', 'on-hand')).toHaveText('2')
+
+  // The show has a place of its own, says it needs no laptop, and its slips are ready to print.
+  await page.getByRole('link', { name: 'Shows', exact: true }).click()
+  await page.getByRole('row').filter({ hasText: `No laptop ${run}` }).getByRole('link').first().click()
+  await expect(page.getByTestId('no-laptop')).toContainText('No laptop is needed for this show')
+  await page.getByTestId('order-slips-link').click()
+  await expect(page.getByTestId('slips-totals')).toContainText('5')
+  for (const [buyer, product] of [
+    ['lani_b', 'Ruby set'],
+    ['kat_b', 'Ruby set'],
+    ['moe_b', 'Moss set'],
+    ['nia_b', 'Moss set'],
+    ['ola_b', 'Moss set'],
+  ]) {
+    await expect(page.getByTestId(`slip-${buyer}`).getByTestId('slip-row')).toHaveCount(1)
+    await expect(page.getByTestId(`slip-${buyer}`)).toContainText(product)
+  }
+  await shot(page, '8-no-laptop-slips')
 })

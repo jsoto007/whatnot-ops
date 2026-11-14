@@ -157,6 +157,14 @@ def set_shop(org: Organization, mode) -> tuple[str, str]:
     return before, org.sale_mode
 
 
+def laptop_needed(mode: str, org_id: int) -> bool:
+    """Whether a show sold this way needs a laptop recording its chat. Not when each
+    listing is one product and Whatnot's orders are applied as they arrive: the winner,
+    the item and the payment all come from the order. A winner's-pick show always does
+    (the pick is typed in chat)."""
+    return not (mode == LISTING and winners_from_whatnot(org_id))
+
+
 def winners_from_whatnot(org_id: int) -> bool:
     """Whether wins reach the app from Whatnot's own orders with nobody applying them: the
     shop is connected and its orders are applied as they arrive. The laptop then only needs

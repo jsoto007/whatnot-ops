@@ -117,6 +117,8 @@ export interface Organization {
   autoPick?: boolean
   /** Whatnot names, besides the host, whose chat lines may set an offer on a lot ("#45 bogo"). */
   trustedMods?: string[]
+  /** False when the shop's shows need no laptop: one product per listing, and Whatnot's orders are applied as they arrive. */
+  laptopNeeded?: boolean
 }
 /** What the pick worker found for a win still waiting for its product, once the show was over. */
 export interface PickFound {
@@ -308,6 +310,8 @@ export interface Sale {
   products?: SaleProduct[] | null
   /** How many products a person allowed on this win (null: one, or the show's offers). */
   productsAllowed?: number | null
+  /** A win waiting for its product: the Whatnot listing its order was for, when the app holds it. */
+  listing?: { title: string; options: string; linked: boolean; off: boolean } | null
   item: string
   /** The listing title without Whatnot's lot number ("$1 BEAUTY PULLS" for "… #520"). */
   itemTitle?: string

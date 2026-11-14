@@ -612,6 +612,8 @@ export function OrderDetail() {
   const [notes, setNotes] = useState<string | null>(null)
   const [packedBy, setPackedBy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [changing, setChanging] = useState<ProductChange | null>(null)
+  const [changed, setChanged] = useState<string | null>(null)
   const status = useMutation({
     mutationFn: (to: OrderStatus) => api('POST', `/api/orders/${id}/status`, { status: to, tracking: tracking || undefined, packedBy: packedBy ?? undefined }),
     onSuccess: () => qc.invalidateQueries(),
@@ -641,6 +643,27 @@ export function OrderDetail() {
         <Link to={`/app/buyers/${encodeURIComponent(o.buyer)}`}>About {o.buyer}: everything they have bought, and the team's notes</Link>
       </p>
       <PackingSlip o={o} />
+      <OrderProducts o={o} onChange={setChanging} />
+      {changed && (
+        <p className="card small no-print" role="status" data-testid="order-changed">
+          {changed}
+        </p>
+      )}
+      {changing && (
+        <ChangeProduct
+          sale={changing.sale}
+          buyer={o.buyer}
+          showDate={o.showDate}
+          product={changing.product}
+          add={changing.add}
+          onClose={() => setChanging(null)}
+          onDone={async (msg) => {
+            await qc.invalidateQueries()
+            setChanging(null)
+            setChanged(msg)
+          }}
+        />
+      )}
       {o.parcel && (
         <div className="card no-print" data-testid="order-parcel">
           <b>Where the parcel is</b>
@@ -681,6 +704,38 @@ export function OrderDetail() {
       )}
       <BuyerHistory buyer={o.buyer} current={o.id} />
     </section>
+  )
+}
+
+/** On the order page: each product of each standing sale, with the way to change it. Never printed. */
+function OrderProducts({ o, onChange }: { o: Order; onChange: (c: ProductChange) => void }) {
+  const { can } = useAuth()
+  if (!can('review.act') || o.status === 'shipped' || o.status === 'cancelled') return null
+  const sales = (o.sales ?? []).filter((s) => s.sku && (s.status === 'paid' || s.status === 'reserved'))
+  if (sales.length === 0) return null
+  return (
+    <div className="card no-print" data-testid="order-products">
+      <b>Products on this order</b>
+      <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0', display: 'grid', gap: 6 }}>
+        {sales.map((s) =>
+          (s.products && s.products.length > 0 ? s.products : [undefined]).map((p) => {
+            const sku = p?.sku ?? s.sku!
+            const name = `${sku.productName} ${sku.name}`.trim()
+            return (
+              <li key={`${s.id}-${p?.rowId ?? 0}`} className="row-actions">
+                <span>
+                  {lotText(s)} · <b>{p ? `${p.quantity} × ` : ''}{name}</b>
+                </span>
+                <button type="button" className="btn small" onClick={() => onChange({ sale: s, product: p })} aria-label={`Change ${name} of ${lotText(s)}`}>
+                  Change the product
+                </button>
+              </li>
+            )
+          }),
+        )}
+      </ul>
+      <span className="muted small">The old product goes back to stock and the new one leaves it. The price the buyer paid does not change.</span>
+    </div>
   )
 }
 
