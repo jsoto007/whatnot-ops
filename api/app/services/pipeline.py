@@ -160,11 +160,19 @@ def match_sku(org_id: int, item_text: str) -> Sku | None:
 # ---------- applying events ----------
 
 
+def _sid(sale: Sale) -> str:
+    """The stock ledger's key for the sale's product (services/sale_items.py): the sale's own
+    id, as always, unless its product was changed or added later."""
+    from . import sale_items
+
+    return sale_items.source_id(sale)
+
+
 def _reserve(sale: Sale) -> bool:
     """Hold stock for the sale. Never refused for lack of stock: an oversell leaves the
     SKU's `available` negative, and Inventory / the dashboard say how many to buy."""
     inventory.reserve(
-        sale.sku_id, sale.quantity, source_type="sale", source_id=str(sale.id), actor=RULE_ACTOR
+        sale.sku_id, sale.quantity, source_type="sale", source_id=_sid(sale), actor=RULE_ACTOR
     )
     sale.status = SaleStatus.reserved
     sale.status_reason = None
@@ -836,7 +844,7 @@ def set_sale_status(
                 sale.sku_id,
                 sale.quantity,
                 source_type=_round(sale),
-                source_id=str(sale.id),
+                source_id=_sid(sale),
                 actor=actor,
                 reason=reason,
             )
@@ -851,7 +859,7 @@ def set_sale_status(
                 MovementKind.restock,
                 sale.quantity,
                 source_type=_round(sale),
-                source_id=str(sale.id),
+                source_id=_sid(sale),
                 actor=actor,
                 reason=reason,
             )
@@ -873,7 +881,7 @@ def set_sale_status(
                 sale.sku_id,
                 sale.quantity,
                 source_type="sale",
-                source_id=str(sale.id),
+                source_id=_sid(sale),
                 actor=actor,
                 reason=reason,
             )
@@ -987,7 +995,7 @@ def _moved(sale: Sale, kind: MovementKind, source_type: str) -> bool:
                 InventoryMovement.sku_id == sale.sku_id,
                 InventoryMovement.kind == kind,
                 InventoryMovement.source_type == source_type,
-                InventoryMovement.source_id == str(sale.id),
+                InventoryMovement.source_id == _sid(sale),
             )
             .limit(1)
         )
@@ -1007,7 +1015,7 @@ def units_out(sale: Sale) -> int:
         .where(
             InventoryMovement.sku_id == sale.sku_id,
             InventoryMovement.source_type.in_(("sale", REPAID)),
-            InventoryMovement.source_id == str(sale.id),
+            InventoryMovement.source_id == _sid(sale),
             InventoryMovement.kind.in_((MovementKind.commit, MovementKind.restock)),
         )
         .group_by(InventoryMovement.kind)
@@ -1044,7 +1052,7 @@ def _repay(sale: Sale, *, actor: Actor, reason: str | None) -> None:
                 kind,
                 sale.quantity,
                 source_type=REPAID,
-                source_id=str(sale.id),
+                source_id=_sid(sale),
                 actor=actor,
                 reason=reason,
             )
@@ -1061,7 +1069,7 @@ def _round(sale: Sale) -> str:
         .where(
             InventoryMovement.kind == MovementKind.commit,
             InventoryMovement.source_type == REPAID,
-            InventoryMovement.source_id == str(sale.id),
+            InventoryMovement.source_id == _sid(sale),
         )
         .limit(1)
     )
@@ -1651,7 +1659,7 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
                 sale.sku_id,
                 sale.quantity,
                 source_type="sale",
-                source_id=str(sale.id),
+                source_id=_sid(sale),
                 actor=actor,
                 reason="reassigned",
             )

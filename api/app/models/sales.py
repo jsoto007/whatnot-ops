@@ -132,6 +132,34 @@ class Sale(db.Model):
     order: Mapped["Order | None"] = relationship(back_populates="sales")  # noqa: F821
 
 
+class SaleItem(db.Model):
+    """One product of a sale (services/sale_items.py). A sale's first row keeps the sale's own
+    keys in the stock ledger; a row opened later (the product was changed, or a second
+    product added) holds its stock under its own id. `closed_at`: the row's product was
+    changed or taken off, and its stock went back."""
+
+    __tablename__ = "sale_items"
+    __table_args__ = (
+        Index("ix_sale_items_sale", "sale_id"),
+        Index("ix_sale_items_sku", "sku_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id", ondelete="CASCADE"), nullable=False)
+    sku_id: Mapped[int] = mapped_column(ForeignKey("skus.id"), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    first: Mapped[bool] = mapped_column(
+        db.Boolean, nullable=False, default=False, server_default="false"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    sku: Mapped[Sku] = relationship()
+
+
 class ReviewStatus(enum.StrEnum):
     open = "open"
     resolved = "resolved"

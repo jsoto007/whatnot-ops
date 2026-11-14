@@ -22,6 +22,7 @@ from .sales import (
     ReviewItem,
     ReviewStatus,
     Sale,
+    SaleItem,
     SaleStatus,
 )
 from .shipments import WhatnotLot, WhatnotShipment
@@ -64,6 +65,7 @@ __all__ = [
     "ReviewStatus",
     "Role",
     "Sale",
+    "SaleItem",
     "SaleStatus",
     "Show",
     "ShowSaleMode",
