@@ -51,6 +51,15 @@ def upgrade():
 
 
 def downgrade():
+    # A row opened after a product change holds its stock under its own key. Without the
+    # rows, the code before this revision would look for that stock under the sale's key and
+    # move nothing when the sale is cancelled. So this goes back only while no such row exists.
+    changed = op.get_bind().execute(sa.text("SELECT count(*) FROM sale_items WHERE NOT first"))
+    if changed.scalar():
+        raise RuntimeError(
+            "sale_items holds rows opened by a product change: their stock is keyed by the "
+            "row and would be lost to the older code. Not downgrading."
+        )
     op.drop_index("ix_sale_items_sku", table_name="sale_items")
     op.drop_index("ix_sale_items_sale", table_name="sale_items")
     op.drop_table("sale_items")

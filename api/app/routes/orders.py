@@ -11,11 +11,14 @@ from ..models import Order, OrderStatus, ParsedEvent, ReviewItem, ReviewStatus, 
 from ..services import (
     audit,
     buyers,
+    catalog,
     dashboard,
     order_slips,
     orders,
+    pipeline,
     ratelimit,
     reconcile,
+    sale_items,
     sale_mode,
 )
 from ..services.buyers import BuyerError
@@ -277,6 +280,63 @@ def set_sale_gifts(sale_id: int):
     )
     db.session.commit()
     return jsonify({"saleId": sale.id, "giftCount": sale.gift_count})
+
+
+@bp.patch("/sales/<int:sale_id>/product")
+@require("review.act")
+def change_sale_product(sale_id: int):
+    """Give a standing sale another product: the old one goes back to stock, the new one
+    leaves it. Once the order is being picked nothing is put back by itself and a note is
+    left for the packer."""
+    sale = db.session.get(Sale, sale_id)
+    if sale is None or sale.organization_id != g.u.organization_id:
+        return jsonify({"error": "sale not found"}), 404
+    d = request.get_json(silent=True) or {}
+    try:
+        sku_id = int(d.get("skuId") or 0)
+    except (TypeError, ValueError):
+        sku_id = 0
+    if not sku_id:
+        return jsonify({"error": "Choose a product."}), 400
+    try:
+        sku = catalog.get_sku(g.u.organization_id, sku_id)
+        result = sale_items.change(sale, sku, actor=Actor.user(g.u), reason="product changed")
+    except (catalog.CatalogError, sale_items.ChangeError) as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), getattr(e, "status", 400)
+    if result["changed"]:
+        names = {
+            i: n
+            for i, n in db.session.execute(
+                select(Sku.id, Sku.code).where(Sku.id.in_([result["from"], result["to"]]))
+            )
+        }
+        if result["picked"]:
+            pipeline.open_review(
+                sale.organization_id,
+                pipeline.SWAPPED_AFTER_PICKING,
+                f"{sale.buyer_username}'s {sale.quantity} × {names[result['from']]} was changed "
+                f"to {names[result['to']]} after its order was already being picked. Swap it "
+                f"in the package, and count the {names[result['from']]} back in Inventory.",
+                show_id=sale.show_id,
+                sale_id=sale.id,
+                dedupe=False,  # one note per change: each is another unit to count back
+            )
+        audit.record(
+            g.u.organization_id,
+            "sale.product_changed",
+            user=g.u,
+            target_type="sale",
+            target_id=sale.id,
+            details={
+                "buyer": sale.buyer_username,
+                "from": names[result["from"]],
+                "to": names[result["to"]],
+                "picked": result["picked"],
+            },
+        )
+    db.session.commit()
+    return jsonify({"sale": serializers.sale(sale), **result})
 
 
 @bp.post("/shows/<int:show_id>/reconcile")

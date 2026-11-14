@@ -3,12 +3,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { BuyerFlagChip } from '../../components/BuyerFlag'
+import { ChangeProduct } from '../../components/ChangeProduct'
 import { DeclineDialog } from '../../components/DeclineDialog'
 import { Icon } from '../../components/Icon'
 import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
 import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleStatus, type Show } from '../../lib/api'
 import { SHOP_TZ, fmtDate, fmtLongDate, fmtWhen, plural } from '../../lib/format'
-import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, orderStatusLabel, packageStatusLabel, parcelStateLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
+import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
 
 const NEXT = ORDER_NEXT_STEP
 
@@ -61,6 +62,7 @@ export function Orders() {
   const [find, setFind] = useState('')
   const [picking, setPicking] = useState<PickerTarget | null>(null)
   const [decline, setDecline] = useState<Sale | null>(null)
+  const [changing, setChanging] = useState<Sale | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const shows = useQuery({ queryKey: ['shows'], queryFn: () => apiGet<{ shows: Show[] }>('/api/shows') })
   const all = useQuery({ queryKey: ['orders', 'every', showId], queryFn: () => apiGet<{ orders: Order[]; truncated?: boolean }>(`/api/orders${showId ? '?show=' + showId : ''}`) })
@@ -111,6 +113,7 @@ export function Orders() {
     await qc.invalidateQueries()
     setPicking(null)
     setDecline(null)
+    setChanging(null)
     setToast(msg)
   }
 
@@ -252,7 +255,7 @@ export function Orders() {
                     <Status o={o} />
                   </td>
                   <td className="c-action">
-                    <Actions o={o} onPick={openPicker} onDecline={setDecline} />
+                    <Actions o={o} onPick={openPicker} onDecline={setDecline} onChange={setChanging} />
                   </td>
                 </tr>
               ))}
@@ -269,6 +272,7 @@ export function Orders() {
         </div>
       )}
       {picking && <ProductPicker target={picking} onClose={() => setPicking(null)} onDone={done} />}
+      {changing && <ChangeProduct sale={changing} buyer={changing.buyer} showDate={changing.showDate} onClose={() => setChanging(null)} onDone={done} />}
       {decline && decline.review && <DeclineDialog sale={decline} buyer={decline.buyer} showDate={decline.showDate} reviewId={decline.review.id} onClose={() => setDecline(null)} onDone={done} />}
       {toast && (
         <div className="toast" role="status">
@@ -372,7 +376,7 @@ function Parcel({ o }: { o: Order }) {
 }
 
 /** One verb for the order's next step, and a menu for the rest. */
-function Actions({ o, onPick, onDecline }: { o: Order; onPick: (sale: Sale) => void; onDecline: (sale: Sale) => void }) {
+function Actions({ o, onPick, onDecline, onChange }: { o: Order; onPick: (sale: Sale) => void; onDecline: (sale: Sale) => void; onChange: (sale: Sale) => void }) {
   const { can } = useAuth()
   const qc = useQueryClient()
   const [error, setError] = useState<string | null>(null)
@@ -423,6 +427,17 @@ function Actions({ o, onPick, onDecline }: { o: Order; onPick: (sale: Sale) => v
         Resolve the declined payment
       </button>,
     )
+  // A sale that stands, has a product and has not shipped can get another one. One menu
+  // entry per such sale: a buyer's order often holds several lots.
+  if (canReview && o.status !== 'shipped' && o.status !== 'cancelled')
+    for (const s of o.sales ?? [])
+      if (s.sku && (s.status === 'paid' || s.status === 'reserved'))
+        more.push(
+          <button key={`change-${s.id}`} type="button" role="menuitem" onClick={() => onChange(s)} data-testid={`change-product-${s.id}`}>
+            <Icon name="undo" size={16} />
+            Change the product of {lotText(s)}
+          </button>,
+        )
   if (o.status === 'open' && canReview)
     more.push(
       <Link key="review" role="menuitem" to={`/app/review/${o.showId}`}>

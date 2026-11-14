@@ -693,6 +693,9 @@ def close_sale(
 # Flags that say "the stream showed this win's card declined" while the sale still stands.
 # Whatnot's paid order for the win clears them (whatnot/orders.apply).
 DECLINE_SEEN = "decline_seen"
+# The packer's note when a sale's product was changed after its order was being picked: the
+# old unit may be in the box and is counted back by a person (services/sale_items.change).
+SWAPPED_AFTER_PICKING = "swapped_after_picking"
 
 
 def flag_decline(sale: Sale, ev: ParsedEvent) -> ReviewItem:
@@ -901,6 +904,10 @@ def set_sale_status(
             ReviewItem.sale_id == sale.id, ReviewItem.status == ReviewStatus.open
         )
     ):
+        if item.reason == SWAPPED_AFTER_PICKING:
+            # A note about a unit that may be in a box: it stands until a person has dealt
+            # with that unit, whatever happens to the sale.
+            continue
         if new_status in (SaleStatus.cancelled, SaleStatus.payment_failed):
             item.status = ReviewStatus.dismissed
             item.resolution = {"by": "sale closed"}
@@ -1663,6 +1670,9 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
                 actor=actor,
                 reason="reassigned",
             )
+            from . import sale_items
+
+            sale_items.close(sale)  # the next product gets a row, and ledger keys, of its own
         sale.sku = sku
         sale.sku_id = sku.id  # _reserve reads the FK before the relationship is flushed
         sale.flagged = False

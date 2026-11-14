@@ -36,6 +36,7 @@ const REASON_LABEL: Record<string, string> = {
   pick_unread: 'Picks not read',
   order_declined: 'Payment declined: nothing recorded',
   closed_after_picking: 'Closed after picking',
+  swapped_after_picking: 'Product changed after picking',
 }
 const ACTION_LABEL: Record<string, string> = {
   assign_sku: 'Assign the suggested SKU',

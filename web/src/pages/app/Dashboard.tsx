@@ -187,6 +187,7 @@ const REASON_WORDS: Record<string, [string, string]> = {
   lot_won_twice: ['lot with two winners', 'lots with two winners'],
   order_declined: ['declined payment with no sale', 'declined payments with no sale'],
   closed_after_picking: ['item to take out of a package', 'items to take out of a package'],
+  swapped_after_picking: ['item to swap in a package', 'items to swap in a package'],
   unmatched_payment: ['payment with no sale', 'payments with no sale'],
   cancel_sale: ['possible cancellation', 'possible cancellations'],
   payment_failed: ['payment problem', 'payment problems'],

@@ -99,7 +99,9 @@ def lot(auction_type: str | None) -> str:
 def movement_source(source_type: str, source_id: str) -> str:
     if source_type in ("sale", "sale_repaid"):
         again = " (paid after a decline)" if source_type == "sale_repaid" else ""
-        return (f"sale #{source_id}" if source_id else "sale") + again
+        # "12:34" is sale 12's product after a change: the key's second half is internal.
+        sale_id = source_id.split(":", 1)[0]
+        return (f"sale #{sale_id}" if sale_id else "sale") + again
     return MOVEMENT_SOURCE.get(source_type, "other")
 
 
@@ -380,6 +382,13 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "show.parsed": ("Re-read a show's chat", _parsed),
     "show.ai_audit_requested": ("Asked the AI to check a show", None),
     "show.mode": ("Changed how a show sells", _show_mode),
+    "sale.product_changed": (
+        "Changed a sale's product",
+        lambda d, t: (
+            f"Changed {d.get('buyer', 'a buyer')}'s product from {_q(d['from'])} to {_q(d['to'])}"
+            + (" after picking had begun" if d.get("picked") else "")
+        ),
+    ),
     "show.shelves": (
         "Laid out the shelves for a show",
         lambda d, t: (

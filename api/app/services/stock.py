@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from ..db import db
 from ..models import InventoryMovement, MovementKind, Product, Sale, Show, Sku
 from . import activity as activity_words
-from . import catalog, inventory
+from . import catalog, inventory, sale_items
 from .dashboard import STANDING  # same definition of "sold" as the dashboard
 from .inventory import Actor, InventoryError
 
@@ -316,7 +316,10 @@ def activity(org_id: int, *, sku_id: int | None = None, limit: int = 50) -> list
         q = q.where(InventoryMovement.sku_id == sku_id)
     rows = db.session.execute(q).all()
     sale_ids = {
-        int(m.source_id) for m, _, _ in rows if m.source_type == "sale" and m.source_id.isdigit()
+        sid
+        for m, _, _ in rows
+        if m.source_type in ("sale", "sale_repaid")
+        and (sid := sale_items.sale_id_of(m.source_id)) is not None
     }
     sales = {
         sid: (buyer, show_id, show_date)
@@ -337,8 +340,8 @@ def activity(org_id: int, *, sku_id: int | None = None, limit: int = 50) -> list
             "skuCode": code,
             "productName": pname,
         }
-        is_sale = m.source_type == "sale" and m.source_id.isdigit()
-        sale = sales.get(int(m.source_id)) if is_sale else None
+        is_sale = m.source_type in ("sale", "sale_repaid")
+        sale = sales.get(sale_items.sale_id_of(m.source_id)) if is_sale else None
         d["sale"] = (
             {"buyer": sale[0], "showId": sale[1], "showDate": sale[2].isoformat()} if sale else None
         )
