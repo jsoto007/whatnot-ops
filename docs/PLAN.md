@@ -7,8 +7,8 @@ the fulfillment team one dashboard with everything they need.
 
 Each phase below is built, tested and verified on its own, then merged to
 `main` via a PR (rebase first, per `ship-pr`). No phase starts until the
-previous one is green in CI and checked by hand. Nothing in this document is
-built yet.
+previous one is green in CI and checked by hand. Phases 0 to 10 below are
+built; section 4 is what came after them.
 
 ---
 
@@ -329,3 +329,49 @@ Verify
 2. OK to create the private GitHub repo under `jsoto007`.
 3. Jev access: do you already have an API key and docs from hello@jevai.net?
    If not, Phase 6 starts on the Claude adapter and Jev slots in later.
+
+---
+
+## 4. After the Seller API: how a show is sold (November 2026)
+
+Once Whatnot's own orders could be read (`docs/WHATNOT_API.md`), the app was rebuilt around
+them: **Whatnot says who won, whether it was paid and where the parcel is; the app says
+which product, the gifts, picking and packing.** The chat is still read, but only for what
+Whatnot cannot know: which product a winner picked.
+
+Built, in this order:
+
+| Stage | What |
+|---|---|
+| 0 | Safety fixes found while planning (a lot title could become an alias) |
+| 1 | The selling mode: "winners pick in chat" or "one product per listing", per shop and per show |
+| 2 | Winners come from Whatnot: order times, declined payments always flagged, one win per auction |
+| 3 | Winner's pick: shelves, and the worker that reads picks after the show |
+| 4 | A sale's products are rows: several per sale; change, add, remove |
+| 5 | Offers typed by the host or a trusted moderator; giveaways to assign |
+| 6 | One product at a time: a show with no laptop; link a listing while naming a win |
+| 7 | Print every slip that is ready |
+| 8 | Print all labels for a show |
+| 9 | Shipped: follow each parcel |
+
+### Still to retire (stage 10), and when
+
+The paths below are fallbacks from before the Seller API. They stay until **two real shows
+have run clean** with the shop connected, orders applied as they arrive, and nothing left
+to fix by hand afterwards. Removing them earlier would leave a show with no way to be
+recorded if the connection fails.
+
+1. The Seller Hub Shipments scrape (`services/shipments.py`, `POST /api/ingest/shipments`,
+   `extension/src/shipments/`, the "Send shipments" button). The order slips already read
+   Whatnot's parcels when the shop is connected.
+2. The extension's decline reader (`extension/src/capture/decline.ts`). With orders applied
+   as they arrive, a decline seen on the stream is only flagged; Whatnot's order decides.
+3. Sales made from chat win lines (`pipeline` sale creation from `EventKind.sale`). With
+   orders applied as they arrive, an order with no sale already becomes one, and a win line
+   claims it.
+4. Then release the extension as chat only.
+5. The sale's own product column (`Sale.sku_id`), once every reader uses `sale_items`
+   (the dashboard's per-show and per-buyer counts still add up `Sale.quantity`).
+
+Each removal is its own pull request with the same rules as any other: tests, a review of
+what moves stock or money, and no merge during a show.

@@ -126,6 +126,31 @@ is **synthetic** until real shows are captured; `tests/test_rules.py`
 prints precision/recall per kind. "Parse now" on a show re-evaluates only
 lines that led nowhere; existing sales are never rewritten by rules.
 
+## How a show is sold
+
+A shop sells one of two ways (Settings → **How you sell**; one show can differ on its own
+page). The mode decides where the product of a win comes from.
+
+- **Winners pick in chat.** Every auction is a "choose any" lot. Whatnot's order says who
+  won; the winner types a shelf spot ("B4") in chat. The show's **Shelves** tab maps spots
+  to products (a new show can copy the last one's). Ten minutes after the show ends the
+  pick worker (`services/picks.py`) reads each winner's lines and leaves what it found on
+  the win in Review; with Settings → "assign winners' picks" on, a pick that is beyond
+  doubt (order paid, clocks in step, one clear spot typed after the win) names the product
+  with no person. Everything else waits in Review with the reason in words.
+- **One product per listing.** Each Whatnot listing is one product, and the order says
+  which. With Whatnot's orders applied as they arrive, such a show needs no laptop. A
+  listing not linked to a product yet shows as "listing not linked"; naming one of its wins
+  offers "Always use this product for this listing".
+
+**Offers.** A win holds one product unless the host or a trusted moderator (Settings) types
+an offer that names the lot: "#45 bogo", "#45 is two for one". The winner then types that
+many spots. A person can also set the count on one win (Orders → row menu). A viewer's
+line never sets an offer.
+
+**Giveaways.** A giveaway in Whatnot's orders is not a sale. Orders → **Giveaways** lists
+them; a person names the product each one was, and stock moves then.
+
 ## Orders and fulfilment
 
 Every sale attaches to its buyer's **order** for that show (one per buyer
@@ -146,14 +171,20 @@ nothing.
 for a show totals the quantities per SKU across those orders; an order page
 is the packing slip (print it) with the buyer's history in other shows.
 
+A sale's products are rows (`services/sale_items.py`): a sale can hold several, and a
+product can be changed, added or taken off from the Orders row menu or the order's own
+page, any number of times. Stock follows each change. Once the order is being picked,
+nothing is put back by itself: Review gets a note for the packer.
+
 ## Whatnot listings
 
 **Inventory → Whatnot listings** shows what the shop has listed on Whatnot next
 to its own products. A listing whose Whatnot SKU equals a product code links
 itself; the rest are linked by hand. Inventory then shows "N on Whatnot" beside
 what the shop can sell and says when the two differ, and an order for a linked
-listing names its product without a chat pick. The app only reads Whatnot's
-stock; it never changes it.
+listing names its product without a chat pick. A listing made during a show is
+read when its first order arrives (the daily read pauses while a show is on
+air). The app only reads Whatnot's stock; it never changes it.
 
 ## Buyers
 

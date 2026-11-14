@@ -101,6 +101,12 @@ next `NNNN_name.py`. A revision that has run on prod is frozen; new changes
 are new revisions. Downgrades that drop tables using Postgres enums must drop
 the enum types (see 0004, 0007).
 
+A deploy runs every revision the database has not seen. `flask db current` on the
+service (or the deploy log's "Running upgrade" lines) says where it stands;
+`flask db heads` must print one head before a merge. Two downgrades refuse on
+purpose once they hold data that moved stock: 0033 (`sale_items`) and 0035
+(`giveaway_items`).
+
 ## Extension for the team
 
 The web service's build also builds `extension/dist`, and **Settings →
@@ -123,6 +129,8 @@ auto-updates (one-time developer registration and Google's review).
   401 or 403. The account owner makes a new token in Seller Hub (or adds the
   missing permission); put it in `WHATNOT_API_TOKEN` on both services. Settings →
   Whatnot → Check now clears the banner once a call works.
+- **Read now**: Settings → Whatnot → Check now also reads Whatnot's shows and a
+  live show's orders at once, without waiting for the next sweep.
 - **Nothing arrives during a show**: Settings → Whatnot shows the last update
   received. With no webhook for 10 minutes while a show is live, the worker
   reads the show's orders itself every sweep (5 min). A failing webhook address
