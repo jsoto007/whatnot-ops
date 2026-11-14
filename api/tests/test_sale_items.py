@@ -5,6 +5,7 @@ first row keeps the sale's own keys in the stock ledger, so sales named before r
 and sales that never change behave exactly as they always did. Names here are made up.
 """
 
+import io
 import threading
 
 import pytest
@@ -16,6 +17,7 @@ from app.models import (
     InventoryMovement,
     MovementKind,
     OrderStatus,
+    Organization,
     ReviewItem,
     ReviewStatus,
     Sale,
@@ -372,3 +374,294 @@ def test_stock_history_names_the_buyer_of_a_changed_sale_and_no_internal_key(
     assert sold and all(m["sale"]["buyer"] == "ann_made_up" for m in sold)
     assert activity.movement_source("sale", "12:34") == "sale #12"
     assert activity.movement_source("sale_repaid", "12:34") == "sale #12 (paid after a decline)"
+
+
+# ---------- phase three: more than one product on a sale ----------
+
+
+def add(app, sku_id, quantity=1):
+    with app.app_context():
+        sale = db.session.scalar(select(Sale).order_by(Sale.id))
+        result = sale_items.add(
+            sale, db.session.get(Sku, sku_id), actor=pipeline.RULE_ACTOR, quantity=quantity
+        )
+        db.session.commit()
+        return result
+
+
+def set_status(app, status):
+    with app.app_context():
+        sale = db.session.scalar(select(Sale).order_by(Sale.id))
+        pipeline.set_sale_status(sale, status, reason="test", actor=pipeline.RULE_ACTOR)
+        db.session.commit()
+
+
+def test_a_second_product_leaves_the_shelf_and_the_sale_keeps_its_first(app, world, blue):
+    paid_sale(app, world)
+    got = add(app, blue, 2)
+    assert got["quantity"] == 2 and got["picked"] is False
+    assert (level(app, world["red"]), level(app, blue)) == ((2, 0), (1, 0))
+    with app.app_context():
+        sale = db.session.scalar(select(Sale))
+        assert sale.sku_id == world["red"] and sale.price_cents == 2500
+        assert [(r.sku_id, r.quantity, r.first) for r in sale_items.rows(sale)] == [
+            (world["red"], 1, True),
+            (blue, 2, False),
+        ]
+        assert pipeline.units_out(sale) == 3
+
+
+def test_cancel_decline_and_paid_again_move_every_product(app, world, blue):
+    paid_sale(app, world)
+    add(app, blue)
+    set_status(app, SaleStatus.payment_failed)
+    assert (level(app, world["red"]), level(app, blue)) == ((3, 0), (3, 0))
+    set_status(app, SaleStatus.paid)
+    assert (level(app, world["red"]), level(app, blue)) == ((2, 0), (2, 0))
+    with app.app_context():  # a second round is refused for the whole sale, and moves nothing
+        sale = db.session.scalar(select(Sale))
+        pipeline.set_sale_status(
+            sale, SaleStatus.payment_failed, reason="again", actor=pipeline.RULE_ACTOR
+        )
+        db.session.commit()
+        with pytest.raises(pipeline.ReviewError):
+            pipeline.set_sale_status(sale, SaleStatus.paid, reason="x", actor=pipeline.RULE_ACTOR)
+        db.session.rollback()
+    assert (level(app, world["red"]), level(app, blue)) == ((3, 0), (3, 0))
+
+
+def test_cancelling_a_two_product_sale_puts_both_back(app, world, blue):
+    paid_sale(app, world)
+    add(app, blue)
+    set_status(app, SaleStatus.cancelled)
+    assert (level(app, world["red"]), level(app, blue)) == ((3, 0), (3, 0))
+
+
+def test_one_of_two_products_is_changed_or_taken_off(app, world, blue):
+    paid_sale(app, world)
+    added = add(app, blue)
+    with app.app_context():
+        green = catalog.create_product(world["org"], "Green bundle", skus=[{"code": "GRN"}]).skus[0]
+        inventory.move(green.id, MovementKind.restock, 3, source_type="test", source_id="seed-g")
+        db.session.commit()
+        green_id = green.id
+        sale = db.session.scalar(select(Sale))
+        with pytest.raises(sale_items.ChangeError, match="say which one"):
+            sale_items.change(sale, green, actor=pipeline.RULE_ACTOR)
+        db.session.rollback()
+        sale = db.session.scalar(select(Sale))
+        sale_items.change(
+            sale, db.session.get(Sku, green_id), actor=pipeline.RULE_ACTOR, row_id=added["rowId"]
+        )
+        db.session.commit()
+    assert (level(app, world["red"]), level(app, blue), level(app, green_id)) == (
+        (2, 0),
+        (3, 0),
+        (2, 0),
+    )
+    with app.app_context():  # take the first product off: the sale's product is the other one
+        sale = db.session.scalar(select(Sale))
+        first = sale_items.rows(sale)[0]
+        sale_items.remove(sale, first.id, actor=pipeline.RULE_ACTOR)
+        db.session.commit()
+        assert sale.sku_id == green_id
+        only = sale_items.rows(sale)
+        assert len(only) == 1
+        with pytest.raises(sale_items.ChangeError, match="only product"):
+            sale_items.remove(sale, only[0].id, actor=pipeline.RULE_ACTOR)
+        db.session.rollback()
+    assert (level(app, world["red"]), level(app, blue), level(app, green_id)) == (
+        (3, 0),
+        (3, 0),
+        (2, 0),
+    )
+
+
+def test_a_product_is_not_added_to_a_sale_that_cannot_take_it(app, world, blue):
+    world["say"](app, [("", "ann_made_up won mystery box")])
+    run(app, world["show"])
+    with app.app_context():
+        sale = db.session.scalar(select(Sale))
+        sku = db.session.get(Sku, blue)
+        with pytest.raises(sale_items.ChangeError, match="Name it in Review"):
+            sale_items.add(sale, sku, actor=pipeline.RULE_ACTOR)
+        db.session.rollback()
+    assert level(app, blue) == (3, 0)
+
+
+def test_a_wins_price_splits_evenly_with_the_odd_cents_first():
+    assert sale_items.split(1000, 2) == [500, 500]
+    assert sale_items.split(1001, 2) == [501, 500]
+    assert sale_items.split(100, 3) == [34, 33, 33]
+    assert sale_items.split(None, 2) == [None, None]
+    assert sale_items.split(700, 1) == [700]
+    for cents, parts in ((999, 4), (1, 3), (0, 2)):
+        assert sum(sale_items.split(cents, parts)) == cents
+
+
+def test_every_reader_counts_both_products_and_the_money_still_adds_up(
+    app, client, world, blue, sign_in
+):
+    from app.models import Show
+    from app.services import dashboard, order_slips, reports
+
+    paid_sale(app, world)  # Red bundle, $25.00
+    add(app, blue, 2)
+    h = sign_in(world["org"], "manager")
+    with app.app_context():
+        show = db.session.get(Show, world["show"])
+        sale = db.session.scalar(select(Sale))
+        # The pick list pulls both products.
+        assert {(p["code"], p["quantity"]) for p in orders.pick_list(show)} == {
+            ("RED", 1),
+            ("BLUE", 2),
+        }
+        # Top products: units per product, and the win's price split between them.
+        top = {t["code"]: (t["sold"], t["paidCents"]) for t in dashboard.top_skus(world["org"])}
+        assert top == {"RED": (1, 1250), "BLUE": (2, 1250)}
+        assert sum(paid for _, paid in top.values()) == sale.price_cents * sale.quantity
+        # The packing slip names every product on the win's line.
+        slip = order_slips.build(show)["slips"][0]
+        assert [r["product"] for r in slip["rows"]] == ["Red bundle + Blue bundle ×2"]
+        # The workbook: one sale line; a line per product whose money adds up to it; one
+        # line per product to put in the box.
+        from openpyxl import load_workbook
+
+        wb = load_workbook(
+            io.BytesIO(reports.build(db.session.get(Organization, world["org"]), show=show))
+        )
+        sales_sheet = [
+            r for r in wb["Sales by show"].iter_rows(min_row=2, values_only=True) if r[1]
+        ]
+        assert (sales_sheet[0][2], sales_sheet[0][3]) == (
+            "Red bundle + Blue bundle ×2",
+            "RED + BLUE",
+        )
+        sold = {
+            r[0]: (r[2], r[3])
+            for r in wb["Products sold"].iter_rows(min_row=2, values_only=True)
+            if r[0]
+        }
+        assert sold == {"RED": (1, 12.5), "BLUE": (2, 12.5)}
+        box = [
+            (r[3], r[5]) for r in wb["Fulfilment"].iter_rows(min_row=2, values_only=True) if r[3]
+        ]
+        assert sorted(box) == [("BLUE", 2), ("RED", 1)]
+    # The Orders page gets every product with its part of the price.
+    row = client.get("/api/orders?view=all", headers=h).get_json()["orders"][0]["sales"][0]
+    assert [(p["sku"]["code"], p["quantity"], p["shareCents"]) for p in row["products"]] == [
+        ("RED", 1, 1250),
+        ("BLUE", 2, 1250),
+    ]
+    assert row["sku"]["code"] == "RED" and row["priceCents"] == 2500
+
+
+def test_the_routes_add_and_take_off_a_product(app, client, world, blue, sign_in):
+    paid_sale(app, world)
+    h = sign_in(world["org"], "manager")
+    with app.app_context():
+        sale_id = db.session.scalar(select(Sale.id))
+    url = f"/api/orders/sales/{sale_id}/products"
+    r = client.post(url, json={"skuId": blue, "quantity": 2}, headers=h)
+    assert r.status_code == 200 and r.get_json()["quantity"] == 2
+    assert (level(app, world["red"]), level(app, blue)) == ((2, 0), (1, 0))
+    assert client.post(url, json={"skuId": blue, "quantity": 0}, headers=h).status_code == 400
+    assert client.post(url, json={}, headers=h).status_code == 400
+    row_id = r.get_json()["rowId"]
+    r = client.delete(f"{url}/{row_id}", headers=h)
+    assert r.status_code == 200
+    assert (level(app, world["red"]), level(app, blue)) == ((2, 0), (3, 0))
+    assert client.delete(f"{url}/{row_id}", headers=h).status_code == 404  # gone already
+    viewer = sign_in(world["org"], "viewer")
+    assert client.post(url, json={"skuId": blue}, headers=viewer).status_code == 403
+    with app.app_context():
+        said = [
+            activity.describe(e.action, e.details)
+            for e in db.session.scalars(
+                select(AuditLog).where(AuditLog.action.like("sale.product_%")).order_by(AuditLog.id)
+            )
+        ]
+        assert said == [
+            "Added 2 × \u201cBLUE\u201d to ann_made_up's sale",
+            "Took \u201cBLUE\u201d off ann_made_up's sale",
+        ]
+
+
+# ---------- found by the adversarial pass on several products ----------
+
+
+def test_three_products_at_an_odd_price_add_up_to_the_cent_in_sql_as_in_python(app, world, blue):
+    """A plain `/` in SQL gave 334.67 + 333.67 + 334.67 for a $10.01 win."""
+    from app.services import dashboard
+
+    world["say"](app, [("", "ann_made_up won the auction for Red bundle for $10.01", "player")])
+    run(app, world["show"])
+    add(app, blue, 2)
+    add(app, world["red"])  # the same product again, on a row of its own
+    with app.app_context():
+        sale = db.session.scalar(select(Sale))
+        assert [p["shareCents"] for p in sale_items.products(sale)] == [334, 334, 333]
+        line = sale_items.lines()
+        got = db.session.execute(select(line.c.share).order_by(line.c.share.desc())).scalars().all()
+        assert [int(x) for x in got] == [334, 334, 333]
+        top = {t["code"]: (t["sold"], t["paidCents"]) for t in dashboard.top_skus(world["org"])}
+        assert top == {"RED": (2, 667), "BLUE": (2, 334)}
+        assert sum(paid for _, paid in top.values()) == 1001
+
+
+def test_the_slip_spells_every_count_when_the_sales_quantity_does_not_say_it(app, world, blue):
+    from app.models import Show
+    from app.services import order_slips
+
+    paid_sale(app, world)
+    add(app, blue, 2)
+    with app.app_context():
+        sale = db.session.scalar(select(Sale))
+        sale_items.remove(sale, sale_items.rows(sale)[0].id, actor=pipeline.RULE_ACTOR)
+        db.session.commit()
+    assert (level(app, world["red"]), level(app, blue)) == ((3, 0), (1, 0))
+    with app.app_context():
+        show = db.session.get(Show, world["show"])
+        rows_ = order_slips.build(show)["slips"][0]["rows"]
+        # Two blue ones left the shelf: the slip must say two, on one line.
+        assert [r["product"] for r in rows_] == ["Blue bundle ×2"]
+
+
+def test_a_two_unit_sale_with_one_more_product_prints_one_line_with_its_counts(app, world, blue):
+    from app.models import Show
+    from app.services import order_slips
+
+    world["say"](app, [("", "ann_made_up won Red bundle x2")])
+    run(app, world["show"])
+    add(app, blue)
+    with app.app_context():
+        rows_ = order_slips.build(db.session.get(Show, world["show"]))["slips"][0]["rows"]
+        assert [r["product"] for r in rows_] == ["Red bundle ×2 + Blue bundle"]
+
+
+def test_inventory_counts_the_second_product_as_sold_and_as_running_low(app, world, blue):
+    from app.models import Show
+    from app.services import stock
+
+    paid_sale(app, world)
+    add(app, blue, 2)
+    with app.app_context():
+        sold = {r["code"]: r["sold"] for r in stock.levels(world["org"])}
+        assert sold == {"RED": 1, "BLUE": 2}
+        key = db.session.get(Show, world["show"]).show_key
+        low = {r["code"] for r in stock.running_low(world["org"], show_key=key, limit=20)}
+        assert "BLUE" in low
+
+
+def test_the_routes_answer_with_every_product_now_on_the_sale(app, client, world, blue, sign_in):
+    paid_sale(app, world)
+    h = sign_in(world["org"], "manager")
+    with app.app_context():
+        sale_id = db.session.scalar(select(Sale.id))
+    r = client.post(f"/api/orders/sales/{sale_id}/products", json={"skuId": blue}, headers=h)
+    assert [p["sku"]["code"] for p in r.get_json()["sale"]["products"]] == ["RED", "BLUE"]
+    row_id = r.get_json()["rowId"]
+    r = client.delete(f"/api/orders/sales/{sale_id}/products/{row_id}", headers=h)
+    assert [p["sku"]["code"] for p in r.get_json()["sale"]["products"]] == ["RED"]
+    r = client.patch(f"/api/orders/sales/{sale_id}/product", json={"skuId": blue}, headers=h)
+    assert [p["sku"]["code"] for p in r.get_json()["sale"]["products"]] == ["BLUE"]

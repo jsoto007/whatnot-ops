@@ -7,7 +7,7 @@ import { ChangeProduct } from '../../components/ChangeProduct'
 import { DeclineDialog } from '../../components/DeclineDialog'
 import { Icon } from '../../components/Icon'
 import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
-import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleStatus, type Show } from '../../lib/api'
+import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleProduct, type SaleStatus, type Show } from '../../lib/api'
 import { SHOP_TZ, fmtDate, fmtLongDate, fmtWhen, plural } from '../../lib/format'
 import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
 
@@ -41,6 +41,12 @@ const RANK: Record<OrderStatus, number> = { paid: 0, picking: 1, packed: 2, open
 const STANDING: SaleStatus[] = ['reserved', 'paid', 'fulfilled', 'detected']
 
 const titleOf = (s: Sale) => (s.sku ? `${s.sku.productName}${s.sku.name ? ' ' + s.sku.name : ''}` : s.itemTitle || s.item || '?')
+/** A change to one sale's products: change one (which, when it holds several), or add one. */
+interface ProductChange {
+  sale: Sale
+  product?: SaleProduct
+  add?: boolean
+}
 /** Lots that are "the same item": one show, one title without the lot number. A title that is
  * only a lot number ("#520") names nothing, so such lots are never grouped. */
 const groupKey = (s: Sale): string | null => {
@@ -62,7 +68,7 @@ export function Orders() {
   const [find, setFind] = useState('')
   const [picking, setPicking] = useState<PickerTarget | null>(null)
   const [decline, setDecline] = useState<Sale | null>(null)
-  const [changing, setChanging] = useState<Sale | null>(null)
+  const [changing, setChanging] = useState<ProductChange | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const shows = useQuery({ queryKey: ['shows'], queryFn: () => apiGet<{ shows: Show[] }>('/api/shows') })
   const all = useQuery({ queryKey: ['orders', 'every', showId], queryFn: () => apiGet<{ orders: Order[]; truncated?: boolean }>(`/api/orders${showId ? '?show=' + showId : ''}`) })
@@ -255,7 +261,7 @@ export function Orders() {
                     <Status o={o} />
                   </td>
                   <td className="c-action">
-                    <Actions o={o} onPick={openPicker} onDecline={setDecline} onChange={setChanging} />
+                    <Actions o={o} onPick={openPicker} onDecline={setDecline} onChange={setChanging} onRemoved={done} />
                   </td>
                 </tr>
               ))}
@@ -272,7 +278,7 @@ export function Orders() {
         </div>
       )}
       {picking && <ProductPicker target={picking} onClose={() => setPicking(null)} onDone={done} />}
-      {changing && <ChangeProduct sale={changing} buyer={changing.buyer} showDate={changing.showDate} onClose={() => setChanging(null)} onDone={done} />}
+      {changing && <ChangeProduct sale={changing.sale} buyer={changing.sale.buyer} showDate={changing.sale.showDate} product={changing.product} add={changing.add} onClose={() => setChanging(null)} onDone={done} />}
       {decline && decline.review && <DeclineDialog sale={decline} buyer={decline.buyer} showDate={decline.showDate} reviewId={decline.review.id} onClose={() => setDecline(null)} onDone={done} />}
       {toast && (
         <div className="toast" role="status">
@@ -287,11 +293,14 @@ export function Orders() {
 function Items({ o }: { o: Order }) {
   const groups = new Map<string, { title: string; qty: number; lots: number[]; unknown: boolean }>()
   for (const s of (o.sales ?? []).filter((s) => STANDING.includes(s.status))) {
-    const title = titleOf(s)
-    const g = groups.get(title) ?? { title, qty: 0, lots: [], unknown: !s.sku }
-    g.qty += s.quantity
-    if (s.lot != null) g.lots.push(s.lot)
-    groups.set(title, g)
+    // One line per product: a win with two products ("two for one") counts under both.
+    const parts = (s.products ?? []).length > 0 ? s.products!.map((p) => ({ title: `${p.sku.productName}${p.sku.name ? ' ' + p.sku.name : ''}`, qty: p.quantity })) : [{ title: titleOf(s), qty: s.quantity }]
+    for (const part of parts) {
+      const g = groups.get(part.title) ?? { title: part.title, qty: 0, lots: [], unknown: !s.sku }
+      g.qty += part.qty
+      if (s.lot != null) g.lots.push(s.lot)
+      groups.set(part.title, g)
+    }
   }
   return (
     <div className="item-lines">
@@ -376,7 +385,7 @@ function Parcel({ o }: { o: Order }) {
 }
 
 /** One verb for the order's next step, and a menu for the rest. */
-function Actions({ o, onPick, onDecline, onChange }: { o: Order; onPick: (sale: Sale) => void; onDecline: (sale: Sale) => void; onChange: (sale: Sale) => void }) {
+function Actions({ o, onPick, onDecline, onChange, onRemoved }: { o: Order; onPick: (sale: Sale) => void; onDecline: (sale: Sale) => void; onChange: (c: ProductChange) => void; onRemoved: (msg: string) => void | Promise<void> }) {
   const { can } = useAuth()
   const qc = useQueryClient()
   const [error, setError] = useState<string | null>(null)
@@ -430,14 +439,44 @@ function Actions({ o, onPick, onDecline, onChange }: { o: Order; onPick: (sale: 
   // A sale that stands, has a product and has not shipped can get another one. One menu
   // entry per such sale: a buyer's order often holds several lots.
   if (canReview && o.status !== 'shipped' && o.status !== 'cancelled')
-    for (const s of o.sales ?? [])
-      if (s.sku && (s.status === 'paid' || s.status === 'reserved'))
+    for (const s of o.sales ?? []) {
+      if (!s.sku || (s.status !== 'paid' && s.status !== 'reserved')) continue
+      const several = (s.products ?? []).length > 1
+      // One product: change it. Several ("two for one"): change or take off each by name.
+      for (const p of several ? s.products! : [undefined])
         more.push(
-          <button key={`change-${s.id}`} type="button" role="menuitem" onClick={() => onChange(s)} data-testid={`change-product-${s.id}`}>
+          <button key={`change-${s.id}-${p?.rowId ?? 0}`} type="button" role="menuitem" onClick={() => onChange({ sale: s, product: p })} data-testid={`change-product-${s.id}`}>
             <Icon name="undo" size={16} />
-            Change the product of {lotText(s)}
+            {p ? `Change ${p.sku.productName} of ${lotText(s)}` : `Change the product of ${lotText(s)}`}
           </button>,
         )
+      if (several)
+        for (const p of s.products!)
+          more.push(
+            <button
+              key={`off-${s.id}-${p.rowId}`}
+              type="button"
+              role="menuitem"
+              onClick={async () => {
+                try {
+                  await api('DELETE', `/api/orders/sales/${s.id}/products/${p.rowId}`)
+                  await onRemoved(`${p.sku.productName} is off ${o.buyer}'s ${lotText(s)} and back in stock.`)
+                } catch (e) {
+                  setError(e instanceof ApiError ? e.message : 'Could not take it off. Try again.')
+                }
+              }}
+            >
+              <Icon name="minus" size={16} />
+              Take {p.sku.productName} off {lotText(s)}
+            </button>,
+          )
+      more.push(
+        <button key={`add-${s.id}`} type="button" role="menuitem" onClick={() => onChange({ sale: s, add: true })} data-testid={`add-product-${s.id}`}>
+          <Icon name="plus" size={16} />
+          Add a product to {lotText(s)}
+        </button>,
+      )
+    }
   if (o.status === 'open' && canReview)
     more.push(
       <Link key="review" role="menuitem" to={`/app/review/${o.showId}`}>

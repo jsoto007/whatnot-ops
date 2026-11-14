@@ -375,13 +375,20 @@ def buyer_gifts(org_id: int, names: list[str]) -> int:
 
 
 def top_skus(org_id: int, *, show_id: int | None = None, limit: int = 10) -> list[dict]:
+    from . import sale_items
+
+    # Per product of each sale: a win with two products counts under both, its price
+    # split between them (sale_items.split), so the products add up to the show's total.
+    line = sale_items.lines()
+    paid = func.coalesce(func.sum(case((Sale.status.in_(PAID), line.c.share), else_=0)), 0)
     q = (
-        select(Sku, Product.name, func.sum(Sale.quantity), _rev(PAID))
-        .join(Sale, Sale.sku_id == Sku.id)
+        select(Sku, Product.name, func.sum(line.c.quantity), paid)
+        .join(line, line.c.sku_id == Sku.id)
+        .join(Sale, Sale.id == line.c.sale_id)
         .join(Product, Product.id == Sku.product_id)
         .where(Sale.organization_id == org_id, Sale.status.in_(STANDING))
         .group_by(Sku.id, Product.name)
-        .order_by(func.sum(Sale.quantity).desc(), Sku.code)
+        .order_by(func.sum(line.c.quantity).desc(), Sku.code)
         .limit(limit)
     )
     if show_id:
@@ -570,11 +577,15 @@ def _low_stock(org_id: int) -> list[dict]:
         .order_by(Sku.on_hand - Sku.reserved, Sku.code)
         .limit(20)
     ).all()
+    from . import sale_items
+
+    line = sale_items.lines()
     sold = dict(
         db.session.execute(
-            select(Sale.sku_id, func.sum(Sale.quantity))
-            .where(Sale.sku_id.in_([s.id for s in skus] or [0]), Sale.status.in_(STANDING))
-            .group_by(Sale.sku_id)
+            select(line.c.sku_id, func.sum(line.c.quantity))
+            .join(Sale, Sale.id == line.c.sale_id)
+            .where(line.c.sku_id.in_([s.id for s in skus] or [0]), Sale.status.in_(STANDING))
+            .group_by(line.c.sku_id)
         ).all()
     )
     return [

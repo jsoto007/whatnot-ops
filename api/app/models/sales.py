@@ -160,6 +160,16 @@ class SaleItem(db.Model):
     sku: Mapped[Sku] = relationship()
 
 
+# A sale's products now (its open rows, oldest first). Read-only: rows are made and closed
+# only by services/sale_items.py.
+Sale.open_items = relationship(
+    SaleItem,
+    primaryjoin=lambda: (SaleItem.sale_id == Sale.id) & SaleItem.closed_at.is_(None),
+    order_by=lambda: SaleItem.id,
+    viewonly=True,
+)
+
+
 class ReviewStatus(enum.StrEnum):
     open = "open"
     resolved = "resolved"

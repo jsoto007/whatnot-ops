@@ -184,6 +184,29 @@ def event(e) -> dict:
     }
 
 
+def _products(s) -> list[dict] | None:
+    from sqlalchemy import inspect
+
+    from .services import sale_items
+
+    if "open_items" in inspect(s).unloaded:
+        return None
+    return [
+        {
+            "rowId": p["rowId"],
+            "quantity": p["quantity"],
+            "shareCents": p["shareCents"],
+            "sku": {
+                "id": p["sku"].id,
+                "code": p["sku"].code,
+                "name": p["sku"].name,
+                "productName": p["sku"].product.name,
+            },
+        }
+        for p in sale_items.products(s)
+    ]
+
+
 def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
     """`review` is the open review item waiting on this sale, when the caller looked it up."""
     # A sale the app learnt of from Whatnot's order has no chat line: its order time.
@@ -201,6 +224,9 @@ def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
         }
         if s.sku
         else None,
+        # Every product of the sale, when it holds more than one ("two for one"), each with
+        # its part of the price (services/sale_items.py). Only where the caller loaded them.
+        "products": _products(s),
         "item": s.item_text,
         "itemTitle": rules.item_title(s.item_text or ""),
         "lot": rules.lot_number(s.item_text or ""),

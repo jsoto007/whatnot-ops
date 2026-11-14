@@ -42,12 +42,13 @@ from ..models import (
     ReviewItem,
     ReviewStatus,
     Sale,
+    SaleItem,
     SaleStatus,
     Show,
     Sku,
     WhatnotLot,
 )
-from . import rules, sale_chat, shipments
+from . import rules, sale_chat, sale_items, shipments
 from .orders import STANDING
 from .whatnot import connection
 
@@ -63,10 +64,15 @@ def product_label(sale: Sale) -> str:
     """The Product Checklist text: the matched product (and variant), "No Pick" when the
     title only names the lot, else what the line said."""
     if sale.sku is not None:
-        product, variant = sale.sku.product.name.strip(), (sale.sku.name or "").strip()
-        if variant and variant.lower() not in (product.lower(), "default"):
-            return f"{product} - {variant}"
-        return product
+
+        def name(sku: Sku) -> str:
+            product, variant = sku.product.name.strip(), (sku.name or "").strip()
+            if variant and variant.lower() not in (product.lower(), "default"):
+                return f"{product} - {variant}"
+            return product
+
+        # A win with several products ("two for one") lists them all on its line.
+        return sale_items.label(sale, name)
     item = (sale.item_text or "").strip()
     return NO_PICK if not item or rules.is_lot_title(item) else item
 
@@ -165,6 +171,7 @@ def build(show: Show, *, only: str | None = None) -> dict:
         .where(Sale.show_id == show.id, Sale.status.in_(STANDING))
         .options(
             selectinload(Sale.sku).selectinload(Sku.product),
+            selectinload(Sale.open_items).selectinload(SaleItem.sku).selectinload(Sku.product),
             selectinload(Sale.event).selectinload(ParsedEvent.message),
         )
     ).all()
@@ -229,7 +236,10 @@ def build(show: Show, *, only: str | None = None) -> dict:
             # More units than a box holds is a misread Qty column, not 999 lines to print.
             or lot.quantity > MAX_UNIT_ROWS
         )
-        for unit in range(min(max(1, lot.quantity), MAX_UNIT_ROWS)):
+        # A win whose product text spells its own counts ("Red bundle + Blue bundle ×2")
+        # prints once: a line per unit would repeat every product.
+        units = 1 if s is not None and sale_items.spelled(s) else lot.quantity
+        for unit in range(min(max(1, units), MAX_UNIT_ROWS)):
             first = unit == 0
             b["rows"].append(
                 {
@@ -259,7 +269,8 @@ def build(show: Show, *, only: str | None = None) -> dict:
         b["needsReview"] |= s.status is SaleStatus.detected or s.quantity > MAX_UNIT_ROWS
         auction = rules.lot_label(s.item_text, s.auction_type)
         product = product_label(s)
-        for unit in range(min(max(1, s.quantity), MAX_UNIT_ROWS)):
+        units = 1 if sale_items.spelled(s) else s.quantity
+        for unit in range(min(max(1, units), MAX_UNIT_ROWS)):
             first = unit == 0
             b["rows"].append(
                 {

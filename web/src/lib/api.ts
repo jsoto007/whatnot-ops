@@ -298,6 +298,9 @@ export interface Sale {
   showDate: string
   buyer: string
   sku: { id: number; code: string; name: string; productName: string } | null
+  /** Every product of the sale with its part of the price, where the server sent them (the
+   * orders pages). One entry for almost every sale; more for a "two for one". */
+  products?: SaleProduct[] | null
   item: string
   /** The listing title without Whatnot's lot number ("$1 BEAUTY PULLS" for "… #520"). */
   itemTitle?: string
@@ -332,6 +335,13 @@ export interface Sale {
   /** What the winner said around the win; only on a show's sales list. */
   chat?: SaleChatLine[]
   createdAt: string
+}
+export interface SaleProduct {
+  /** The row to change or take off; null for a sale read as its own one product. */
+  rowId: number | null
+  quantity: number
+  shareCents: number | null
+  sku: { id: number; code: string; name: string; productName: string }
 }
 export interface SaleChatLine {
   seq: number

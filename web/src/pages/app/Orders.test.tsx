@@ -398,3 +398,26 @@ test('a sale that stands can get another product from its row menu', async () =>
   fireEvent.click(within(screen.getByTestId('order-moonlove3')).getByRole('button', { name: 'More for moonlove3' }))
   expect(screen.queryByRole('menuitem', { name: /Change the product/ })).toBeNull()
 })
+
+test('a win with two products lists both, and each can be changed or taken off; one more can be added', async () => {
+  const bag = { id: 8, code: 'BB-01', name: '', productName: 'Beauty Blind Bag' }
+  const two = sale({ buyer: 'made_up_two', orderId: 30, sku: RED, item: '$1 BEAUTY PULLS #540', lot: 540, status: 'paid', paidAt: '2026-11-08T03:50:00Z', wonAt: '2026-11-08T03:50:00Z', products: [{ rowId: 61, quantity: 1, shareCents: 350, sku: RED }, { rowId: 62, quantity: 2, shareCents: 350, sku: bag }] })
+  orders.push(order({ id: 30, buyer: 'made_up_two', status: 'paid', verified: true, sales: [two] }))
+  try {
+    mount()
+    const row = await screen.findByTestId('order-made_up_two')
+    expect(row).toHaveTextContent('1 × $1 Beauty Pulls')
+    expect(row).toHaveTextContent('2 × Beauty Blind Bag')
+    fireEvent.click(within(row).getByRole('button', { name: 'More for made_up_two' }))
+    expect(await screen.findByRole('menuitem', { name: 'Change $1 Beauty Pulls of lot #540' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Change Beauty Blind Bag of lot #540' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Add a product to lot #540' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Take Beauty Blind Bag off lot #540' }))
+    await waitFor(() => {
+      const calls = (globalThis.fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+      expect(calls.some(([url, init]) => init?.method === 'DELETE' && url === `/api/orders/sales/${two.id}/products/62`)).toBe(true)
+    })
+  } finally {
+    orders.pop()
+  }
+})

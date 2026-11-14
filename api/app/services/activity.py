@@ -389,6 +389,21 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
             + (" after picking had begun" if d.get("picked") else "")
         ),
     ),
+    "sale.product_added": (
+        "Added a product to a sale",
+        lambda d, t: (
+            f"Added {d.get('quantity', 1)} × {_q(d['product'])} "
+            f"to {d.get('buyer', 'a buyer')}'s sale"
+            + (" after picking had begun" if d.get("picked") else "")
+        ),
+    ),
+    "sale.product_removed": (
+        "Took a product off a sale",
+        lambda d, t: (
+            f"Took {_q(d['product'])} off {d.get('buyer', 'a buyer')}'s sale"
+            + (" after picking had begun" if d.get("picked") else "")
+        ),
+    ),
     "show.shelves": (
         "Laid out the shelves for a show",
         lambda d, t: (

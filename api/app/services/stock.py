@@ -209,11 +209,13 @@ def levels(org_id: int) -> list[dict]:
         .where(Sku.organization_id == org_id)
         .order_by(Product.name, Sku.code)
     ).all()
+    line = sale_items.lines()  # every product of a sale, not only its first
     sold = dict(
         db.session.execute(
-            select(Sale.sku_id, func.sum(Sale.quantity))
+            select(line.c.sku_id, func.sum(line.c.quantity))
+            .join(Sale, Sale.id == line.c.sale_id)
             .where(Sale.organization_id == org_id, Sale.status.in_(STANDING))
-            .group_by(Sale.sku_id)
+            .group_by(line.c.sku_id)
         ).all()
     )
     last = {
@@ -281,8 +283,11 @@ def running_low(
         )
         if show_id is None:
             return []
-        sold_here = select(Sale.sku_id).where(
-            Sale.organization_id == org_id, Sale.show_id == show_id, Sale.sku_id.is_not(None)
+        line = sale_items.lines()  # every product of a sale, not only its first
+        sold_here = (
+            select(line.c.sku_id)
+            .join(Sale, Sale.id == line.c.sale_id)
+            .where(Sale.organization_id == org_id, Sale.show_id == show_id)
         )
         q = q.where(Sku.id.in_(sold_here))
     rows = db.session.execute(
