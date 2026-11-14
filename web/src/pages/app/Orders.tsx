@@ -298,6 +298,11 @@ function Status({ o }: { o: Order }) {
       <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
       {o.status === 'open' && <div className="small sub unknown">{unk.length ? (unk.length === 1 ? 'item not recognised' : `${unk.length} items not recognised`) : 'older sale, waiting for the payment file'}</div>}
       {o.status === 'paid' && won > 0 && <div className="small faint sub">won {time(new Date(won).toISOString())}</div>}
+      {(o.sales ?? []).some((s) => s.review?.reason === 'decline_seen') && (
+        <div className="small sub unknown" data-testid={`decline-seen-${o.buyer}`}>
+          card declined on the stream, waiting for Whatnot
+        </div>
+      )}
       {o.status === 'picking' && o.pickedAt && <div className="small faint sub">since {time(o.pickedAt)}</div>}
       {o.status === 'packed' && (
         <div className="small faint sub">

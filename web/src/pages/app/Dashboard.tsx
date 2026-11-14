@@ -183,6 +183,8 @@ const REASON_WORDS: Record<string, [string, string]> = {
   no_payment_record: ['sale missing from a payment file', 'sales missing from a payment file'],
   payment_declined: ['declined payment', 'declined payments'],
   decline_untied: ['decline to match to a sale', 'declines to match to a sale'],
+  decline_seen: ['declined card waiting for Whatnot', 'declined cards waiting for Whatnot'],
+  order_declined: ['declined payment with no sale', 'declined payments with no sale'],
   closed_after_picking: ['item to take out of a package', 'items to take out of a package'],
   unmatched_payment: ['payment with no sale', 'payments with no sale'],
   cancel_sale: ['possible cancellation', 'possible cancellations'],

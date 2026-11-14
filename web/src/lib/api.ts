@@ -424,6 +424,8 @@ export interface OrderSlips {
     missingHere: string[]
     notOnWhatnot: string[]
   } | null
+  /** The shop is connected to Whatnot: the app reads the show's parcels itself. */
+  parcelsFromWhatnot?: boolean
 }
 export interface PickItem {
   skuId: number
@@ -440,7 +442,7 @@ export interface ReconcileRow {
   priceCents: number | null
   status: string
   externalId: string | null
-  action: 'mark_paid' | 'cancel' | 'decline' | 'unchanged' | 'unmatched' | 'skip' | 'record' | 'recorded'
+  action: 'mark_paid' | 'cancel' | 'decline' | 'unchanged' | 'unmatched' | 'skip' | 'record' | 'recorded' | 'reopen'
   saleId: number | null
   note: string | null
 }

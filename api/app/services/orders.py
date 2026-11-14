@@ -5,7 +5,18 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 
 from ..db import db
-from ..models import EventKind, Order, OrderStatus, ParsedEvent, Sale, SaleStatus, Show, Sku
+from ..models import (
+    EventKind,
+    Order,
+    OrderStatus,
+    ParsedEvent,
+    ReviewItem,
+    ReviewStatus,
+    Sale,
+    SaleStatus,
+    Show,
+    Sku,
+)
 from ..models.orders import FULFILLMENT
 
 STANDING = (SaleStatus.detected, SaleStatus.reserved, SaleStatus.paid, SaleStatus.fulfilled)
@@ -52,6 +63,38 @@ def refresh(order: Order) -> Order:
     else:
         order.status = OrderStatus.open
     return order
+
+
+# The steps that put an item in a box (going back a step is always allowed).
+_FORWARD = {
+    OrderStatus.paid: (OrderStatus.picking,),
+    OrderStatus.picking: (OrderStatus.packed,),
+    OrderStatus.packed: (OrderStatus.shipped,),
+}
+
+
+def card_in_doubt(order: Order) -> bool:
+    """The stream showed a card declined for one of the order's standing sales and Whatnot's
+    order has not said yet whether it was paid (`pipeline.flag_decline`): the sale still
+    counts as paid, but nothing of the order goes in a box until that is settled, by the
+    order (paid clears the flag, failed closes the sale) or by a person in Review."""
+    from .pipeline import DECLINE_SEEN
+
+    ids = [s.id for s in order.sales if s.status in STANDING]
+    if not ids:
+        return False
+    return (
+        db.session.scalar(
+            select(ReviewItem.id)
+            .where(
+                ReviewItem.sale_id.in_(ids),
+                ReviewItem.status == ReviewStatus.open,
+                ReviewItem.reason == DECLINE_SEEN,
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def verified(order: Order) -> bool:
@@ -118,6 +161,11 @@ def advance(
         raise OrderError(f"cannot go from {order.status.value} to {new_status.value}")
     if not verified(order):
         raise OrderError("every item must be paid before fulfilment (see Review)")
+    if new_status in _FORWARD.get(order.status, ()) and card_in_doubt(order):
+        raise OrderError(
+            "Whatnot showed a card declined for an item in this order, and its order has not "
+            "said yet whether it was paid. Wait for it, or settle it in Review."
+        )
     now = datetime.now(UTC)
     order.status = new_status
     if new_status is OrderStatus.picking:

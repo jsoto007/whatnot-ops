@@ -56,7 +56,9 @@ class Row:
     # exists but Whatnot has not settled the payment (never read from a file).
     status: str = "paid"
     external_id: str | None = None
-    action: str = ""  # mark_paid | cancel | decline | unchanged | unmatched | skip
+    # mark_paid | cancel | decline | unchanged | unmatched | skip, and from Whatnot's own
+    # orders only: record | recorded | reopen (services/whatnot/orders.py)
+    action: str = ""
     sale_id: int | None = None
     note: str | None = None
     # Set when the row is one of Whatnot's own order items (services/whatnot/orders.py):

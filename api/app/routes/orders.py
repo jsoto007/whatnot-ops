@@ -50,7 +50,12 @@ def _loaded():
 
 # When a sale has more than one open decision, the row acts on the one a person can settle
 # from the Orders page: the unknown item first, then a declined payment.
-_REVIEW_RANK = {"unmatched_item": 0, "insufficient_stock": 1, "payment_declined": 2}
+_REVIEW_RANK = {
+    "unmatched_item": 0,
+    "insufficient_stock": 1,
+    "payment_declined": 2,
+    "decline_seen": 3,  # the stream showed the card declined; Whatnot's order has not said yet
+}
 
 
 def _open_reviews(rows) -> dict[int, ReviewItem]:

@@ -305,6 +305,11 @@ def test_applying_confirms_declines_cancels_records_and_calls_out_the_rest(app, 
     assert reviews(app) == [
         ("unmatched_item", f'newbie bought "{LOT}" — which product is that?'),
         ("no_payment_record", "ghost's 1 × Red bundle is not among Whatnot's orders for this show"),
+        (  # a declined payment is always put to a person (tests/test_whatnot_decides.py)
+            "payment_declined",
+            "kat.c's payment was declined for 1 × Red bundle ($25.00). The item is back in "
+            "stock. If they pay another way before the show ends, mark it paid.",
+        ),
     ]
     with app.app_context():
         moves = db.session.scalars(
@@ -1111,8 +1116,9 @@ def test_one_recording_through_two_shows_does_not_sell_a_win_twice(app, shop):
         assert whatnot_orders.apply(db.session.get(Show, made_id))["summary"]["decline"] == 1
         db.session.commit()
     assert sale_rows(app)[0][2] == "payment_failed" and level(app, shop["red"]) == (2, 0)
-    # None of it is called out as "no order" on the second show's own page.
-    assert reviews(app) == []
+    # The decline is put to a person; none of it is called out as "no order" on the second
+    # show's own page.
+    assert [reason for reason, _ in reviews(app)] == ["payment_declined"]
 
 
 def test_apply_and_the_parser_never_work_on_one_show_at_once(app, shop):
@@ -1559,9 +1565,7 @@ def test_only_the_next_few_shows_still_to_come_are_listed(app, client, shop, sig
     ]  # fmt: skip
 
 
-def test_a_retry_paid_after_a_decline_of_a_choose_any_lot_goes_to_a_person_not_a_second_sale(
-    app, shop
-):
+def test_a_retry_paid_after_a_decline_of_a_choose_any_lot_reopens_it_not_a_second_sale(app, shop):
     shop["say"](app, [win("kat.c", LOT, "11.00")])
     run(app, shop["show"])
     failed = order(shop, "kat.c", LOT, 1100, created=datetime.now(UTC) - timedelta(seconds=90))
@@ -1571,8 +1575,9 @@ def test_a_retry_paid_after_a_decline_of_a_choose_any_lot_goes_to_a_person_not_a
     order(shop, "kat.c", LOT, 1100)  # the retry went through
     read(app, shop)
     apply(app, shop)
-    assert [r[:3] for r in sale_rows(app)] == [("kat.c", LOT, "payment_failed")]  # still one sale
-    assert any("paid" in summary for _, summary in reviews(app))  # a person restores it
+    # Still one sale, waiting for its product as before the decline (tests/test_whatnot_decides).
+    assert [r[:3] for r in sale_rows(app)] == [("kat.c", LOT, "detected")]
+    assert [reason for reason, _ in reviews(app)] == ["unmatched_item"]
 
 
 def test_an_order_with_no_time_never_hides_a_failed_one():

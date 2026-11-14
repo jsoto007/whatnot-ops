@@ -29,6 +29,8 @@ const REASON_LABEL: Record<string, string> = {
   price_mismatch: 'Price differs from the payment file',
   payment_declined: 'Payment declined',
   decline_untied: 'Declined payment: which sale?',
+  decline_seen: 'Card declined: waiting for Whatnot',
+  order_declined: 'Payment declined: nothing recorded',
   closed_after_picking: 'Closed after picking',
 }
 const ACTION_LABEL: Record<string, string> = {
@@ -254,7 +256,9 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
           </button>
         )}
         {/* Paid at the win, yet the Seller Hub file does not list it: maybe a decline nobody saw. */}
-        {item.reason === 'no_payment_record' && item.sale?.status === 'paid' && (
+        {/* Also: the stream showed the card declined and Whatnot's order has not said yet. The
+            order settles it by itself; this closes the sale now, for someone who is sure. */}
+        {((item.reason === 'no_payment_record' && item.sale?.status === 'paid') || (item.reason === 'decline_seen' && !!item.sale && ['paid', 'reserved', 'detected'].includes(item.sale.status))) && (
           <button className="btn" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'set_status', status: 'payment_failed' })} data-testid="mark-declined">
             Payment was declined
           </button>
@@ -286,7 +290,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
           </button>
         )}
         <button className="btn" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'dismiss' })}>
-          {item.reason === 'payment_declined' ? 'Keep declined' : 'Ignore'}
+          {item.reason === 'payment_declined' ? 'Keep declined' : item.reason === 'decline_seen' ? 'Leave it to Whatnot' : item.reason === 'order_declined' ? 'Got it' : 'Ignore'}
         </button>
       </div>
       {error && <p className="form-error">{error}</p>}

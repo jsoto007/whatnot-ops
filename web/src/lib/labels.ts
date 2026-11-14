@@ -137,6 +137,7 @@ const WHATNOT_ORDER_ACTION: Record<string, string> = {
   decline: 'mark the payment declined',
   record: 'record the sale',
   recorded: 'sale recorded',
+  reopen: 'wait for its product again',
   unmatched: 'send to Review',
   skip: 'left alone',
   uncovered: 'with no order on Whatnot',
@@ -149,6 +150,7 @@ const WHATNOT_APPLIED: Record<string, string> = {
   cancel: 'cancelled',
   decline: 'payment declined',
   recorded: 'newly recorded',
+  reopen: 'waiting for a product again',
   unmatched: 'sent to Review',
   uncovered: 'with no order on Whatnot, sent to Review',
 }

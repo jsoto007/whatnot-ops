@@ -462,14 +462,20 @@ def claim_order_sale(show: Show, ev: ParsedEvent) -> Sale | None:
     return sale
 
 
-def close_sale(show: Show, ev: ParsedEvent, new_status: SaleStatus) -> Sale | None:
-    """A cancel / payment-failed line: close the buyer's matching sale (release or restock)."""
+def close_sale(
+    show: Show, ev: ParsedEvent, new_status: SaleStatus, *, flag_only: bool = False
+) -> Sale | None:
+    """A cancel / payment-failed line: close the buyer's matching sale (release or restock).
+
+    `flag_only` is for a declined payment in a show where Whatnot's own order says whether
+    the win was paid (`whatnot/orders.decides`): the sale is left standing and flagged for
+    a person (`flag_decline`); the order closes it, or clears the flag."""
     q = select(Sale).where(Sale.show_id == show.id, Sale.status.in_(CLOSABLE))
     if ev.buyer_username:
         q = q.where(func.lower(Sale.buyer_username) == ev.buyer_username.lower())
     candidates = list(db.session.scalars(q.order_by(Sale.id.desc())))
     if ev.rule == "player_payment_declined":
-        found = _declined_win(show, ev)
+        found = _declined_win(show, ev, quiet=flag_only)
         if found is None or isinstance(found, Sale):
             return found
         candidates = found
@@ -484,6 +490,10 @@ def close_sale(show: Show, ev: ParsedEvent, new_status: SaleStatus) -> Sale | No
         if narrowed:
             candidates = narrowed
     if not candidates:
+        if flag_only:
+            # Nothing recorded for the win: Whatnot's failed order is what gets flagged
+            # (whatnot/orders.py), and a paid one records the sale.
+            return None
         open_review(
             show.organization_id,
             "no_open_sale",
@@ -515,6 +525,9 @@ def close_sale(show: Show, ev: ParsedEvent, new_status: SaleStatus) -> Sale | No
             },
         )
         return None
+    if flag_only:
+        flag_decline(candidates[0], ev)
+        return candidates[0]
     sale = set_sale_status(
         candidates[0], new_status, reason=f"chat line #{ev.message.seq}", actor=RULE_ACTOR
     )
@@ -523,11 +536,49 @@ def close_sale(show: Show, ev: ParsedEvent, new_status: SaleStatus) -> Sale | No
     return sale
 
 
-def _declined_win(show: Show, ev: ParsedEvent):
+# Flags that say "the stream showed this win's card declined" while the sale still stands.
+# Whatnot's paid order for the win clears them (whatnot/orders.apply).
+DECLINE_SEEN = "decline_seen"
+
+
+def flag_decline(sale: Sale, ev: ParsedEvent) -> ReviewItem:
+    """The stream showed this win's card declined, in a show where Whatnot's order says
+    whether it was paid. The sale stands; a person is told, and may close the sale
+    themself; nothing of the buyer's order is picked meanwhile (`orders.card_in_doubt`).
+    The order then settles it: paid clears the flag, failed closes the sale (and leaves its
+    own "payment declined" item).
+
+    Once per sale, ever: the Sold tab shows again what the player showed, and a flag a
+    person answered, or that the paid order cleared, does not come back."""
+    existing = db.session.scalar(
+        select(ReviewItem)
+        .where(ReviewItem.sale_id == sale.id, ReviewItem.reason == DECLINE_SEEN)
+        .order_by(ReviewItem.id)
+        .limit(1)
+    )
+    if existing is not None:
+        return existing
+    return open_review(
+        sale.organization_id,
+        DECLINE_SEEN,
+        f"Whatnot showed {sale.buyer_username}'s card declined for {sale.quantity} × "
+        f"{sale.item_text or (sale.sku.code if sale.sku else '?')} ({money(sale.price_cents)}). "
+        "The sale stands until Whatnot's order says whether it was paid: if it was, this "
+        "clears by itself; if not, the order closes the sale. Close it now only if you are "
+        "sure they will not pay.",
+        show_id=sale.show_id,
+        message_id=ev.message_id,
+        event_id=ev.id,
+        sale_id=sale.id,
+    )
+
+
+def _declined_win(show: Show, ev: ParsedEvent, *, quiet: bool = False):
     """The win a decline read from Whatnot's own UI is about: the same buyer, at exactly that
     price, on that show day (another laptop's recording may hold it), the same title first.
     Never a sale at another price. Returns the sale already declined (the same decline seen
-    again: nothing to do), None after opening a review, or the candidates to close."""
+    again: nothing to do), None after opening a review, or the candidates to close.
+    `quiet`: no review when no sale at that price exists (see `close_sale`'s `flag_only`)."""
     rows = list(
         db.session.scalars(
             select(Sale)
@@ -551,6 +602,8 @@ def _declined_win(show: Show, ev: ParsedEvent):
     if open_ and not done:
         here = [s for s in open_ if s.show_id == show.id]
         return here or open_[:1]  # another laptop's copy of this win: close the one sale
+    if quiet and not rows:
+        return None
     summary = (
         f"Whatnot showed {ev.buyer_username}'s payment declined for {ev.item_text} "
         f"({money(ev.price_cents)}), but "
@@ -580,9 +633,18 @@ def _declined_win(show: Show, ev: ParsedEvent):
     return None
 
 
-def review_decline(sale: Sale, *, message_id: int | None = None, event_id: int | None = None):
+def review_decline(
+    sale: Sale,
+    *,
+    message_id: int | None = None,
+    event_id: int | None = None,
+    by_itself: bool = False,
+):
     """Whatnot gives a declined buyer until the end of the show to pay another way. The
-    decline stands, and this item lets a person put the sale back if the payment went through."""
+    decline stands, and this item lets a person put the sale back if the payment went through.
+    `by_itself`: Whatnot's orders are applied as they arrive, so a payment that goes through
+    puts the sale back with nobody stepping in; the item is then for the person to know of
+    the decline and to chase it."""
     back = sale.sku_id is not None and units_out(sale) == 0
     return open_review(
         sale.organization_id,
@@ -590,7 +652,11 @@ def review_decline(sale: Sale, *, message_id: int | None = None, event_id: int |
         f"{sale.buyer_username}'s payment was declined for {sale.quantity} × "
         f"{sale.item_text or (sale.sku.code if sale.sku else '?')} ({money(sale.price_cents)}). "
         + ("The item is back in stock. " if back else "")
-        + "If they pay another way before the show ends, mark it paid.",
+        + (
+            "If they pay another way, the sale comes back by itself when Whatnot's order says so."
+            if by_itself
+            else "If they pay another way before the show ends, mark it paid."
+        ),
         show_id=sale.show_id,
         message_id=message_id,
         event_id=event_id,
@@ -704,6 +770,54 @@ def set_sale_status(
             sale_id=sale.id,
         )
     return sale
+
+
+def await_product(sale: Sale) -> bool:
+    """A win that was declined before anyone named its product, and paid after all: it
+    waits for its product again, exactly as it did before the decline, with its "which
+    product is that?" decision open again.
+
+    `set_sale_status` refuses every step back, because a named sale's stock is keyed by the
+    sale in the ledger and a second reservation would move nothing. A win with no product
+    never held or released anything, so this one step back is safe; a declined sale WITH a
+    product is paid again through `set_sale_status` (`_repay`) instead. False, having
+    changed nothing, when the sale is no longer such a win (named or closed meanwhile) or
+    its buyer's order has already shipped."""
+    from .orders import OrderStatus
+
+    db.session.flush()
+    db.session.refresh(sale, with_for_update=True)
+    if sale.status is not SaleStatus.payment_failed or sale.sku_id is not None:
+        return False
+    if sale.order is not None and sale.order.status is OrderStatus.shipped:
+        return False  # the buyer's package left without it: a person decides (as `_repay`)
+    sale.status = SaleStatus.detected
+    sale.flagged = True
+    sale.status_reason = "item not recognised"
+    if sale.order is not None:
+        from . import orders
+
+        orders.refresh(sale.order)
+    for item in db.session.scalars(
+        select(ReviewItem).where(
+            ReviewItem.sale_id == sale.id,
+            ReviewItem.status == ReviewStatus.open,
+            ReviewItem.reason == "payment_declined",
+        )
+    ):
+        item.status = ReviewStatus.resolved
+        item.resolution = {"by": "sale paid"}
+    open_review(
+        sale.organization_id,
+        "unmatched_item",
+        f'{sale.buyer_username} bought "{sale.item_text or "(no item named)"}"'
+        " — which product is that?",
+        show_id=sale.show_id,
+        message_id=sale.event.message_id if sale.event is not None else None,
+        event_id=sale.event_id,
+        sale_id=sale.id,
+    )
+    return True
 
 
 def _in_fulfilment(sale: Sale) -> bool:
@@ -868,6 +982,20 @@ def process_show(
         .order_by(ChatMessage.seq)
     ).all()
     current_listing: str = ""
+    decided: bool | None = None  # asked once, and only if a decline turns up
+
+    def left_to_whatnot() -> bool:
+        """Whether Whatnot's own order for a win says, with nobody applying it, that the
+        payment failed. A decline read from the stream (the player, the Sold tab, a host's
+        line) then closes nothing: half the cards declined at the win are paid a minute
+        later, and the order is what knows. It is flagged for a person all the same."""
+        nonlocal decided
+        if decided is None:
+            from .whatnot import orders as whatnot_orders
+
+            decided = whatnot_orders.decides(show)
+        return decided
+
     # Once the video player is recording wins for this show, a chat line about a win is at
     # best the same win again (the host typing "sold to X"): it waits for a person.
     has_player = (
@@ -1012,12 +1140,12 @@ def process_show(
                 _flag_chat_sale_for_the_same_win(show, sale, m)
         elif c.kind in (EventKind.cancel, EventKind.payment_failed):
             if c.confidence >= 0.8:
+                declined = c.kind is EventKind.payment_failed
                 close_sale(
                     show,
                     ev,
-                    SaleStatus.cancelled
-                    if c.kind is EventKind.cancel
-                    else SaleStatus.payment_failed,
+                    SaleStatus.payment_failed if declined else SaleStatus.cancelled,
+                    flag_only=declined and left_to_whatnot(),
                 )
     stats.reviews = (
         db.session.scalar(

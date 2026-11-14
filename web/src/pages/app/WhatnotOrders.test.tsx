@@ -70,6 +70,16 @@ test('Apply posts once and says what was done', async () => {
   expect(screen.getByTestId('whatnot-apply').textContent).toBe('Nothing to apply')
 })
 
+test('a declined win with no product that was paid after all goes back to waiting, in words', async () => {
+  const waiting = { ...compared, summary: { reopen: 1, skip: 1 }, rows: [row('made_up_ann', 'failed', 'skip'), row('made_up_ann', 'paid', 'reopen')] as WhatnotCompare['rows'], uncovered: [] }
+  open(waiting, true, { ...waiting, summary: { unchanged: 1, skip: 1 }, rows: [], applied: { reopen: 1, skip: 1 } })
+  expect((await screen.findByTestId('whatnot-summary')).textContent).toBe('1 wait for its product again · 1 left alone')
+  expect(screen.getByTestId('whatnot-rows').textContent).not.toContain('reopen')
+  expect(screen.getByTestId('whatnot-apply').textContent).toBe('Apply 1 change')
+  fireEvent.click(screen.getByTestId('whatnot-apply'))
+  await waitFor(() => expect(screen.getByTestId('whatnot-applied').textContent).toBe('1 waiting for a product again'))
+})
+
 test('someone who may not apply sees the comparison and no buttons', async () => {
   open(compared, false)
   await screen.findByTestId('whatnot-rows')

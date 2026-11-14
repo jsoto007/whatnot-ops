@@ -4,7 +4,7 @@ import { ApiError, api, apiGet, money, type WhatnotCompare } from '../../lib/api
 import { fmtWhen, plural } from '../../lib/format'
 import { saleStatusLabel, summaryWords, whatnotAppliedLabel, whatnotOrderActionLabel, whatnotPaymentLabel, whatnotShowStatusLabel } from '../../lib/labels'
 
-const CHANGES = ['mark_paid', 'cancel', 'decline', 'record'] as const
+const CHANGES = ['mark_paid', 'cancel', 'decline', 'record', 'reopen'] as const
 
 /** A show's Payments tab, first half: Whatnot's own orders next to the app's sales. Nothing
  * changes until someone presses Apply (unless the shop chose to apply them as they arrive). */

@@ -76,8 +76,28 @@ placed. Each recording is matched on its own to the Whatnot show that was live w
    - a sale here with no order on Whatnot → put in Review, but only once the show has ended
      and all its orders were read.
 
+   - declined here before anyone named its product, then paid on Whatnot (a card retried a
+     minute after the win) → **it waits for its product again**, as before the decline.
+     With a product, it is marked paid again and the unit leaves the shelf once more.
+
    In **Compare only** (the default) nothing changes until someone presses Apply. In
-   **Apply as they arrive** (owner, Settings → Whatnot) the same happens on its own.
+   **Apply as they arrive** (owner, Settings → Whatnot) the same happens on its own, and
+   from then on only Whatnot's order (or a person) declines a sale of a show the app
+   follows: a declined card the laptop sees on the stream, or a host's line about it,
+   closes nothing. Where the order cannot say (the recording is not matched to a show on
+   Whatnot yet, Whatnot rejects the token, or the orders do not say who bought them), the
+   stream's decline closes the sale as before.
+
+   **A declined payment is always put to a person in Review**, and the item clears itself
+   when the payment goes through:
+   - "Card declined: waiting for Whatnot": the stream showed the card declined and the sale
+     still stands. Whatnot's paid order clears it; a failed one closes the sale. A person
+     who is sure can close the sale at once. The buyer's order cannot be picked meanwhile.
+   - "Payment declined": Whatnot's order (or the stream, in Compare only) closed the sale.
+     "They paid after all" restores it by hand; with orders applied as they arrive, the
+     paid order restores it by itself.
+   - "Payment declined: nothing recorded": Whatnot declined a payment for a win the app
+     has no sale for. Nothing to undo; if they pay, the paid order records the sale.
 2. **Order slips.** With Whatnot's parcels read, the slips are the final pick list (one row
    per Whatnot lot) with no "Send shipments" step on the laptop. The scraper still works and
    both feed the same tables.
