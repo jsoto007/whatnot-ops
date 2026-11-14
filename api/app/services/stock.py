@@ -11,6 +11,7 @@ import re
 import uuid
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from ..db import db
 from ..models import InventoryMovement, MovementKind, Product, Sale, Show, Sku
@@ -207,6 +208,7 @@ def levels(org_id: int) -> list[dict]:
         select(Sku, Product.name)
         .join(Product, Product.id == Sku.product_id)
         .where(Sku.organization_id == org_id)
+        .options(selectinload(Sku.aliases))
         .order_by(Product.name, Sku.code)
     ).all()
     line = sale_items.lines()  # every product of a sale, not only its first

@@ -28,6 +28,7 @@ with Auction Date, Auction Number, Username, Product Checklist, Gift and Notes (
 """
 
 import re
+from collections import defaultdict
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -124,18 +125,29 @@ def match_lots(lots: list[WhatnotLot], sales: list[Sale]) -> dict[int, Sale]:
         s = by_order.get(lot.whatnot_order_id)
         if s is not None and s.id in free:
             out[lot.id] = free.pop(s.id)
-    numbered = [(s, sale_chat.lot_of(s)) for s in sales]
+    # Indexes keyed by exactly what a match compares, each list in `sales` order, so the
+    # first free entry is the one a front-to-back scan would have found.
+    by_buyer_lot: dict[tuple[str, int], list[Sale]] = defaultdict(list)
+    by_buyer_lot_price: dict[tuple[str, int, int], list[Sale]] = defaultdict(list)
+    for s in sales:
+        n = sale_chat.lot_of(s)
+        if n is None:
+            continue
+        buyer = (s.buyer_username or "").lower()
+        by_buyer_lot[(buyer, n)].append(s)
+        if s.price_cents is not None:
+            by_buyer_lot_price[(buyer, n, s.price_cents)].append(s)
 
     def take(lot: WhatnotLot, same_price: bool) -> None:
-        for s, n in numbered:
-            if s.id not in free or n is None or n != lot.lot_number:
-                continue
-            if s.buyer_username.lower() != lot.recipient.lower():
-                continue
-            if same_price and (s.price_cents is None or s.price_cents != lot.price_cents):
-                continue
-            out[lot.id] = free.pop(s.id)
-            return
+        buyer = (lot.recipient or "").lower()
+        if same_price:
+            found = by_buyer_lot_price.get((buyer, lot.lot_number, lot.price_cents), ())
+        else:
+            found = by_buyer_lot.get((buyer, lot.lot_number), ())
+        for s in found:
+            if s.id in free:
+                out[lot.id] = free.pop(s.id)
+                return
 
     for same_price in (True, False):
         for lot in lots:

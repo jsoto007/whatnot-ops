@@ -1,11 +1,13 @@
+from collections import defaultdict
+
 from flask import Blueprint, g, jsonify, request
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import selectinload
 
 from .. import serializers
 from ..auth import require
 from ..db import db
-from ..models import ChatMessage, ReviewItem, ReviewStatus, Sale, Show
+from ..models import ChatMessage, ParsedEvent, ReviewItem, ReviewStatus, Sale, Show, Sku
 from ..services import audit, pipeline, sale_mode, shelves
 from ..services.catalog import CatalogError
 from ..services.inventory import InventoryError
@@ -24,20 +26,48 @@ def review_error(e):
     return jsonify({"error": str(e)}), e.status
 
 
-def _context(item: ReviewItem, around: int = 3) -> dict:
-    show = db.session.get(Show, item.show_id) if item.show_id else None
-    show_date = show.show_date.isoformat() if show else None
-    lines = []
-    if item.message is not None:
-        lines = db.session.scalars(
-            select(ChatMessage)
-            .where(
-                ChatMessage.show_id == item.message.show_id,
-                ChatMessage.seq.between(item.message.seq - around, item.message.seq + around),
+def _contexts(items: list[ReviewItem], around: int = 3) -> dict[int, dict]:
+    """item id → {"show_date", "lines"} for each item: the chat lines around its message and
+    its show's date, in a fixed number of queries however many items there are."""
+    show_ids = {i.show_id for i in items if i.show_id}
+    dates = (
+        {
+            sid: d.isoformat()
+            for sid, d in db.session.execute(
+                select(Show.id, Show.show_date).where(Show.id.in_(show_ids))
             )
-            .order_by(ChatMessage.seq)
-        ).all()
-    return {"show_date": show_date, "lines": lines}
+        }
+        if show_ids
+        else {}
+    )
+    wanted = [i for i in items if i.message is not None]
+    # One query for every window: a line belongs to an item when it is in its show and within
+    # `around` of its message's seq. Windows can overlap, so lines are shared, not copied.
+    windows = [
+        and_(
+            ChatMessage.show_id == i.message.show_id,
+            ChatMessage.seq.between(i.message.seq - around, i.message.seq + around),
+        )
+        for i in wanted
+    ]
+    rows: dict[int, list[ChatMessage]] = defaultdict(list)
+    if windows:
+        for m in db.session.scalars(
+            select(ChatMessage).where(or_(*windows)).order_by(ChatMessage.seq)
+        ):
+            rows[m.show_id].append(m)
+    out = {}
+    for i in items:
+        lines = []
+        if i.message is not None:
+            lo, hi = i.message.seq - around, i.message.seq + around
+            lines = [m for m in rows.get(i.message.show_id, ()) if lo <= m.seq <= hi]
+        out[i.id] = {"show_date": dates.get(i.show_id), "lines": lines}
+    return out
+
+
+def _context(item: ReviewItem, around: int = 3) -> dict:
+    return _contexts([item], around)[item.id]
 
 
 @bp.get("/ai-status")
@@ -60,7 +90,12 @@ def list_review():
             return jsonify({"error": f"unknown status {status!r}"}), 400
     items = db.session.scalars(
         q.options(
-            selectinload(ReviewItem.message), selectinload(ReviewItem.sale).selectinload(Sale.sku)
+            selectinload(ReviewItem.message),
+            selectinload(ReviewItem.sale).selectinload(Sale.sku).selectinload(Sku.product),
+            selectinload(ReviewItem.sale).selectinload(Sale.show),
+            selectinload(ReviewItem.sale)
+            .selectinload(Sale.event)
+            .selectinload(ParsedEvent.message),
         )
         .order_by(ReviewItem.id)
         .limit(200)
@@ -72,8 +107,9 @@ def list_review():
     spots = shelves.suggest(waiting) if waiting else {}
     sale_mode.prime({i.show_id for i in items if i.sale is not None})
     whatnot_catalog.prime_listings([s for s in waiting if s.external_order_id])
+    context = _contexts(items)
     return jsonify(
-        {"items": [serializers.review_item(i, _context(i), spots.get(i.sale_id)) for i in items]}
+        {"items": [serializers.review_item(i, context[i.id], spots.get(i.sale_id)) for i in items]}
     )
 
 

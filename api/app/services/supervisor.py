@@ -11,6 +11,7 @@ import re
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from ..db import db
 from ..models import (
@@ -292,7 +293,9 @@ def consult_review_item(item: ReviewItem) -> None:
         ):
             _apply_classify_sale(item)
     elif item.reason == "unmatched_item" and item.sale is not None:
-        candidates = _candidates(item.organization_id)
+        candidates = _candidates(
+            item.organization_id, f"{item.sale.item_text or ''} {item.message.body or ''}"
+        )
         if not candidates:
             return
         d = ask(
@@ -320,11 +323,40 @@ def consult_review_item(item: ReviewItem) -> None:
             apply_proposal(item, actor=AI_ACTOR)
 
 
-def _candidates(org_id: int) -> list[dict]:
+CANDIDATES_ALL = 60  # a shop with this many active SKUs or fewer sends them all
+CANDIDATES_TOP = 40  # a bigger one sends the best this many
+
+
+def _tokens(text: str) -> set[str]:
+    return {t for t in re.findall(r"\w+", (text or "").casefold()) if len(t) > 1}
+
+
+def _sku_tokens(sku: Sku) -> set[str]:
+    return _tokens(
+        " ".join([sku.code, sku.name, sku.product.name, *(a.alias for a in sku.aliases)])
+    )
+
+
+def _candidates(org_id: int, title: str = "") -> list[dict]:
+    """The products the AI may pick from for a review item titled `title`. Up to
+    CANDIDATES_ALL active SKUs: all of them. More: the CANDIDATES_TOP whose code, name,
+    product name or aliases share the most words with the title (ties keep the catalog's
+    order, so with no shared word at all: the first CANDIDATES_TOP)."""
+    skus = db.session.scalars(
+        select(Sku)
+        .where(Sku.organization_id == org_id, Sku.active.is_(True))
+        .options(selectinload(Sku.aliases), selectinload(Sku.product))
+        .order_by(Sku.id)
+    ).all()
+    if len(skus) > CANDIDATES_ALL:
+        want = _tokens(title)
+        scored = [(len(want & _sku_tokens(sku)), i) for i, sku in enumerate(skus)]
+        # Score descending, then catalog order; with no shared word that is the first ones.
+        ranked = sorted(scored, key=lambda x: (-x[0], x[1]))
+        keep = [i for _, i in ranked[:CANDIDATES_TOP]]
+        skus = [skus[i] for i in keep]
     out = []
-    for sku in db.session.scalars(
-        select(Sku).where(Sku.organization_id == org_id, Sku.active.is_(True))
-    ):
+    for sku in skus:
         names = [a.alias for a in sku.aliases]
         out.append(
             {

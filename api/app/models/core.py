@@ -195,6 +195,9 @@ class ChatMessage(db.Model):
         Index("ix_chat_messages_show_seq", "show_id", "seq"),
         Index("ix_chat_messages_show_username", "show_id", "username"),
         Index("ix_chat_messages_show_captured", "show_id", "captured_at"),
+        # The parser's "same chat line again, maybe from the other laptop" check looks across
+        # the shop's shows by sender and time (pipeline._same_chat_line_near).
+        Index("ix_chat_messages_username_captured", "username", "captured_at"),
         CheckConstraint("source IN ('chat', 'player')", name="ck_chat_messages_source"),
     )
 

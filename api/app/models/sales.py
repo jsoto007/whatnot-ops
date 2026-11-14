@@ -266,7 +266,11 @@ class Job(db.Model):
     """Postgres-backed queue: workers claim with SELECT … FOR UPDATE SKIP LOCKED."""
 
     __tablename__ = "jobs"
-    __table_args__ = (Index("ix_jobs_status_run_at", "status", "run_at"),)
+    __table_args__ = (
+        Index("ix_jobs_status_run_at", "status", "run_at"),
+        # A show's latest parse job, read on its page (routes/shows._stats).
+        Index("ix_jobs_kind_show", "kind", text("(payload ->> 'show_id')")),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"))
