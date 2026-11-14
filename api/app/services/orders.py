@@ -223,9 +223,13 @@ def gifts_for(order: Order) -> list[dict]:
 
 def pick_list(show: Show) -> list[dict]:
     """Per-SKU quantities to pull for the show's paid-but-not-shipped orders."""
+    from . import sale_items
+
+    line = sale_items.lines()  # a win with two products pulls two products
     rows = db.session.execute(
-        select(Sku, func.sum(Sale.quantity), func.count(func.distinct(Sale.order_id)))
-        .join(Sale, Sale.sku_id == Sku.id)
+        select(Sku, func.sum(line.c.quantity), func.count(func.distinct(Sale.order_id)))
+        .join(line, line.c.sku_id == Sku.id)
+        .join(Sale, Sale.id == line.c.sale_id)
         .join(Order, Order.id == Sale.order_id)
         .where(
             Sale.show_id == show.id,

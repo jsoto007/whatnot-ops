@@ -118,6 +118,9 @@ class Sale(db.Model):
     flagged: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False)
     # Free gifts packed with this lot ("Gift 2" on the order slips). Set by a person only.
     gift_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # How many products this win may hold, when a person set it on the sale. None: one, or
+    # what an offer typed in chat says for its lot (services/offers.py).
+    products_allowed: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
@@ -130,6 +133,77 @@ class Sale(db.Model):
     event: Mapped[ParsedEvent | None] = relationship()
     order: Mapped["Order | None"] = relationship(back_populates="sales")  # noqa: F821
     order: Mapped["Order | None"] = relationship(back_populates="sales")  # noqa: F821
+
+
+class SaleItem(db.Model):
+    """One product of a sale (services/sale_items.py). A sale's first row keeps the sale's own
+    keys in the stock ledger; a row opened later (the product was changed, or a second
+    product added) holds its stock under its own id. `closed_at`: the row's product was
+    changed or taken off, and its stock went back."""
+
+    __tablename__ = "sale_items"
+    __table_args__ = (
+        Index("ix_sale_items_sale", "sale_id"),
+        Index("ix_sale_items_sku", "sku_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id", ondelete="CASCADE"), nullable=False)
+    sku_id: Mapped[int] = mapped_column(ForeignKey("skus.id"), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    first: Mapped[bool] = mapped_column(
+        db.Boolean, nullable=False, default=False, server_default="false"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    sku: Mapped[Sku] = relationship()
+
+
+# A sale's products now (its open rows, oldest first). Read-only: rows are made and closed
+# only by services/sale_items.py.
+Sale.open_items = relationship(
+    SaleItem,
+    primaryjoin=lambda: (SaleItem.sale_id == Sale.id) & SaleItem.closed_at.is_(None),
+    order_by=lambda: SaleItem.id,
+    viewonly=True,
+)
+
+
+class GiveawayItem(db.Model):
+    """The product a person chose for a giveaway Whatnot lists (services/giveaways.py). A
+    giveaway is not a sale: no price, and it stays out of sales counts and revenue. Keyed by
+    Whatnot's own id of the order line, so reading the orders again never loses the choice.
+    One open row per giveaway: a changed product closes the row (`closed_at`, its stock
+    went back) and opens another, each with its own key in the stock ledger."""
+
+    __tablename__ = "giveaway_items"
+    __table_args__ = (
+        Index(
+            "uq_giveaway_items_open",
+            "organization_id",
+            "whatnot_item_id",
+            unique=True,
+            postgresql_where=text("closed_at IS NULL"),
+        ),
+        Index("ix_giveaway_items_sku", "sku_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    whatnot_item_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    sku_id: Mapped[int] = mapped_column(ForeignKey("skus.id"), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    assigned_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    sku: Mapped[Sku] = relationship()
 
 
 class ReviewStatus(enum.StrEnum):

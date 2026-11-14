@@ -505,11 +505,21 @@ def refresh_open_orders(org_id: int, client: WhatnotClient) -> int:
 # ---------- what a read is followed by ----------
 
 
-def _after_orders(org_id: int, show_ids: set[str | None]) -> None:
-    """Orders of these Whatnot shows changed: the buyer profiles catch up with who placed
+def _after_orders(org_id: int, show_ids: set[str | None], client=None) -> None:
+    """Orders of these Whatnot shows changed: a listing they are for that the app has not
+    seen is read (one made during the show), the buyer profiles catch up with who placed
     them (soon, once, in a job of their own), and in "auto" mode the orders are applied."""
     from .. import buyers
+    from . import catalog
 
+    if client is not None:
+        try:
+            # A SAVEPOINT: a listing that cannot be stored undoes only itself, never the
+            # orders the caller has just read.
+            with db.session.begin_nested():
+                catalog.learn_listings(org_id, client, show_ids)
+        except Exception:  # noqa: BLE001 - a listing not read never stops the orders
+            log.exception("whatnot listings of new orders not read for shop %s", org_id)
     buyers.schedule_link(org_id)
     conn = connection.active(org_id)
     if conn is None or conn.orders_mode != "auto":
@@ -552,7 +562,7 @@ def _on_order(event: WhatnotEvent) -> None:
         ws = sync_show(org_id, client, order.whatnot_show_id)  # a show we had not heard of
         if ws is not None:
             link_recordings(org_id)
-    _after_orders(org_id, {order.whatnot_show_id})
+    _after_orders(org_id, {order.whatnot_show_id}, client)
 
 
 @webhooks.on("shows.created", "shows.updated", "shows.started", "shows.ended", "shows.cancelled")
@@ -627,7 +637,7 @@ def sync_show_job(payload: dict) -> None:
         return sync_show_orders(org_id, client, ws)
 
     _run(org_id, "orders", read)
-    _after_orders(org_id, {whatnot_show_id})
+    _after_orders(org_id, {whatnot_show_id}, client)
     from . import results, shipping
 
     shipping.schedule(org_id, whatnot_show_id)  # and the parcels those orders are in
@@ -697,7 +707,7 @@ def sync_job(payload: dict) -> None:
         db.session.commit()
         after = _open_by_show(org_id)
         changed |= {show for show in before if before[show] != after.get(show)}
-    _after_orders(org_id, changed)
+    _after_orders(org_id, changed, client)
     from . import results, shipping
 
     for whatnot_show_id in over:

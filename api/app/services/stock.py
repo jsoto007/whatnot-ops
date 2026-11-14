@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from ..db import db
 from ..models import InventoryMovement, MovementKind, Product, Sale, Show, Sku
 from . import activity as activity_words
-from . import catalog, inventory
+from . import catalog, inventory, sale_items
 from .dashboard import STANDING  # same definition of "sold" as the dashboard
 from .inventory import Actor, InventoryError
 
@@ -209,11 +209,13 @@ def levels(org_id: int) -> list[dict]:
         .where(Sku.organization_id == org_id)
         .order_by(Product.name, Sku.code)
     ).all()
+    line = sale_items.lines()  # every product of a sale, not only its first
     sold = dict(
         db.session.execute(
-            select(Sale.sku_id, func.sum(Sale.quantity))
+            select(line.c.sku_id, func.sum(line.c.quantity))
+            .join(Sale, Sale.id == line.c.sale_id)
             .where(Sale.organization_id == org_id, Sale.status.in_(STANDING))
-            .group_by(Sale.sku_id)
+            .group_by(line.c.sku_id)
         ).all()
     )
     last = {
@@ -281,8 +283,11 @@ def running_low(
         )
         if show_id is None:
             return []
-        sold_here = select(Sale.sku_id).where(
-            Sale.organization_id == org_id, Sale.show_id == show_id, Sale.sku_id.is_not(None)
+        line = sale_items.lines()  # every product of a sale, not only its first
+        sold_here = (
+            select(line.c.sku_id)
+            .join(Sale, Sale.id == line.c.sale_id)
+            .where(Sale.organization_id == org_id, Sale.show_id == show_id)
         )
         q = q.where(Sku.id.in_(sold_here))
     rows = db.session.execute(
@@ -316,7 +321,10 @@ def activity(org_id: int, *, sku_id: int | None = None, limit: int = 50) -> list
         q = q.where(InventoryMovement.sku_id == sku_id)
     rows = db.session.execute(q).all()
     sale_ids = {
-        int(m.source_id) for m, _, _ in rows if m.source_type == "sale" and m.source_id.isdigit()
+        sid
+        for m, _, _ in rows
+        if m.source_type in ("sale", "sale_repaid")
+        and (sid := sale_items.sale_id_of(m.source_id)) is not None
     }
     sales = {
         sid: (buyer, show_id, show_date)
@@ -337,8 +345,8 @@ def activity(org_id: int, *, sku_id: int | None = None, limit: int = 50) -> list
             "skuCode": code,
             "productName": pname,
         }
-        is_sale = m.source_type == "sale" and m.source_id.isdigit()
-        sale = sales.get(int(m.source_id)) if is_sale else None
+        is_sale = m.source_type in ("sale", "sale_repaid")
+        sale = sales.get(sale_items.sale_id_of(m.source_id)) if is_sale else None
         d["sale"] = (
             {"buyer": sale[0], "showId": sale[1], "showDate": sale[2].isoformat()} if sale else None
         )

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useContext, useState } from 'react'
+import { AuthContext } from '../auth/context'
 import { useQuery } from '@tanstack/react-query'
 import { Modal } from './Modal'
 import { SkuPicker } from './SkuPicker'
@@ -52,7 +53,14 @@ export function ProductPicker({ target, onClose, onDone }: { target: PickerTarge
   const canRemember = sale.rememberName !== false
   // In a winner's-pick show the product chosen here is that winner's pick, not the lot's name:
   // remembering it is the person's choice, never the default.
-  const [remember, setRemember] = useState(canRemember && sale.saleMode !== 'winners_pick')
+  // Where each listing is one product, the win's Whatnot listing can be linked to the product
+  // chosen here, so its later orders name themselves. Not for a listing the team marked "not
+  // one of ours", and only for people who may link listings.
+  const auth = useContext(AuthContext)
+  const canLink = sale.saleMode === 'listing' && !!sale.listing && !sale.listing.off && !sale.listing.linked && !!auth?.can('inventory.write')
+  const [linkListing, setLinkListing] = useState(canLink)
+  // The link is the exact way to remember a listing: the name is then not ticked by default.
+  const [remember, setRemember] = useState(canRemember && sale.saleMode !== 'winners_pick' && !canLink)
   const [applyAll, setApplyAll] = useState(!!target.applyToSimilar && similar.length > 0)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -71,16 +79,18 @@ export function ProductPicker({ target, onClose, onDone }: { target: PickerTarge
       // The other lots are named by id: exactly the ones this dialog listed, never a lot that
       // appeared after it opened. The server re-checks each is still a similar open lot.
       const applyTo = applyAll ? similar.map((s) => s.review?.id).filter((id): id is number => id != null) : undefined
-      const r = await api<{ alsoResolved: number }>('POST', `/api/review/${reviewId}/resolve`, {
+      const r = await api<{ alsoResolved: number; listingLinked?: boolean }>('POST', `/api/review/${reviewId}/resolve`, {
         action: 'assign_sku',
         skuId: chosen.id,
         remember,
         applyToSimilar: applyAll,
         ...(applyTo ? { applyTo } : {}),
+        ...(canLink && linkListing ? { linkListing: true } : {}),
       })
       pushRecent(chosen.id)
       const also = r?.alsoResolved ?? 0
-      await onDone(`${chosen.productName} set for ${buyer}'s ${lotText(sale)}${also ? ` and ${plural(also, 'other lot', 'other lots')}` : ''}.`)
+      const linked = r?.listingLinked ? ` The listing “${sale.listing?.title}” now always uses it.` : ''
+      await onDone(`${chosen.productName} set for ${buyer}'s ${lotText(sale)}${also ? ` and ${plural(also, 'other lot', 'other lots')}` : ''}.${linked}`)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Could not set the product. Try again.')
       setBusy(false)
@@ -135,6 +145,18 @@ export function ProductPicker({ target, onClose, onDone }: { target: PickerTarge
               </>
             )}
           </p>
+        )}
+        {canLink && (
+          <label className="field check">
+            <input type="checkbox" checked={linkListing} onChange={(e) => setLinkListing(e.target.checked)} data-testid="link-listing" />
+            <span>
+              Always use this product for this listing{' '}
+              <span className="muted">
+                — “{sale.listing?.title}
+                {sale.listing?.options ? ` · ${sale.listing.options}` : ''}” on Whatnot. Its other wins in this show are named now, and its later orders name themselves.
+              </span>
+            </span>
+          </label>
         )}
         {canRemember && (
           <label className="field check">

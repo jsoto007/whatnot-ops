@@ -13,6 +13,7 @@ import { BuyerPage, Buyers } from './pages/app/Buyers'
 import { Dashboard } from './pages/app/Dashboard'
 import { Inventory } from './pages/app/Inventory'
 import { AppLayout } from './pages/app/Layout'
+import { Giveaways } from './pages/app/Giveaways'
 import { OrderDetail, Orders, PickList } from './pages/app/Orders'
 import { OrderSlips } from './pages/app/OrderSlips'
 import { Products } from './pages/app/Products'
@@ -84,6 +85,7 @@ export function App() {
               <Route path="shows" element={<Shows />} />
               <Route path="shows/:id" element={<ShowDetail />} />
               <Route path="orders" element={<Orders />} />
+              <Route path="orders/giveaways" element={<Giveaways />} />
               <Route path="orders/pick-list/:showId" element={<PickList />} />
               <Route path="orders/slips/:showId" element={<OrderSlips />} />
               <Route path="orders/shipping/:showId" element={<Shipping />} />

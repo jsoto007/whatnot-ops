@@ -11,8 +11,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from ..db import db
-from ..models import InventoryMovement, Order, Organization, ParsedEvent, Product, Sale, Show, Sku
-from . import activity, dashboard, sale_chat
+from ..models import (
+    InventoryMovement,
+    Order,
+    Organization,
+    ParsedEvent,
+    Product,
+    Sale,
+    SaleItem,
+    Show,
+    Sku,
+)
+from . import activity, dashboard, sale_chat, sale_items
 from .showdate import SHOP_TZ
 
 HEAD = Font(bold=True, color="FFFFFF")
@@ -82,8 +92,8 @@ def _sale_rows(sales: list[Sale]) -> list[list]:
         [
             s.show.show_date.isoformat(),
             s.buyer_username,
-            s.sku.product.name if s.sku else s.item_text,
-            s.sku.code if s.sku else "",
+            sale_items.label(s, lambda k: k.product.name) if s.sku else s.item_text,
+            " + ".join(p["sku"].code for p in sale_items.products(s)),
             s.quantity,
             s.price_cents,
             (s.price_cents or 0) * s.quantity,
@@ -126,6 +136,7 @@ def _sales(
         .where(Sale.organization_id == org_id)
         .options(
             selectinload(Sale.sku).selectinload(Sku.product),
+            selectinload(Sale.open_items).selectinload(SaleItem.sku).selectinload(Sku.product),
             selectinload(Sale.show),
             selectinload(Sale.event).selectinload(ParsedEvent.message),
         )
@@ -184,21 +195,27 @@ def build(
     # 3. Products sold
     by_sku: dict[str, dict] = {}
     for s in standing:
-        key = s.sku.code if s.sku else f"? {s.item_text}"
-        p = by_sku.setdefault(
-            key,
-            {
-                "code": s.sku.code if s.sku else "",
-                "product": s.sku.product.name if s.sku else s.item_text,
-                "qty": 0,
-                "paid": 0,
-                "buyers": set(),
-            },
-        )
-        p["qty"] += s.quantity
-        if s.status in dashboard.PAID:
-            p["paid"] += (s.price_cents or 0) * s.quantity
-        p["buyers"].add(s.buyer_username.lower())
+        # One line per product of the sale; a win with two products counts under both, its
+        # price split between them, so this sheet still adds up to the show's total.
+        parts = sale_items.products(s) or [
+            {"sku": None, "quantity": s.quantity, "shareCents": (s.price_cents or 0) * s.quantity}
+        ]
+        for part in parts:
+            sku = part["sku"]
+            p = by_sku.setdefault(
+                sku.code if sku else f"? {s.item_text}",
+                {
+                    "code": sku.code if sku else "",
+                    "product": sku.product.name if sku else s.item_text,
+                    "qty": 0,
+                    "paid": 0,
+                    "buyers": set(),
+                },
+            )
+            p["qty"] += part["quantity"]
+            if s.status in dashboard.PAID:
+                p["paid"] += part["shareCents"] or 0
+            p["buyers"].add(s.buyer_username.lower())
     _sheet(
         wb,
         "Products sold",
@@ -338,7 +355,14 @@ def build(
     oq = (
         select(Order)
         .where(Order.organization_id == org.id, Order.status.in_(("paid", "picking", "packed")))
-        .options(selectinload(Order.show), selectinload(Order.sales).selectinload(Sale.sku))
+        .options(
+            selectinload(Order.show),
+            selectinload(Order.sales).selectinload(Sale.sku),
+            selectinload(Order.sales)
+            .selectinload(Sale.open_items)
+            .selectinload(SaleItem.sku)
+            .selectinload(Sku.product),
+        )
         .order_by(Order.id)
     )
     if show:
@@ -346,15 +370,19 @@ def build(
     rows = []
     for o in db.session.scalars(oq).all():
         for s in o.sales:
-            if s.status in dashboard.PAID:
+            if s.status not in dashboard.PAID:
+                continue
+            # One line per product to put in the box.
+            for part in sale_items.products(s) or [{"sku": None, "quantity": s.quantity}]:
+                sku = part["sku"]
                 rows.append(
                     [
                         o.show.show_date.isoformat(),
                         o.buyer_username,
                         activity.word(activity.ORDER_STATUS, o.status),
-                        s.sku.code if s.sku else "",
-                        s.sku.product.name if s.sku else s.item_text,
-                        s.quantity,
+                        sku.code if sku else "",
+                        sku.product.name if sku else s.item_text,
+                        part["quantity"],
                         o.tracking or "",
                         o.notes or "",
                     ]

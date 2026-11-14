@@ -172,6 +172,48 @@ commands.
   is answered; a buyer whose sale gave way and whose own paid order turns up later has
   the win recorded again; a payment for another listing id is never a declined card's
   retry. "Buy it now" orders are left alone.
+- **A sale's products are rows** (`services/sale_items.py`, table `sale_items`). A sale
+  can hold several products ("two for one") and any of them can be changed any number of
+  times. Stock is held row by row: the sale's FIRST row keeps the sale's own keys in the
+  ledger ("sale" / "sale_repaid", the sale's id), a row opened later is keyed
+  "<sale id>:<row id>" (`sale_items.key`), so `pipeline.set_sale_status`, `_repay` and
+  `units_out` loop over `sale_items.rows(sale)`. Only `sale_items` makes or closes rows
+  (`change`, `add`, `remove`: order locked, then the sale; once the order is being picked
+  nothing is put back by itself and Review gets a `swapped_after_picking` note that no
+  decline or cancel sweeps away). `Sale.sku_id` is the first open row's product. Anything
+  that counts units or money per product reads `sale_items.lines()` (SQL) or
+  `sale_items.products(sale)` (Python), never `Sale.sku_id`/`Sale.quantity`: a win's price
+  is split evenly in whole cents over its products, the odd cents to the first
+  (`sale_items.split`), so products add up to the show's total. `inventory.move` locks
+  the product row with `populate_existing`: keep it (a stale copy lost units).
+- **One product at a time** (a show sold as "one product per listing"). The winner, the
+  item and the payment all come from Whatnot's orders, so such a show needs no laptop when
+  orders are applied as they arrive (`sale_mode.laptop_needed`; the show page and Settings
+  → Laptops say so). A linked listing names its sale (`catalog.resolver`). An unnamed win
+  reads "listing not linked"; naming it in Review offers "Always use this product for this
+  listing" (`linkListing` on the resolve route → `catalog.link_sale_listing`), which links
+  the listing and names the show's other waiting wins of it, each through
+  `pipeline.resolve` as the person. Never in a winner's-pick show (there the listing is a
+  "choose any" lot) and never for a listing marked "not one of ours". A listing made during
+  a show is read when its first order is (`catalog.learn_listings`, from
+  `sync._after_orders`, a few per pass inside a SAVEPOINT): the daily catalog read pauses
+  while a show is on air. "Check now" in Settings also queues a read. A product is changed
+  from the Orders row menu or the order's own page (`ChangeProduct`).
+- **Offers** (`services/offers.py`). A win holds one product unless the host or a trusted
+  moderator (`Organization.trusted_mods`, set in Settings) types an offer that names the
+  lot ("#45 bogo", "#45 is two for one"; the words are only in `rules.offer`), or a person
+  sets `Sale.products_allowed` on that one sale. The latest word on a lot stands, only for
+  its show. A viewer's line never sets an offer (`tests/test_offers.py`). The pick worker
+  takes up to that many spots from the winner (`picks._final`, `add_extras` through
+  `sale_items.add`); fewer than allowed is left for a person ("picked 1 of 2").
+- **Giveaways** (`services/giveaways.py`, `/app/orders/giveaways`). A giveaway in
+  Whatnot's orders is never a sale: no price, not in any sales count or revenue, untouched
+  by the pick worker. It waits in "Giveaways to assign" until a person names its product
+  (`giveaway_items`, keyed by Whatnot's id of the order line; one open row per giveaway,
+  under an advisory lock). Stock leaves when the product is named and comes back when it
+  is changed or taken off, each row under its own ledger key ("giveaway", row id). Only
+  Whatnot's orders make one: a chat "won the giveaway!" line never does. On the slips,
+  Whatnot's giveaways replace the ones read from chat and print the chosen product.
 - **The pick worker** (`services/picks.py`, job `pick_show`). In a winner's-pick show
   the winner names the product by typing a shelf spot ("B4"; `shelves.said` reads each
   win's final pick). Ten minutes after the show ends on Whatnot, the wins still waiting

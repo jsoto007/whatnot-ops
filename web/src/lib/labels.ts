@@ -262,14 +262,19 @@ const PICK_HELD: Record<string, string> = {
   near: "Not assigned by itself: it was typed within half a minute before this winner's next win, so it may be for that one.",
   unclear: 'Not assigned by itself: this winner typed more spots than can be matched to their wins.',
 }
-export function pickWords(pick: { state: string; spot?: string; spots?: string[]; name?: string; held?: string[] }): string {
+export function pickWords(pick: { state: string; spot?: string; spots?: string[]; name?: string; held?: string[]; extra?: { spot: string; name: string }[]; allowed?: number }): string {
   switch (pick.state) {
-    case 'product':
-      return [`Typed ${pick.spot} in chat: ${pick.name}.`, ...(pick.held ?? []).map((h) => PICK_HELD[h] ?? '')].filter(Boolean).join(' ')
+    case 'product': {
+      // A win that may hold several products ("two for one") lists every spot and product.
+      const all = [{ spot: pick.spot ?? '', name: pick.name ?? '' }, ...(pick.extra ?? [])]
+      const typed = `Typed ${all.map((p) => p.spot).join(' and ')} in chat: ${all.map((p) => p.name).join(' + ')}.`
+      const held = (pick.held ?? []).map((h) => (h === 'short' ? `Not assigned by itself: this win may hold ${pick.allowed ?? 2} products and the winner picked ${all.length}.` : (PICK_HELD[h] ?? '')))
+      return [typed, ...held].filter(Boolean).join(' ')
+    }
     case 'unknown_code':
       return `Typed ${pick.spot}. No product is on ${pick.spot} for this show.`
     case 'several':
-      return `Typed ${(pick.spots ?? []).join(' and ')}: more than one spot, so none was chosen.`
+      return `Typed ${(pick.spots ?? []).join(' and ')}: more spots than this win takes, so none was chosen.`
     case 'unread':
       return "This show's picks could not be read: a laptop's clock was out. Read the chat."
     case 'no_layout':
@@ -285,5 +290,7 @@ export function unknownWords(unk: { saleMode?: string | null; review?: { pick?: 
   const n = unk.length
   if (unk.every((s) => s.review?.pick === 'none')) return n === 1 ? 'did not pick' : `${n} did not pick`
   if (unk.every((s) => s.saleMode === 'winners_pick' && !s.review?.pick)) return n === 1 ? 'waiting for pick' : `${n} waiting for pick`
+  // Where each listing is one product, an unnamed win is a listing nobody has linked to a product yet.
+  if (unk.every((s) => s.saleMode === 'listing')) return n === 1 ? 'listing not linked' : `${n} listings not linked`
   return n === 1 ? 'item not recognised' : `${n} items not recognised`
 }

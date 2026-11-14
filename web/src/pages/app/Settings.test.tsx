@@ -52,7 +52,7 @@ test('the owner sets how the shop usually sells', async () => {
 
   fireEvent.click(listing)
   fireEvent.click(screen.getByRole('button', { name: 'Save how you sell' }))
-  await waitFor(() => expect(patches).toEqual([{ saleMode: 'listing', autoPick: false }]))
+  await waitFor(() => expect(patches).toEqual([{ saleMode: 'listing', autoPick: false, trustedMods: [] }]))
   // The rest of the app reads the shop from here: the show page's "usual way" follows at once.
   await waitFor(() => expect(set.map((o) => o.saleMode)).toEqual(['listing']))
 })
@@ -64,5 +64,13 @@ test("the owner switches on assigning each winner's pick by itself", async () =>
   expect(screen.getByText(/when Whatnot has confirmed the win as paid/)).toBeInTheDocument()
   fireEvent.click(box)
   fireEvent.click(screen.getByRole('button', { name: 'Save how you sell' }))
-  await waitFor(() => expect(patches).toEqual([{ saleMode: 'winners_pick', autoPick: true }]))
+  await waitFor(() => expect(patches).toEqual([{ saleMode: 'winners_pick', autoPick: true, trustedMods: [] }]))
+})
+
+test('the owner lists the moderators whose chat lines may set an offer', async () => {
+  const { patches } = mount()
+  fireEvent.change(screen.getByTestId('trusted-mods'), { target: { value: 'mod_one,  other.mod' } })
+  expect(screen.getByText(/A viewer's line never does/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Save how you sell' }))
+  await waitFor(() => expect(patches).toEqual([{ saleMode: 'winners_pick', autoPick: false, trustedMods: ['mod_one', 'other.mod'] }]))
 })

@@ -18,7 +18,7 @@ def seed():
     d = request.get_json(silent=True) or {}
     if isinstance(d.get("seller"), dict):
         fake.seller.update({k: str(v) for k, v in d["seller"].items() if k in ("id", "username")})
-    out: dict = {"shows": [], "orders": [], "shipments": []}
+    out: dict = {"shows": [], "orders": [], "shipments": [], "products": []}
     now = datetime.now(UTC)
     for spec in d.get("shows") or []:
         show = fake.add_show(
@@ -30,6 +30,33 @@ def seed():
             else None,
         )
         out["shows"].append(show["id"])
+    for spec in d.get("products") or []:  # the shop's Whatnot inventory
+        product = fake.add_product(
+            title=spec.get("title", "Product"),
+            variants=[
+                {
+                    "sku": v.get("sku"),
+                    "price_cents": v.get("priceCents"),
+                    "quantity": v.get("quantity", 0),
+                }
+                for v in spec.get("variants") or [{}]
+            ],
+        )
+        variant = fake.variants_of(product["id"])[0]
+        out["products"].append(
+            {"id": product["id"], "variantId": variant["id"], "sku": variant["sku"]}
+        )
+
+    def listing(item: dict) -> dict:
+        """The listing an order line is for: one made in this call (`product`: its place in
+        `products`), or one made earlier (`productId` and `variantId`)."""
+        if "product" in item:
+            made = out["products"][item["product"]]
+            return {"product_id": made["id"], "variant_id": made["variantId"], "sku": made["sku"]}
+        if item.get("variantId"):
+            return {"product_id": item.get("productId"), "variant_id": item["variantId"]}
+        return {}
+
     for spec in d.get("orders") or []:
         order = fake.add_order(
             show_id=out["shows"][spec.get("show", 0)] if out["shows"] else spec.get("showId"),
@@ -39,6 +66,7 @@ def seed():
                     "title": i["title"],
                     "price_cents": i.get("priceCents", 100),
                     "quantity": i.get("quantity", 1),
+                    **listing(i),
                 }
                 for i in spec.get("items", [])
             ],
@@ -64,18 +92,6 @@ def seed():
                 fake.finish_label(shipment_id)
     for change in d.get("setShipments") or []:
         fake.set_shipment(str(change["id"]), status=change["status"])
-    for spec in d.get("products") or []:  # the shop's Whatnot inventory
-        fake.add_product(
-            title=spec.get("title", "Product"),
-            variants=[
-                {
-                    "sku": v.get("sku"),
-                    "price_cents": v.get("priceCents"),
-                    "quantity": v.get("quantity", 0),
-                }
-                for v in spec.get("variants") or [{}]
-            ],
-        )
     for spec in d.get("results") or []:  # how Whatnot says a show did
         show = fake.shows[spec["showId"]]
         fake.analytics[show["id"]] = {

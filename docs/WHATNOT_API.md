@@ -56,6 +56,20 @@ names the product in chat; Whatnot never knows it). Whatnot's orders arrive as t
 placed. Each recording is matched on its own to the Whatnot show that was live while it ran
 (a person can change the match on the show's Payments tab).
 
+**How the show is sold** decides what the laptop is for (Settings → How you sell; a show
+can differ on its own page):
+
+- *Winners pick in chat.* Whatnot's order says who won a "choose any" lot; the winner
+  types a shelf spot in chat. The laptop records the chat. Ten minutes after the show ends
+  the app reads each winner's lines against the show's shelves and leaves what it found on
+  the win in Review ("Typed B4 in chat: Red bundle"). With "assign winners' picks" switched
+  on in Settings, a pick is assigned with no person only when the order is paid, the
+  laptop's clock was in step, the winner typed one clear spot after winning, and nothing
+  about that buyer is in doubt.
+- *One product per listing.* The order names the listing, and a linked listing names the
+  product. With orders applied as they arrive the show needs no laptop: a show nobody
+  records gets a place of its own ten minutes after its first order.
+
 **After the show** (it ends → the app reads every order and every parcel of the show):
 
 1. **Payments tab → Whatnot's orders.** One row per order item with what Whatnot says
@@ -198,6 +212,19 @@ write the flag and the note):
   "Back again · 12 items over 5 shows", with the team's flag first. Counted before
   tonight's show date. No note and no money reach the laptop.
 
+**Offers and giveaways.**
+
+- **Offers.** A win holds one product unless the host or a moderator listed in Settings →
+  Trusted moderators types an offer that names the lot ("#45 bogo", "#45 is two for one",
+  "#45 3 for 1"); "#45 is not bogo" takes it back, and a person's count on one win
+  overrules the chat. The winner then types that many spots. A viewer's line never sets an
+  offer. Fewer picked than allowed waits in Review as "picked 1 of 2".
+- **Giveaways.** Whatnot lists a giveaway as an order of its own kind. It is never a sale
+  here (not in the counts, not in revenue). Orders → Giveaways lists them for the shows the
+  app follows; a person names the product each one was. Stock leaves then, comes back when
+  the product is changed or taken off, and the product prints on the buyer's slip. A
+  giveaway Whatnot cancelled does not ship; a product still on it is taken off by hand.
+
 **Listings and stock** (Inventory → Whatnot listings; everyone reads, owners and managers
 link):
 
@@ -214,6 +241,14 @@ link):
   Review, recorded as made by Whatnot's record), at the price the order says was paid.
   "Choose any" lots are not linked to a product, so the winner still names it in chat; a
   listing marked "not one of ours" never names a product, not even by its title.
+- **Linking while naming a win.** In a show sold as one product per listing, an unnamed
+  win reads "listing not linked". Naming it offers "Always use this product for this
+  listing": the listing is linked, the show's other waiting wins of it are named at once,
+  and later orders name themselves. Not offered in a winner's-pick show (there the listing
+  is a "choose any" lot) or for a listing marked "not one of ours".
+- **A listing made during a show** is read when its first order is: the daily read pauses
+  while a show is on air. A listing Whatnot no longer has is kept as it was sold, so a
+  person can still say which product it was.
 - **The app never changes Whatnot's stock.** It shows both counts and says when they
   differ; a person fixes the listing on Whatnot. A first version could set Whatnot's
   count from the app and was removed after its review: Whatnot counts its own sales down,
@@ -310,3 +345,12 @@ The probe answered 1–4; the rest need a real show with the connection on.
     appears in the catalog, and whether an order item names its variant. Also unknown,
     and needed before the app could ever set Whatnot's stock: whether Whatnot counts a
     listing down at each sale, and what it does to the count on a cancel or a decline.
+12. Offers: the words the shop's moderators really type. The app reads "bogo", "buy one
+    get one", "two for one" and "N for 1" beside a lot number; that list is a guess.
+13. Winners' picks on a real show: how often a pick is one clear spot typed after the win,
+    and how far a laptop's clock drifts. Run shows with "assign winners' picks" off and
+    read Review before switching it on.
+14. Giveaways: that the order number Seller Hub's Shipments page shows for a giveaway is
+    the API's order id (a scraped giveaway row shows its product only if it is).
+15. A show with no laptop: never run on the live shop. In particular how soon after the
+    win Whatnot lists the order, and whether an order always names its listing's variant.

@@ -375,4 +375,79 @@ test("in a winner's-pick show an unnamed item waits for the winner, then reads d
   expect(unknownWords([noPick, noPick])).toBe('2 did not pick')
   expect(unknownWords([other])).toBe('item not recognised')
   expect(unknownWords([waiting, noPick, other])).toBe('3 items not recognised')
+  // where each listing is one product, an unnamed win is a listing nobody linked yet
+  const listing = sale({ buyer: 'made_up_ann', orderId: 8, saleMode: 'listing', review: { id: 21, reason: 'unmatched_item' } })
+  expect(unknownWords([listing])).toBe('listing not linked')
+  expect(unknownWords([listing, listing])).toBe('2 listings not linked')
+  expect(unknownWords([listing, waiting])).toBe('2 items not recognised')
+})
+
+test('a sale that stands can get another product from its row menu', async () => {
+  mount()
+  const amy = await screen.findByTestId('order-amyshopsalot')
+  fireEvent.click(within(amy).getByRole('button', { name: 'More for amyshopsalot' }))
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Change the product of lot #522' }))
+  const save = await screen.findByTestId('change-product-save')
+  expect(save).toBeDisabled() // nothing chosen yet
+  const box = screen.getByRole('combobox', { name: /New product for amyshopsalot/ })
+  fireEvent.focus(box)
+  fireEvent.change(box, { target: { value: 'blind' } })
+  fireEvent.click(await screen.findByRole('option', { name: /Blind Bag/ }))
+  fireEvent.click(save)
+  await waitFor(() => {
+    const calls = (globalThis.fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+    const patch = calls.find(([url, init]) => init?.method === 'PATCH' && /\/api\/orders\/sales\/\d+\/product$/.test(url))
+    expect(patch && JSON.parse(String(patch[1]!.body))).toEqual({ skuId: 8 })
+  })
+  // an unnamed or declined sale offers no such entry
+  fireEvent.click(within(screen.getByTestId('order-moonlove3')).getByRole('button', { name: 'More for moonlove3' }))
+  expect(screen.queryByRole('menuitem', { name: /Change the product/ })).toBeNull()
+})
+
+test('a win with two products lists both, and each can be changed or taken off; one more can be added', async () => {
+  const bag = { id: 8, code: 'BB-01', name: '', productName: 'Beauty Blind Bag' }
+  const two = sale({ buyer: 'made_up_two', orderId: 30, sku: RED, item: '$1 BEAUTY PULLS #540', lot: 540, status: 'paid', paidAt: '2026-11-08T03:50:00Z', wonAt: '2026-11-08T03:50:00Z', products: [{ rowId: 61, quantity: 1, shareCents: 350, sku: RED }, { rowId: 62, quantity: 2, shareCents: 350, sku: bag }] })
+  orders.push(order({ id: 30, buyer: 'made_up_two', status: 'paid', verified: true, sales: [two] }))
+  try {
+    mount()
+    const row = await screen.findByTestId('order-made_up_two')
+    expect(row).toHaveTextContent('1 × $1 Beauty Pulls')
+    expect(row).toHaveTextContent('2 × Beauty Blind Bag')
+    fireEvent.click(within(row).getByRole('button', { name: 'More for made_up_two' }))
+    expect(await screen.findByRole('menuitem', { name: 'Change $1 Beauty Pulls of lot #540' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Change Beauty Blind Bag of lot #540' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Add a product to lot #540' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Take Beauty Blind Bag off lot #540' }))
+    await waitFor(() => {
+      const calls = (globalThis.fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+      expect(calls.some(([url, init]) => init?.method === 'DELETE' && url === `/api/orders/sales/${two.id}/products/62`)).toBe(true)
+    })
+  } finally {
+    orders.pop()
+  }
+})
+
+test("a win still waiting for its winner's pick can be made a two for one, and back", async () => {
+  const waiting = sale({ buyer: 'made_up_bo', orderId: 31, saleMode: 'winners_pick', item: 'CHOOSE ANY PRODUCT #6', lot: 6, review: { id: 41, reason: 'unmatched_item' } })
+  const already = sale({ buyer: 'made_up_cy', orderId: 32, saleMode: 'winners_pick', item: 'CHOOSE ANY PRODUCT #7', lot: 7, productsAllowed: 2, review: { id: 42, reason: 'unmatched_item' } })
+  orders.push(order({ id: 31, buyer: 'made_up_bo', sales: [waiting] }), order({ id: 32, buyer: 'made_up_cy', sales: [already] }))
+  try {
+    mount()
+    const sent = () => {
+      const calls = (globalThis.fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+      return calls.filter(([url, init]) => init?.method === 'PATCH' && /\/allowed$/.test(url)).map(([url, init]) => [url, JSON.parse(String(init!.body))])
+    }
+    fireEvent.click(within(await screen.findByTestId('order-made_up_bo')).getByRole('button', { name: 'More for made_up_bo' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Two for one: lot #6 takes 2 products' }))
+    await waitFor(() => expect(sent()).toEqual([[`/api/orders/sales/${waiting.id}/allowed`, { products: 2 }]]))
+    fireEvent.click(within(screen.getByTestId('order-made_up_cy')).getByRole('button', { name: 'More for made_up_cy' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Back to one product for lot #7' }))
+    await waitFor(() => expect(sent()[1]).toEqual([`/api/orders/sales/${already.id}/allowed`, { products: 1 }]))
+    // a listing show's unnamed win is one product: no such entry
+    fireEvent.click(within(screen.getByTestId('order-moonlove3')).getByRole('button', { name: 'More for moonlove3' }))
+    expect(screen.queryByRole('menuitem', { name: /Two for one/ })).toBeNull()
+  } finally {
+    orders.pop()
+    orders.pop()
+  }
 })

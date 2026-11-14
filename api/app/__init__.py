@@ -16,6 +16,7 @@ from .routes.buyers import bp as buyers_bp
 from .routes.catalog import bp as catalog_bp
 from .routes.devices import bp as devices_bp
 from .routes.extension import bp as extension_bp
+from .routes.giveaways import bp as giveaways_bp
 from .routes.health import bp as health_bp
 from .routes.ingest import bp as ingest_bp
 from .routes.orders import bp as orders_bp
@@ -200,6 +201,7 @@ def create_app(config: Config | None = None) -> Flask:
     app.register_blueprint(review_bp, url_prefix="/api/review")
     app.register_blueprint(orders_bp, url_prefix="/api/orders")
     app.register_blueprint(buyers_bp, url_prefix="/api/buyers")
+    app.register_blueprint(giveaways_bp, url_prefix="/api/giveaways")
     app.register_blueprint(reports_bp, url_prefix="/api")
     app.register_blueprint(whatnot_bp, url_prefix="/api/whatnot")
     app.register_blueprint(shipping_bp, url_prefix="/api/shipping")

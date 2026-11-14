@@ -65,6 +65,15 @@ test('the shop has a usual way of selling; one show can differ, and go back', as
   await expect(page.getByText('Set how a show sells to “one product per listing”')).toBeVisible()
   await expect(page.getByText(/Set a show back to the shop's usual way of selling/)).toBeVisible()
 
+  // The owner lists the moderators whose chat lines may set an offer; the list is kept, cleaned, and in the log.
+  await page.getByLabel('Trusted moderators').fill('Mod_One, @other.mod  mod_one')
+  const saved = page.waitForResponse((r) => r.url().endsWith('/api/team/organization') && r.request().method() === 'PATCH')
+  await page.getByRole('button', { name: 'Save how you sell' }).click()
+  expect((await saved).ok()).toBe(true)
+  await page.reload()
+  await expect(page.getByLabel('Trusted moderators')).toHaveValue('mod_one, other.mod')
+  await expect(page.getByText(/Set the trusted moderators \(2 names\)/)).toBeVisible()
+
   await page.getByRole('link', { name: 'Shows', exact: true }).click()
   await page.getByRole('link', { name: /show|\d{4}/ }).first().click()
   await expect(page.getByRole('combobox', { name: 'Sold as' })).toHaveValue('usual')

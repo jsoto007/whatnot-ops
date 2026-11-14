@@ -1,3 +1,4 @@
+import { AuthContext, type AuthState } from '../../../auth/context'
 import { render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { Device } from '../../../lib/api'
@@ -19,7 +20,7 @@ const device = (id: number, name: string, createdBy: string | null, revoked = fa
   makerLostAccess,
 })
 
-function show(devices: Device[]) {
+function show(devices: Device[], laptopNeeded?: boolean) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
@@ -30,7 +31,13 @@ function show(devices: Device[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <Laptops manage />
+      {laptopNeeded === undefined ? (
+        <Laptops manage />
+      ) : (
+        <AuthContext.Provider value={{ me: { organization: { laptopNeeded } } } as AuthState}>
+          <Laptops manage />
+        </AuthContext.Provider>
+      )}
     </QueryClientProvider>,
   )
 }
@@ -60,4 +67,14 @@ test('a key whose maker already lost access is flagged, not shown as covered', a
   expect(within(row('Front laptop')).getByTestId('device-maker')).toHaveTextContent(/by Mia · who no longer has access$/)
   expect(within(row('Gone laptop')).getByTestId('device-maker')).toHaveTextContent(/by Mia$/)
   expect(screen.getByTestId('unknown-maker-note')).toBeInTheDocument()
+})
+
+test('a shop whose shows need no laptop is told so above the set-up steps', async () => {
+  show([], false)
+  expect(await screen.findByTestId('no-laptop-needed')).toHaveTextContent('Your shows need no laptop.')
+})
+
+test('a shop that needs its laptop sees only the steps', () => {
+  show([], true)
+  expect(screen.queryByTestId('no-laptop-needed')).toBeNull()
 })

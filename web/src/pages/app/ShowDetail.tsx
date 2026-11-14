@@ -27,7 +27,7 @@ export function ShowDetail() {
     next.set('tab', t)
     setParams(next, { replace: true })
   }
-  const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats; clockProblems?: ClockProblem[] }>(`/api/shows/${id}`) })
+  const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats; clockProblems?: ClockProblem[]; noShelves?: boolean; laptopNeeded?: boolean }>(`/api/shows/${id}`) })
   const dash = useQuery({ queryKey: ['show-dashboard', id], queryFn: () => apiGet<{ tiles: ShowTiles; topBuyers: TopBuyer[]; topSkus: TopSku[]; winnersWithoutPurchase: WalkAway[]; whatnot?: WhatnotRecapData | null }>(`/api/dashboard/shows/${id}`) })
   const sales = useQuery({ queryKey: ['sales', id], queryFn: () => apiGet<{ sales: Sale[] }>(`/api/shows/${id}/sales`) })
   const parse = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/parse`), onSuccess: () => qc.invalidateQueries() })
@@ -68,6 +68,11 @@ export function ShowDetail() {
             </div>
           )}
           {s?.saleMode && <ShowSaleMode show={s} usual={me?.organization.saleMode} canEdit={can('review.act')} />}
+          {show.data?.laptopNeeded === false && (
+            <div className="sub muted small" data-testid="no-laptop">
+              No laptop is needed for this show: the winner, the item and the payment all come from Whatnot's orders.
+            </div>
+          )}
         </div>
         <span className="row-actions">
           {can('orders.view') && (
@@ -101,6 +106,14 @@ export function ShowDetail() {
       </div>
 
       {!!show.data?.clockProblems?.length && <ClockWarning problems={show.data.clockProblems} />}
+      {show.data?.noShelves && tab !== 'shelves' && (
+        <div className="card small warn-card" role="status" data-testid="no-shelves">
+          <b>This show has no shelves laid out.</b> Winners pick by typing a shelf spot, so no pick can be read until they are.{' '}
+          <button type="button" className="link" onClick={() => setTab('shelves')}>
+            Lay out the shelves
+          </button>
+        </div>
+      )}
       {t && <Kpis t={t} label="This show" />}
       {list.length > 0 && <SaleStatusBar counts={counts} />}
       {t && <Tally t={t} />}
@@ -149,7 +162,7 @@ export function ShowDetail() {
  */
 function ShelvesTab({ showId, canEdit }: { showId: string; canEdit: boolean }) {
   const qc = useQueryClient()
-  const q = useQuery({ queryKey: ['shelves', showId], queryFn: () => apiGet<{ shelves: Shelf[] }>(`/api/shows/${showId}/shelves`) })
+  const q = useQuery({ queryKey: ['shelves', showId], queryFn: () => apiGet<{ shelves: Shelf[]; canCopy?: boolean }>(`/api/shows/${showId}/shelves`) })
   const [text, setText] = useState<string | null>(null)
   const save = useMutation({
     mutationFn: (shelves: { spot: string; code: string }[]) => api<{ shelves: Shelf[] }>('POST', `/api/shows/${showId}/shelves`, { shelves }),
@@ -157,6 +170,16 @@ function ShelvesTab({ showId, canEdit }: { showId: string; canEdit: boolean }) {
       qc.setQueryData(['shelves', showId], r)
       setText(null)
       void qc.invalidateQueries({ queryKey: ['review'] })
+      void qc.invalidateQueries({ queryKey: ['show', showId] })
+    },
+  })
+  const copy = useMutation({
+    mutationFn: () => api<{ shelves: Shelf[]; canCopy?: boolean }>('POST', `/api/shows/${showId}/shelves/copy`, {}),
+    onSuccess: (r) => {
+      qc.setQueryData(['shelves', showId], r)
+      setText(null)
+      void qc.invalidateQueries({ queryKey: ['review'] })
+      void qc.invalidateQueries({ queryKey: ['show', showId] })
     },
   })
   const rows = q.data?.shelves ?? []
@@ -197,7 +220,13 @@ function ShelvesTab({ showId, canEdit }: { showId: string; canEdit: boolean }) {
           <button className="btn primary" disabled={save.isPending}>
             Save shelves
           </button>
+          {q.data?.canCopy && (
+            <button type="button" className="btn" disabled={copy.isPending} onClick={() => copy.mutate()} data-testid="copy-shelves">
+              Copy from the last show
+            </button>
+          )}
           {save.isError && <p className="form-error">{(save.error as Error).message}</p>}
+          {copy.isError && <p className="form-error">{(copy.error as Error).message}</p>}
         </form>
       )}
     </div>

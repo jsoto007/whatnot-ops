@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useContext, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AuthContext } from '../../../auth/context'
 import { Icon } from '../../../components/Icon'
 import { LicenceLink } from '../../../components/Licence'
 import { Sheet } from '../../../components/Sheet'
@@ -25,6 +26,7 @@ const ONLINE_MS = 3 * 60_000
 /** Settings → Laptops: install the extension, connect each laptop with a code, see who is uploading. */
 export function Laptops({ manage }: { manage: boolean }) {
   const qc = useQueryClient()
+  const me = useContext(AuthContext)?.me
   const ext = useExtensionInfo()
   const latest = ext.data?.available ? ext.data.version : null
   const laptop = useThisLaptop()
@@ -44,6 +46,12 @@ export function Laptops({ manage }: { manage: boolean }) {
         <span className="muted small">Chat Scraper captures the live chat on each laptop and uploads it here.</span>
       </div>
 
+      {me?.organization.laptopNeeded === false && (
+        <p className="card small" role="note" data-testid="no-laptop-needed">
+          <b>Your shows need no laptop.</b> You sell one product per listing and Whatnot's orders are applied as they arrive, so the winner, the item and the payment all come from Whatnot. Connect a
+          laptop only for a show where winners pick in chat.
+        </p>
+      )}
       <ol className="setup-steps">
         <li>
           <span className="step-n" aria-hidden="true">

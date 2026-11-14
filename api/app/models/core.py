@@ -1,6 +1,7 @@
 from datetime import UTC, date, datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -48,6 +49,11 @@ class Organization(db.Model):
     # on the review item, so a real show can be compared before this is switched on.
     auto_pick: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
+    )
+    # Whatnot names whose chat lines may set an offer on a lot ("#45 is two for one"), besides
+    # the host (services/offers.py). Lower case, plain ASCII.
+    trusted_mods: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow

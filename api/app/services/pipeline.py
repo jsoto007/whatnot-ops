@@ -160,12 +160,29 @@ def match_sku(org_id: int, item_text: str) -> Sku | None:
 # ---------- applying events ----------
 
 
+def _rows(sale: Sale) -> list:
+    """The sale's products, as its open rows (services/sale_items.py): one for almost every
+    sale, more when a win holds several products. Stock is held row by row."""
+    from . import sale_items
+
+    return sale_items.rows(sale)
+
+
+def _key(row) -> str:
+    """The row's key in the stock ledger: the sale's own id for its first row, as always;
+    "<sale id>:<row id>" for a row opened later."""
+    from . import sale_items
+
+    return sale_items.key(row)
+
+
 def _reserve(sale: Sale) -> bool:
     """Hold stock for the sale. Never refused for lack of stock: an oversell leaves the
     SKU's `available` negative, and Inventory / the dashboard say how many to buy."""
-    inventory.reserve(
-        sale.sku_id, sale.quantity, source_type="sale", source_id=str(sale.id), actor=RULE_ACTOR
-    )
+    for row in _rows(sale):
+        inventory.reserve(
+            row.sku_id, row.quantity, source_type="sale", source_id=_key(row), actor=RULE_ACTOR
+        )
     sale.status = SaleStatus.reserved
     sale.status_reason = None
     return True
@@ -685,6 +702,9 @@ def close_sale(
 # Flags that say "the stream showed this win's card declined" while the sale still stands.
 # Whatnot's paid order for the win clears them (whatnot/orders.apply).
 DECLINE_SEEN = "decline_seen"
+# The packer's note when a sale's product was changed after its order was being picked: the
+# old unit may be in the box and is counted back by a person (services/sale_items.change).
+SWAPPED_AFTER_PICKING = "swapped_after_picking"
 
 
 def flag_decline(sale: Sale, ev: ParsedEvent) -> ReviewItem:
@@ -791,7 +811,7 @@ def review_decline(
     `by_itself`: Whatnot's orders are applied as they arrive, so a payment that goes through
     puts the sale back with nobody stepping in; the item is then for the person to know of
     the decline and to chase it."""
-    back = sale.sku_id is not None and units_out(sale) == 0
+    back = sale.sku_id is not None and units_out(sale) == 0  # every product of it
     return open_review(
         sale.organization_id,
         "payment_declined",
@@ -831,30 +851,34 @@ def set_sale_status(
         )
     picked = None
     if new_status in (SaleStatus.cancelled, SaleStatus.payment_failed):
+        rows = _rows(sale) if sale.status in (SaleStatus.reserved, SaleStatus.paid) else []
+        # Paid at the win and still on the shelf: the products not put back yet.
+        on_shelf = (
+            [r for r in rows if not _row_moved(r, MovementKind.restock, _row_round(r))]
+            if sale.status is SaleStatus.paid and not _in_fulfilment(sale)
+            else []
+        )
         if sale.status is SaleStatus.reserved:
-            inventory.release(
-                sale.sku_id,
-                sale.quantity,
-                source_type=_round(sale),
-                source_id=str(sale.id),
-                actor=actor,
-                reason=reason,
-            )
-        elif (
-            sale.status is SaleStatus.paid
-            and not _in_fulfilment(sale)
-            and not _moved(sale, MovementKind.restock, _round(sale))
-        ):
-            # Paid at the win and still on the shelf: the stock comes back.
-            inventory.move(
-                sale.sku_id,
-                MovementKind.restock,
-                sale.quantity,
-                source_type=_round(sale),
-                source_id=str(sale.id),
-                actor=actor,
-                reason=reason,
-            )
+            for row in rows:
+                inventory.release(
+                    row.sku_id,
+                    row.quantity,
+                    source_type=_row_round(row),
+                    source_id=_key(row),
+                    actor=actor,
+                    reason=reason,
+                )
+        elif on_shelf:
+            for row in on_shelf:
+                inventory.move(
+                    row.sku_id,
+                    MovementKind.restock,
+                    row.quantity,
+                    source_type=_row_round(row),
+                    source_id=_key(row),
+                    actor=actor,
+                    reason=reason,
+                )
         elif sale.status in (SaleStatus.paid, SaleStatus.fulfilled):
             # Picked, packed or shipped: whether it goes back on the shelf is a person's call.
             sale.flagged = True
@@ -869,14 +893,15 @@ def set_sale_status(
                 409,
             )
         else:
-            inventory.commit(
-                sale.sku_id,
-                sale.quantity,
-                source_type="sale",
-                source_id=str(sale.id),
-                actor=actor,
-                reason=reason,
-            )
+            for row in _rows(sale):
+                inventory.commit(
+                    row.sku_id,
+                    row.quantity,
+                    source_type="sale",
+                    source_id=_key(row),
+                    actor=actor,
+                    reason=reason,
+                )
     elif new_status is SaleStatus.fulfilled:
         if sale.status is not SaleStatus.paid:
             raise ValueError(
@@ -893,6 +918,10 @@ def set_sale_status(
             ReviewItem.sale_id == sale.id, ReviewItem.status == ReviewStatus.open
         )
     ):
+        if item.reason == SWAPPED_AFTER_PICKING:
+            # A note about a unit that may be in a box: it stands until a person has dealt
+            # with that unit, whatever happens to the sale.
+            continue
         if new_status in (SaleStatus.cancelled, SaleStatus.payment_failed):
             item.status = ReviewStatus.dismissed
             item.resolution = {"by": "sale closed"}
@@ -977,17 +1006,17 @@ def _in_fulfilment(sale: Sale) -> bool:
     return order.picked_at is None or sale.paid_at is None or sale.paid_at <= order.picked_at
 
 
-def _moved(sale: Sale, kind: MovementKind, source_type: str) -> bool:
+def _row_moved(row, kind: MovementKind, source_type: str) -> bool:
     from ..models import InventoryMovement
 
     return (
         db.session.scalar(
             select(InventoryMovement.id)
             .where(
-                InventoryMovement.sku_id == sale.sku_id,
+                InventoryMovement.sku_id == row.sku_id,
                 InventoryMovement.kind == kind,
                 InventoryMovement.source_type == source_type,
-                InventoryMovement.source_id == str(sale.id),
+                InventoryMovement.source_id == _key(row),
             )
             .limit(1)
         )
@@ -995,30 +1024,37 @@ def _moved(sale: Sale, kind: MovementKind, source_type: str) -> bool:
     )
 
 
-def units_out(sale: Sale) -> int:
-    """How many of the sale's units the ledger counts as gone from the shelf: committed by
-    any payment round, minus what a decline or cancel put back."""
+def _row_out(row) -> int:
+    """How many of the row's units the ledger counts as gone from the shelf: committed by
+    any payment round, minus what a decline, a cancel or a change of product put back."""
     from ..models import InventoryMovement
 
-    if sale.sku_id is None:
-        return 0
-    rows = db.session.execute(
+    got = db.session.execute(
         select(InventoryMovement.kind, func.sum(InventoryMovement.quantity))
         .where(
-            InventoryMovement.sku_id == sale.sku_id,
+            InventoryMovement.sku_id == row.sku_id,
             InventoryMovement.source_type.in_(("sale", REPAID)),
-            InventoryMovement.source_id == str(sale.id),
+            InventoryMovement.source_id == _key(row),
             InventoryMovement.kind.in_((MovementKind.commit, MovementKind.restock)),
         )
         .group_by(InventoryMovement.kind)
     ).all()
-    n = {k: int(q or 0) for k, q in rows}
+    n = {k: int(q or 0) for k, q in got}
     return n.get(MovementKind.commit, 0) - n.get(MovementKind.restock, 0)
 
 
+def units_out(sale: Sale) -> int:
+    """How many of the sale's units the ledger counts as gone from the shelf, over all its
+    products."""
+    if sale.sku_id is None:
+        return 0
+    return sum(_row_out(row) for row in _rows(sale))
+
+
 def _repay(sale: Sale, *, actor: Actor, reason: str | None) -> None:
-    """A declined buyer paid another way. The unit leaves the shelf again only if the decline
-    had put it back; one such round per sale (a ledger source holds each kind once)."""
+    """A declined buyer paid another way. Each product's unit leaves the shelf again only if
+    the decline had put it back; one such round per product row (a ledger source holds each
+    kind once). All or nothing: a product that cannot go round again stops the whole sale."""
     from .orders import OrderStatus
 
     if sale.sku_id is None:
@@ -1031,41 +1067,37 @@ def _repay(sale: Sale, *, actor: Actor, reason: str | None) -> None:
             "it separately",
             409,
         )
-    if units_out(sale) < sale.quantity:
-        if _moved(sale, MovementKind.commit, REPAID):
-            raise ReviewError(
-                f"sale {sale.id} was already paid again after a decline once; "
-                "record a new sale instead",
-                409,
-            )
+    back = [row for row in _rows(sale) if _row_out(row) < row.quantity]
+    if any(_row_moved(row, MovementKind.commit, REPAID) for row in back):
+        raise ReviewError(
+            f"sale {sale.id} was already paid again after a decline once; "
+            "record a new sale instead",
+            409,
+        )
+    for row in back:
         for kind in (MovementKind.reserve, MovementKind.commit):
             inventory.move(
-                sale.sku_id,
+                row.sku_id,
                 kind,
-                sale.quantity,
+                row.quantity,
                 source_type=REPAID,
-                source_id=str(sale.id),
+                source_id=_key(row),
                 actor=actor,
                 reason=reason,
             )
+    if back:
         sale.paid_at = datetime.now(UTC)
 
 
-def _round(sale: Sale) -> str:
-    """The ledger source of the sale's current payment: "sale", or REPAID once a declined
+def _row_round(row) -> str:
+    """The ledger source of the row's current payment: "sale", or REPAID once a declined
     payment went through after all."""
-    from ..models import InventoryMovement
+    return REPAID if _row_moved(row, MovementKind.commit, REPAID) else "sale"
 
-    again = db.session.scalar(
-        select(InventoryMovement.id)
-        .where(
-            InventoryMovement.kind == MovementKind.commit,
-            InventoryMovement.source_type == REPAID,
-            InventoryMovement.source_id == str(sale.id),
-        )
-        .limit(1)
-    )
-    return REPAID if again is not None else "sale"
+
+def _round(sale: Sale) -> str:
+    """REPAID once any product of the sale was paid again after a decline, else "sale"."""
+    return REPAID if any(_row_round(row) == REPAID for row in _rows(sale)) else "sale"
 
 
 # ---------- the pass over a show ----------
@@ -1647,14 +1679,18 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
             raise ReviewError(f"sale {sale.id} is already {sale.status.value}", 409)
         sku = catalog.get_sku(item.organization_id, _id(body.get("skuId")))
         if sale.status is SaleStatus.reserved and sale.sku_id and sale.sku_id != sku.id:
-            inventory.release(
-                sale.sku_id,
-                sale.quantity,
-                source_type="sale",
-                source_id=str(sale.id),
-                actor=actor,
-                reason="reassigned",
-            )
+            from . import sale_items
+
+            for row in _rows(sale):
+                inventory.release(
+                    row.sku_id,
+                    row.quantity,
+                    source_type=_row_round(row),
+                    source_id=_key(row),
+                    actor=actor,
+                    reason="reassigned",
+                )
+            sale_items.close_all(sale)  # the next product gets a row, and keys, of its own
         sale.sku = sku
         sale.sku_id = sku.id  # _reserve reads the FK before the relationship is flushed
         sale.flagged = False
@@ -1690,7 +1726,23 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
     elif action == "apply_proposal":
         from .supervisor import apply_proposal
 
+        pick = (item.proposal or {}).get("pick")
+        pick = pick if isinstance(pick, dict) else {}
+        if pick.get("extra") and item.sale is not None:
+            from . import picks
+
+            if not picks.extras_usable(item.sale, pick):
+                # Before anything is applied: half a "two for one" is not what was shown.
+                raise ReviewError(
+                    "One of the products the winner picked is no longer in use. "
+                    "Name the products by hand."
+                )
         apply_proposal(item, actor=actor, user=user)
+        if pick.get("extra") and item.sale is not None:
+            # A win that may hold several products: the winner's other picks go on it too.
+            from . import picks
+
+            picks.add_extras(item.sale, pick, actor=actor)
     elif action == "set_status":
         sale = item.sale
         if sale is None:

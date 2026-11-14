@@ -43,7 +43,7 @@ PICK_WORDS = {
     "suggested": "picked, left for a person to confirm",
     "none": "did not pick",
     "unknown_code": "typed a spot with no product",
-    "several": "typed more than one spot",
+    "several": "typed more spots than the win takes",
     "unread": "not read because a laptop's clock was out",
     "no_layout": "not read because the show has no shelf layout",
 }
@@ -82,6 +82,7 @@ MOVEMENT_SOURCE = {
     "count": "stock count",
     "import": "sheet import",
     "manual": "by hand",
+    "giveaway": "giveaway",
 }
 
 
@@ -99,7 +100,9 @@ def lot(auction_type: str | None) -> str:
 def movement_source(source_type: str, source_id: str) -> str:
     if source_type in ("sale", "sale_repaid"):
         again = " (paid after a decline)" if source_type == "sale_repaid" else ""
-        return (f"sale #{source_id}" if source_id else "sale") + again
+        # "12:34" is sale 12's product after a change: the key's second half is internal.
+        sale_id = source_id.split(":", 1)[0]
+        return (f"sale #{sale_id}" if sale_id else "sale") + again
     return MOVEMENT_SOURCE.get(source_type, "other")
 
 
@@ -293,6 +296,13 @@ def _org_updated(d: dict, _target: str) -> str:
         )
     if "saleMode" in d:
         parts.append(f"set how the shop usually sells to {_q(sale_mode_words(d['saleMode'][1]))}")
+    if "trustedMods" in d:
+        n = d["trustedMods"][1]
+        parts.append(
+            f"set the trusted moderators ({n} name{'' if n == 1 else 's'})"
+            if n
+            else "cleared the trusted moderators"
+        )
     if "autoPick" in d:
         parts.append(
             "switched on assigning winners' picks after each show"
@@ -380,9 +390,56 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "show.parsed": ("Re-read a show's chat", _parsed),
     "show.ai_audit_requested": ("Asked the AI to check a show", None),
     "show.mode": ("Changed how a show sells", _show_mode),
+    "sale.product_changed": (
+        "Changed a sale's product",
+        lambda d, t: (
+            f"Changed {d.get('buyer', 'a buyer')}'s product from {_q(d['from'])} to {_q(d['to'])}"
+            + (" after picking had begun" if d.get("picked") else "")
+        ),
+    ),
+    "sale.products_allowed": (
+        "Set how many products a sale may hold",
+        lambda d, t: (
+            f"Set {d.get('buyer', 'a buyer')}'s sale to hold up to {d.get('after') or 1} "
+            f"product{'' if (d.get('after') or 1) == 1 else 's'}"
+        ),
+    ),
+    "giveaway.product_set": (
+        "Named a giveaway's product",
+        lambda d, t: (
+            f"Named {d.get('buyer') or 'a buyer'}'s giveaway: "
+            f"{d.get('quantity', 1)} × {_q(d['product'])}"
+            + (f" (was {_q(d['from'])})" if d.get("from") else "")
+        ),
+    ),
+    "giveaway.product_cleared": (
+        "Took the product off a giveaway",
+        lambda d, t: (
+            f"Took {_q(d['product'])} off {d.get('buyer') or 'a buyer'}'s giveaway; "
+            "it is back in stock"
+        ),
+    ),
+    "sale.product_added": (
+        "Added a product to a sale",
+        lambda d, t: (
+            f"Added {d.get('quantity', 1)} × {_q(d['product'])} "
+            f"to {d.get('buyer', 'a buyer')}'s sale"
+            + (" after picking had begun" if d.get("picked") else "")
+        ),
+    ),
+    "sale.product_removed": (
+        "Took a product off a sale",
+        lambda d, t: (
+            f"Took {_q(d['product'])} off {d.get('buyer', 'a buyer')}'s sale"
+            + (" after picking had begun" if d.get("picked") else "")
+        ),
+    ),
     "show.shelves": (
         "Laid out the shelves for a show",
-        lambda d, t: f"Laid out {d.get('spots', 0)} shelf spots for a show",
+        lambda d, t: (
+            f"Laid out {d.get('spots', 0)} shelf spots for a show"
+            + (", copied from the last show" if d.get("copied") else "")
+        ),
     ),
     "device.created": ("Added a laptop", lambda d, t: f"Added laptop {_q(d['name'])}"),
     "device.pairing_started": (
@@ -481,6 +538,7 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
         "Linked a Whatnot listing",
         lambda d, t: (
             f"Linked the Whatnot listing {_q(d['listing'])} to {_q(d['product'])}"
+            + (f" (was {_q(d['was'])})" if d.get("was") else "")
             if d.get("product")
             else f"Said the Whatnot listing {_q(d['listing'])} is none of the shop's products"
         ),

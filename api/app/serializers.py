@@ -14,6 +14,11 @@ def organization(o: Organization) -> dict:
         "saleMode": o.sale_mode,
         # Whether a winner's pick names the product by itself after the show (services/picks.py).
         "autoPick": o.auto_pick,
+        # Whatnot names, besides the host, whose chat lines may set an offer on a lot.
+        "trustedMods": list(o.trusted_mods or []),
+        # False when the shop's shows need no laptop: one product per listing, and winners,
+        # items and payments come from Whatnot's orders as they arrive.
+        "laptopNeeded": sale_mode.laptop_needed(o.sale_mode, o.id),
     }
 
 
@@ -184,6 +189,46 @@ def event(e) -> dict:
     }
 
 
+def _products(s) -> list[dict] | None:
+    from sqlalchemy import inspect
+
+    from .services import sale_items
+
+    if "open_items" in inspect(s).unloaded:
+        return None
+    return [
+        {
+            "rowId": p["rowId"],
+            "quantity": p["quantity"],
+            "shareCents": p["shareCents"],
+            "sku": {
+                "id": p["sku"].id,
+                "code": p["sku"].code,
+                "name": p["sku"].name,
+                "productName": p["sku"].product.name,
+            },
+        }
+        for p in sale_items.products(s)
+    ]
+
+
+def _listing(s) -> dict | None:
+    from .models import SaleStatus
+    from .services.whatnot import catalog
+
+    if s.sku_id is not None or s.status is not SaleStatus.detected or not s.external_order_id:
+        return None
+    row = catalog.listing_of_sale(s)
+    if row is None:
+        return None
+    return {
+        "title": row.title,
+        "options": row.options,
+        "linked": row.sku_id is not None,
+        "off": row.link == "off",  # a person said it is none of ours
+    }
+
+
 def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
     """`review` is the open review item waiting on this sale, when the caller looked it up."""
     # A sale the app learnt of from Whatnot's order has no chat line: its order time.
@@ -201,6 +246,14 @@ def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
         }
         if s.sku
         else None,
+        # Every product of the sale, when it holds more than one ("two for one"), each with
+        # its part of the price (services/sale_items.py). Only where the caller loaded them.
+        "products": _products(s),
+        # How many products a person allowed on this win (None: one, or the show's offers).
+        "productsAllowed": s.products_allowed,
+        # A win still waiting for its product: the Whatnot listing its order was for, so a
+        # person can say "always use this product for this listing".
+        "listing": _listing(s),
         "item": s.item_text,
         "itemTitle": rules.item_title(s.item_text or ""),
         "lot": rules.lot_number(s.item_text or ""),

@@ -88,8 +88,14 @@ def move(
     if done is not None:
         return done
 
+    # `populate_existing`: the caller may already hold this SKU in its session, read before
+    # it waited on some other lock. Without it the locked read hands back that stale copy,
+    # and the counts written from it lose whatever another transaction moved meanwhile.
     sku = db.session.execute(
-        select(Sku).where(Sku.id == sku_id).with_for_update()
+        select(Sku)
+        .where(Sku.id == sku_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if sku is None:
         raise InventoryError("unknown SKU", 404)

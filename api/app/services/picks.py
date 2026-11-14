@@ -62,7 +62,7 @@ from ..models import (
     WhatnotOrder,
     WhatnotShow,
 )
-from . import audit, catalog, jobs, pipeline, rules, sale_chat, sale_mode, shelves
+from . import audit, catalog, jobs, offers, pipeline, rules, sale_chat, sale_mode, shelves
 from .inventory import Actor
 
 log = logging.getLogger(__name__)
@@ -84,6 +84,8 @@ UNREAD, NO_LAYOUT = "unread", "no_layout"
 OFF, UNCONFIRMED, CLOCK, DOUBT = "off", "unconfirmed", "clock", "doubt"
 # The line may be for the winner's next win; the winner typed more than could be matched.
 NEAR, UNCLEAR = "near", "unclear"
+# The win may hold more products than the winner picked ("picked 1 of 2").
+SHORT = "short"
 # A line this close before a win was recorded may be about that win: Whatnot stamps an order
 # some seconds after the hammer, and a laptop counts as in step up to 15 seconds slow.
 NEAR_WINDOW = timedelta(seconds=30)
@@ -179,19 +181,29 @@ def _reads_as_pick(body: str, spots: list[str]) -> bool:
     return not (set(left) & _POINTING) and len(left) <= MAX_OTHER_WORDS
 
 
-def _final(wins: list[tuple[datetime, Sale]], lines: list, layout: dict) -> tuple[dict, bool]:
+def _final(
+    wins: list[tuple[datetime, Sale]], lines: list, layout: dict, room: dict[int, int] | None = None
+) -> tuple[dict, bool]:
     """One buyer's picks at the end of the show: sale id → what was picked for it, and
     whether anything they typed could not be matched to a win (then none of their picks is
     applied by itself). `wins`: every standing sale of the buyer in the show with when a line
-    can first be about it, oldest first. `lines`: their own lines, oldest first. The module's
-    docstring has the rule."""
-    picks: dict[int, dict] = {}
+    can first be about it, oldest first. `lines`: their own lines, oldest first. `room`: how
+    many products each win may hold (one, unless an offer says more). The module's docstring
+    has the rule."""
+    room = room or {}
+    cap = {sale.id: room.get(sale.id, 1) for _, sale in wins}
+    got: dict[int, list[dict]] = {}
+    several: dict[int, list[str]] = {}
     settled = {sale.id for _, sale in wins if sale.sku_id is not None}  # named already
-    # A line is used up by the win it is for, named already or not: a win a person (or an
-    # earlier run of this worker) named took its line, which must not move on to the next.
-    taken: set[int] = set()
+    # A spot is used up by the win it is for, named already or not: a win a person (or an
+    # earlier run of this worker) named took its spots, which must not move on to the next.
+    used: dict[int, int] = {}
     last: tuple[str, int] | None = None  # the spot of the previous pick line, and its win
     unclear = False
+
+    def full(sale: Sale) -> bool:
+        return used.get(sale.id, 0) >= cap[sale.id]
+
     for m in lines:
         codes = shelves.typed(m.body)
         if not codes:
@@ -199,19 +211,19 @@ def _final(wins: list[tuple[datetime, Sale]], lines: list, layout: dict) -> tupl
         at = m.captured_at
         won = [sale for start, sale in wins if start <= at]
         soon = [sale for start, sale in wins if at < start <= at + NEAR_WINDOW]
-        waiting = [s for s in won if s.id not in taken]
+        waiting = [s for s in won if not full(s)]
         if not won and not soon:
             continue  # typed before they had won anything: not a pick
-        if len(codes) > 1 or not _reads_as_pick(m.body, codes):
-            # "B4 or C3?", or chatter that holds a spot-like word: never guessed, and
-            # never ignored either. The win it would have filled says what was typed.
-            target = (waiting or soon or [None])[0]
-            if len(codes) > 1 and target is not None and target.id not in settled:
-                picks[target.id] = {"state": SEVERAL, "spots": codes}
+        if not _reads_as_pick(m.body, codes):
+            # Chatter that holds a spot-like word, or "B4 or C3?": never guessed, and never
+            # ignored either. The win it would have filled says which spots were typed.
+            aimed = (waiting or soon or [None])[0]
+            if len(codes) > 1 and aimed is not None and aimed.id not in settled:
+                several[aimed.id] = codes
             unclear = True
             continue
-        spot = codes[0]
         lots = rules.lot_refs(m.body)
+        replace = False
         if lots:
             named = [(start, sale) for start, sale in wins if sale_chat.lot_of(sale) in lots]
             if len(lots) != 1 or len(named) != 1 or at < named[0][0] - NEAR_WINDOW:
@@ -220,30 +232,110 @@ def _final(wins: list[tuple[datetime, Sale]], lines: list, layout: dict) -> tupl
                 unclear = True
                 continue
             target, near = named[0][1], at < named[0][0]
+            # Naming the lot of a one-product win that has its pick replaces it.
+            replace = full(target) and cap[target.id] == 1
         elif waiting:
             target, near = waiting[0], bool(soon)
+            later = [s for s in waiting[1:] if not used.get(s.id, 0)] or waiting[1:] or soon
+            if used.get(target.id, 0) and later:
+                # A win that takes two has one pick, and a later win waits too (or is being
+                # won this very moment): the second product of the first, or the pick for
+                # the later one? Not guessed. It is shown on the later win and nothing of
+                # this buyer's is assigned by itself.
+                target = later[0]
+                unclear = True
         elif not won:
             target, near = soon[0], True
-        elif len(wins) == 1:
-            target, near = won[0], False  # their only win: a change of mind
+        elif len(wins) == 1 and cap[won[0].id] == 1:
+            target, near, replace = won[0], False, True  # their only win: a change of mind
         else:
-            unclear = True  # several wins and none waiting: which pick is being changed?
+            unclear = True  # none waiting: which pick, of which win, is being changed?
             continue
-        if not lots and last is not None and last[0] == spot and last[1] != target.id:
+        left = cap[target.id] - (0 if replace else used.get(target.id, 0))
+        if len(codes) > left:
+            # "B4 or C3?" for a win that takes one, or more spots than the win has room for.
+            if target.id not in settled and len(codes) > 1:
+                several[target.id] = codes
+            unclear = True
+            continue
+        if not lots and last is not None and last[0] == codes[0] and last[1] != target.id:
             # The same spot again, landing on another win: said twice for one win (the host
             # did not hear it), or one for each? Not guessed.
             unclear = True
-        last = (spot, target.id)
-        taken.add(target.id)
+        last = (codes[-1], target.id)
+        used[target.id] = (0 if replace else used.get(target.id, 0)) + len(codes)
         if target.id in settled:
-            continue  # named already: the line was its own, and changes nothing
-        known = layout.get(spot)
-        picks[target.id] = (
-            {"state": PRODUCT, "spot": spot, "skuId": known[0], "name": known[1], "near": near}
-            if known
-            else {"state": UNKNOWN_CODE, "spot": spot}
-        )
+            continue  # named already: the spots were its own, and change nothing
+        mine = [] if replace else got.setdefault(target.id, [])
+        for spot in codes:
+            known = layout.get(spot)
+            mine.append(
+                {"spot": spot, "skuId": known[0], "name": known[1], "near": near}
+                if known
+                else {"spot": spot, "skuId": None, "near": near}
+            )
+        got[target.id] = mine
+    picks: dict[int, dict] = {
+        sid: {"state": SEVERAL, "spots": codes} for sid, codes in several.items()
+    }
+    for sale_id, mine in got.items():
+        if sale_id in picks or not mine:
+            continue
+        unknown = next((p for p in mine if p["skuId"] is None), None)
+        if unknown is not None:
+            picks[sale_id] = {"state": UNKNOWN_CODE, "spot": unknown["spot"]}
+            continue
+        first, rest = mine[0], mine[1:]
+        picks[sale_id] = {
+            "state": PRODUCT,
+            "spot": first["spot"],
+            "skuId": first["skuId"],
+            "name": first["name"],
+            "near": any(p["near"] for p in mine),
+            # A win that may hold several products ("two for one"): the others, and how
+            # many it may hold. Fewer picked than allowed is held for a person.
+            **(
+                {"extra": [{k: p[k] for k in ("spot", "skuId", "name")} for p in rest]}
+                if rest
+                else {}
+            ),
+            **({"allowed": cap[sale_id]} if cap[sale_id] > 1 else {}),
+            "short": len(mine) < cap[sale_id],
+        }
     return picks, unclear
+
+
+def _extra_sku(sale: Sale, extra: dict):
+    from ..models import Sku
+
+    sku_id = extra.get("skuId") if isinstance(extra, dict) else None
+    # A real id only: `true` is 1 to Python, and a number past the column's range is an error.
+    real = isinstance(sku_id, int) and not isinstance(sku_id, bool) and 0 < sku_id < 2**31
+    sku = db.session.get(Sku, sku_id) if real else None
+    usable = sku is not None and sku.organization_id == sale.organization_id and sku.active
+    return sku if usable else None
+
+
+def extras_usable(sale: Sale, pick: dict) -> bool:
+    """Every other product the winner picked is still a product in use here. A suggestion
+    waits in Review, and a product can be archived meanwhile."""
+    return all(_extra_sku(sale, extra) is not None for extra in pick.get("extra") or [])
+
+
+def add_extras(sale: Sale, pick: dict, *, actor: Actor) -> int:
+    """The other products of a win that may hold several, once its first product is named:
+    each is added as a product of the sale (`sale_items.add`). Returns how many. The caller
+    checks `extras_usable` first; one no longer in use is left out, never an error."""
+    from . import sale_items
+
+    n = 0
+    for extra in pick.get("extra") or []:
+        sku = _extra_sku(sale, extra)
+        if sku is None:
+            continue
+        sale_items.add(sale, sku, actor=actor, reason=f"the winner's pick {extra.get('spot', '')}")
+        n += 1
+    return n
 
 
 def run(show: Show, *, now: datetime | None = None) -> dict | None:
@@ -296,6 +388,12 @@ def run(show: Show, *, now: datetime | None = None) -> dict | None:
                 unclear.add(sale.buyer_username.lower())  # a win nobody can place in time
                 continue
             wins[sale.buyer_username.lower()].append((start, sale))
+        # How many products each win may hold: an offer the host or a trusted moderator
+        # typed for its lot ("#45 is two for one"), or what a person set on the sale.
+        said = offers.of_show(ids, org, until=ws.ended_at)
+        room = {
+            sale.id: offers.allowed(sale, said) for starts in wins.values() for _, sale in starts
+        }
         since = min((start for starts in wins.values() for start, _ in starts), default=None)
         lines = (
             # Picks close when the show ends: a line typed afterwards is not a pick.
@@ -305,7 +403,7 @@ def run(show: Show, *, now: datetime | None = None) -> dict | None:
         )
         for buyer, theirs in wins.items():
             theirs.sort(key=lambda w: (w[0], w[1].id))
-            picked, vague = _final(theirs, lines.get(buyer, []), layout)
+            picked, vague = _final(theirs, lines.get(buyer, []), layout, room)
             found.update(picked)
             if vague:
                 unclear.add(buyer)
@@ -334,7 +432,7 @@ def run(show: Show, *, now: datetime | None = None) -> dict | None:
         else:
             pick = dict(found.get(sale.id) or {"state": NONE})
         if pick["state"] == PRODUCT:
-            near = pick.pop("near", False)
+            near, short = pick.pop("near", False), pick.pop("short", False)
             pick["held"] = [
                 why
                 for why, holds in (
@@ -343,6 +441,7 @@ def run(show: Show, *, now: datetime | None = None) -> dict | None:
                     (DOUBT, sale.id in in_doubt),
                     (NEAR, near),
                     (UNCLEAR, sale.buyer_username.lower() in unclear),
+                    (SHORT, short),
                 )
                 if holds
             ]
@@ -359,6 +458,7 @@ def run(show: Show, *, now: datetime | None = None) -> dict | None:
                 continue  # a person decided this win a moment ago: theirs
             # The evidence stays with the decision: which spot the winner typed.
             item.resolution = {**(item.resolution or {}), "by": "pick", "spot": pick["spot"]}
+            add_extras(sale, pick, actor=PICK_ACTOR)
             summary["assigned"] += 1
             continue
         if pick["state"] == PRODUCT and not pick["held"]:

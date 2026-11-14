@@ -16,12 +16,14 @@ from .inventory import InventoryMovement, MovementKind, Product, ProductAlias, S
 from .orders import Order, OrderStatus
 from .sales import (
     EventKind,
+    GiveawayItem,
     Job,
     JobStatus,
     ParsedEvent,
     ReviewItem,
     ReviewStatus,
     Sale,
+    SaleItem,
     SaleStatus,
 )
 from .shipments import WhatnotLot, WhatnotShipment
@@ -46,6 +48,7 @@ __all__ = [
     "Device",
     "DevicePairing",
     "EventKind",
+    "GiveawayItem",
     "InventoryMovement",
     "Invite",
     "Job",
@@ -64,6 +67,7 @@ __all__ = [
     "ReviewStatus",
     "Role",
     "Sale",
+    "SaleItem",
     "SaleStatus",
     "Show",
     "ShowSaleMode",

@@ -23,10 +23,22 @@ Nothing here changes a sale, an order or the app's own stock."""
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, update
+from flask import g, has_request_context
+from sqlalchemy import exists, func, select, update
 
 from ...db import db
-from ...models import Sku, User, WhatnotOrderItem, WhatnotShow, WhatnotVariant
+from ...models import (
+    ReviewItem,
+    ReviewStatus,
+    Sale,
+    SaleStatus,
+    Sku,
+    User,
+    WhatnotOrder,
+    WhatnotOrderItem,
+    WhatnotShow,
+    WhatnotVariant,
+)
 from .. import audit, jobs, text
 from . import connection, webhooks
 from .client import Forbidden, NotFound, WhatnotClient, WhatnotError, client_for, price_cents
@@ -39,6 +51,7 @@ COMMIT_EVERY = 25  # products per transaction: a long read holds no lock for lon
 LIVE = ("live", "stopped")
 LIVE_WITHIN = timedelta(hours=24)  # a "live" show older than this was never closed here
 RESOURCE = "catalog"
+LEARN_AT_ONCE = 10  # listings read per pass for orders the catalog does not know yet
 
 
 class CatalogError(Exception):
@@ -84,11 +97,17 @@ def store_product(org_id: int, product: dict, variants: list[dict], *, now: date
         return 0
     title = _str(product.get("title"), 300) or ""
     url = text.whatnot_url(product.get("url"))
+    ids = [
+        v for v in (_str(d.get("id"), 40) for d in variants if isinstance(d, dict)) if v is not None
+    ]
+    # By product, and by the variants' own ids: one kept under another product id (learnt
+    # from an order line that named it differently) is the same listing, not a new row.
     known = {
         v.whatnot_id: v
         for v in db.session.scalars(
             select(WhatnotVariant).where(
-                WhatnotVariant.organization_id == org_id, WhatnotVariant.product_id == product_id
+                WhatnotVariant.organization_id == org_id,
+                (WhatnotVariant.product_id == product_id) | WhatnotVariant.whatnot_id.in_(ids),
             )
         )
     }
@@ -105,6 +124,7 @@ def store_product(org_id: int, product: dict, variants: list[dict], *, now: date
             )
             db.session.add(row)
         price = data.get("price") if isinstance(data.get("price"), dict) else {}
+        row.product_id = product_id
         row.title, row.url, row.options = title, url, _options(data)
         row.sku_code = _str(data.get("sku"), 80)
         row.external_id = _str(data.get("external_id"), 120)
@@ -144,6 +164,207 @@ def sync_product(org_id: int, client: WhatnotClient, product_id: str) -> int:
     n = store_product(org_id, product, variants, now=now)
     auto_link(org_id)
     return n
+
+
+def learn_listings(
+    org_id: int, client: WhatnotClient, whatnot_show_ids, *, limit: int = LEARN_AT_ONCE
+) -> int:
+    """Listings that orders of these shows are for and the app's copy does not hold: one
+    made during the show. They are read now, so their orders name their product (or can be
+    linked by a person) without waiting for the daily catalog read, which pauses while a
+    show is on air. A few per pass, the latest orders first: each is a call or two out of
+    the request budget the show's orders need. A listing Whatnot no longer has is kept as
+    it was sold (its title from the order, marked gone), so it is asked for once, and a
+    person can still say which product it was. Returns how many listings were stored."""
+    ids = [i for i in whatnot_show_ids if i]
+    if not ids:
+        return 0
+    known = exists().where(
+        WhatnotVariant.organization_id == org_id,
+        WhatnotVariant.whatnot_id == WhatnotOrderItem.variant_id,
+    )
+    unknown = db.session.execute(
+        select(WhatnotOrderItem.product_id, func.max(WhatnotOrder.ordered_at).label("latest"))
+        .join(WhatnotOrder, WhatnotOrder.id == WhatnotOrderItem.order_id)
+        .where(
+            WhatnotOrder.organization_id == org_id,
+            WhatnotOrder.whatnot_show_id.in_(ids),
+            WhatnotOrderItem.product_id.is_not(None),
+            WhatnotOrderItem.variant_id.is_not(None),
+            ~known,
+        )
+        .group_by(WhatnotOrderItem.product_id)
+        .order_by(func.max(WhatnotOrder.ordered_at).desc().nulls_last())
+        .limit(max(1, limit))
+    ).all()
+    stored = 0
+    for product_id, _ in unknown:
+        try:
+            # A SAVEPOINT each: one listing that cannot be stored never undoes the others.
+            with db.session.begin_nested():
+                stored += _learn_one(org_id, client, product_id, known)
+        except Forbidden:
+            return stored  # the token may not read inventory: the catalog page says so
+        except WhatnotError as e:
+            log.warning("whatnot listing %s not read for its order: %s", product_id, e.problem)
+            break  # Whatnot is busy or down: the next pass asks again
+        except Exception:  # noqa: BLE001 - one bad listing never stops the rest, or the orders
+            log.exception("whatnot listing %s of a new order not stored", product_id)
+    return stored
+
+
+def _learn_one(org_id: int, client: WhatnotClient, product_id: str, known) -> int:
+    stored = sync_product(org_id, client, product_id)
+    now = datetime.now(UTC)
+    # Still unknown after asking: deleted on Whatnot, or a variant it no longer lists. Kept
+    # as it was sold: the title and Whatnot's SKU the order line carries.
+    for variant_id, title, sku_code in db.session.execute(
+        select(
+            WhatnotOrderItem.variant_id,
+            func.max(WhatnotOrderItem.title),
+            func.max(WhatnotOrderItem.sku_code),
+        )
+        .where(
+            WhatnotOrderItem.organization_id == org_id,
+            WhatnotOrderItem.product_id == product_id,
+            WhatnotOrderItem.variant_id.is_not(None),
+            ~known,
+        )
+        .group_by(WhatnotOrderItem.variant_id)
+    ).all():
+        db.session.add(
+            WhatnotVariant(
+                organization_id=org_id,
+                whatnot_id=variant_id,
+                product_id=product_id,
+                title=(title or "")[:300],
+                sku_code=sku_code,
+                gone_at=now,
+                synced_at=now,
+            )
+        )
+        stored += 1
+    db.session.flush()
+    return stored
+
+
+def listing_of_sale(sale: Sale) -> WhatnotVariant | None:
+    """The Whatnot listing a sale's order was for, when the app's copy holds it: through
+    the order line matched to the sale, else through the sale's order when that has one
+    line (in a live show each win is its own order)."""
+    if sale.external_order_id is None:
+        return None
+    if has_request_context() and sale.id in g.get("_sale_listings", {}):
+        return g._sale_listings[sale.id]
+    here = (WhatnotVariant.organization_id == WhatnotOrderItem.organization_id) & (
+        WhatnotVariant.whatnot_id == WhatnotOrderItem.variant_id
+    )
+    found = db.session.scalar(
+        select(WhatnotVariant)
+        .join(WhatnotOrderItem, here)
+        .where(
+            WhatnotOrderItem.organization_id == sale.organization_id,
+            WhatnotOrderItem.sale_id == sale.id,
+        )
+        .order_by(WhatnotOrderItem.id)
+        .limit(1)
+    )
+    if found is not None:
+        return found
+    lines = db.session.scalars(
+        select(WhatnotVariant)
+        .join(WhatnotOrderItem, here)
+        .join(WhatnotOrder, WhatnotOrder.id == WhatnotOrderItem.order_id)
+        .where(
+            WhatnotOrder.organization_id == sale.organization_id,
+            WhatnotOrder.whatnot_id == sale.external_order_id,
+        )
+        .limit(2)
+    ).all()
+    return lines[0] if len(lines) == 1 else None
+
+
+def prime_listings(sales) -> None:
+    """Look up the listings of many waiting wins at once, before a list of them is written
+    out, so `listing_of_sale` asks the database nothing more (two queries for a page of
+    orders, not one per win)."""
+    if not has_request_context():
+        return
+    cache = g.setdefault("_sale_listings", {})
+    want = [s for s in sales if s.external_order_id is not None and s.id not in cache]
+    if not want:
+        return
+    for sale in want:
+        cache[sale.id] = None
+    here = (WhatnotVariant.organization_id == WhatnotOrderItem.organization_id) & (
+        WhatnotVariant.whatnot_id == WhatnotOrderItem.variant_id
+    )
+    # Through the order line matched to the sale (its first, when it has several).
+    for sale_id, row in db.session.execute(
+        select(WhatnotOrderItem.sale_id, WhatnotVariant)
+        .join(WhatnotVariant, here)
+        .where(WhatnotOrderItem.sale_id.in_([s.id for s in want]))
+        .order_by(WhatnotOrderItem.id.desc())
+    ).all():
+        cache[sale_id] = row
+    # The rest through their order, when that has one line.
+    rest: dict[tuple[int, str], list[int]] = {}
+    for sale in want:
+        if cache[sale.id] is None:
+            rest.setdefault((sale.organization_id, sale.external_order_id), []).append(sale.id)
+    if not rest:
+        return
+    lines: dict[tuple[int, str], list] = {}
+    for org_id, order_id, row in db.session.execute(
+        select(WhatnotOrder.organization_id, WhatnotOrder.whatnot_id, WhatnotVariant)
+        .join(WhatnotOrderItem, WhatnotOrderItem.order_id == WhatnotOrder.id)
+        .join(WhatnotVariant, here)
+        .where(
+            WhatnotOrder.organization_id.in_({k[0] for k in rest}),
+            WhatnotOrder.whatnot_id.in_({k[1] for k in rest}),
+        )
+    ).all():
+        lines.setdefault((org_id, order_id), []).append(row)
+    for key, sale_ids in rest.items():
+        if len(lines.get(key, [])) == 1:
+            for sale_id in sale_ids:
+                cache[sale_id] = lines[key][0]
+
+
+def link_sale_listing(sale: Sale, sku_id: int, *, user: User) -> WhatnotVariant | None:
+    """ "Always use this product for this listing", said while naming one of its wins: the
+    listing is linked, so its later orders name themselves. None when the app does not
+    hold the listing, or a person said it is none of ours (that is undone on the listings
+    page, not in passing), or the listing is already linked to another product."""
+    row = listing_of_sale(sale)
+    if row is None or row.link == "off":
+        return None
+    if row.sku_id is not None and row.sku_id != sku_id:
+        return None  # linked to another product already: changed on the listings page only
+    return link(sale.organization_id, row.id, sku_id, user=user)
+
+
+def waiting_for_listing(row: WhatnotVariant, show_id: int, *, limit: int = 100) -> list:
+    """The show's other wins still waiting for a product whose order was for this listing."""
+    return list(
+        db.session.scalars(
+            select(ReviewItem)
+            .join(Sale, Sale.id == ReviewItem.sale_id)
+            .join(WhatnotOrderItem, WhatnotOrderItem.sale_id == Sale.id)
+            .where(
+                ReviewItem.organization_id == row.organization_id,
+                ReviewItem.show_id == show_id,
+                ReviewItem.status == ReviewStatus.open,
+                ReviewItem.reason == "unmatched_item",
+                Sale.sku_id.is_(None),
+                Sale.status == SaleStatus.detected,
+                WhatnotOrderItem.organization_id == row.organization_id,
+                WhatnotOrderItem.variant_id == row.whatnot_id,
+            )
+            .order_by(ReviewItem.id)
+            .limit(limit)
+        ).unique()
+    )
 
 
 def sync_catalog(org_id: int, client: WhatnotClient) -> dict:
@@ -233,6 +454,11 @@ def auto_link(org_id: int) -> int:
     return n
 
 
+def _product_name(sku_id: int) -> str | None:
+    sku = db.session.get(Sku, sku_id)
+    return f"{sku.product.name} {sku.name}".strip() if sku is not None else None
+
+
 def link(org_id: int, variant_id: int, sku_id: int | None, *, user: User) -> WhatnotVariant:
     """A person says which product a listing is (`sku_id`), or that it is none of ours
     (None). Audited. The caller commits."""
@@ -262,6 +488,7 @@ def link(org_id: int, variant_id: int, sku_id: int | None, *, user: User) -> Wha
             details={
                 "listing": row.title,
                 "product": f"{sku.product.name} {sku.name}".strip() if sku is not None else None,
+                **({"was": _product_name(before)} if before and before != row.sku_id else {}),
             },
         )
     db.session.flush()
@@ -294,8 +521,13 @@ def resolver(org_id: int):
         """(the product, whether a person said the listing is none of ours)."""
         if item.variant_id and item.variant_id in listed:
             sku_id, how = listed[item.variant_id]
-            # A person's "none of ours" stands: no code match, and no title match either.
-            return (None, True) if how == "off" else (sku_id, False)
+            if how == "off":
+                # A person's "none of ours" stands: no code match, and no title match either.
+                return None, True
+            if sku_id is not None:
+                return sku_id, False
+            # Held but linked to nothing (one learnt from this very order): the order
+            # line's own code still names the product, as for a listing never seen.
         code = (item.sku_code or "").strip().lower()
         return (codes.get(code) if code else None), False
 

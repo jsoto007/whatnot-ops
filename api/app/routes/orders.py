@@ -7,21 +7,36 @@ from sqlalchemy.orm import selectinload
 from .. import serializers
 from ..auth import require
 from ..db import db
-from ..models import Order, OrderStatus, ParsedEvent, ReviewItem, ReviewStatus, Sale, Show, Sku
+from ..models import (
+    Order,
+    OrderStatus,
+    ParsedEvent,
+    ReviewItem,
+    ReviewStatus,
+    Sale,
+    SaleItem,
+    Show,
+    Sku,
+)
 from ..services import (
     audit,
     buyers,
+    catalog,
     dashboard,
+    offers,
     order_slips,
     orders,
+    pipeline,
     ratelimit,
     reconcile,
+    sale_items,
     sale_mode,
 )
 from ..services.buyers import BuyerError
 from ..services.inventory import Actor, InventoryError
 from ..services.orders import OrderError
 from ..services.reconcile import ReconcileError
+from ..services.whatnot import catalog as whatnot_catalog
 from ..services.whatnot import shipping
 
 bp = Blueprint("orders", __name__)
@@ -40,10 +55,28 @@ def order_error(e):
     return jsonify({"error": str(e)}), e.status
 
 
+def _body() -> dict:
+    """The request's JSON object; anything else (a list, a number, nothing) is no fields."""
+    d = request.get_json(silent=True)
+    return d if isinstance(d, dict) else {}
+
+
+def _whole(value) -> int:
+    """A whole number a row id can be, as sent, else 0: 1.9 or true would quietly name some
+    other row, and a number past the column's range is a database error."""
+    ok = isinstance(value, int) and not isinstance(value, bool) and 0 < value < 2**31
+    return value if ok else 0
+
+
 def _loaded():
     return select(Order).options(
         selectinload(Order.show),
         selectinload(Order.sales).selectinload(Sale.sku).selectinload(Sku.product),
+        # Every product of each sale (a win can hold more than one).
+        selectinload(Order.sales)
+        .selectinload(Sale.open_items)
+        .selectinload(SaleItem.sku)
+        .selectinload(Sku.product),
         selectinload(Order.sales).selectinload(Sale.event).selectinload(ParsedEvent.message),
         selectinload(Order.sales).selectinload(Sale.show),
     )
@@ -111,6 +144,10 @@ def list_orders():
     reviews = _open_reviews(rows) if with_sales else {}
     if with_sales:
         sale_mode.prime({o.show_id for o in rows})  # each sale says how its show sells
+        # and each win still waiting for its product says which Whatnot listing it is for
+        whatnot_catalog.prime_listings(
+            [s for o in rows for s in o.sales if s.sku_id is None and s.external_order_id]
+        )
     parcels = _parcels(rows)
     return jsonify(
         {
@@ -153,7 +190,7 @@ def set_status(order_id: int):
     o = _order_or_404(order_id)
     if o is None:
         return jsonify({"error": "order not found"}), 404
-    d = request.get_json(silent=True) or {}
+    d = _body()
     try:
         status = OrderStatus(d.get("status", ""))
     except ValueError:
@@ -186,7 +223,7 @@ def update_order(order_id: int):
     o = _order_or_404(order_id)
     if o is None:
         return jsonify({"error": "order not found"}), 404
-    d = request.get_json(silent=True) or {}
+    d = _body()
     before = {"notes": o.notes, "tracking": o.tracking, "packedBy": o.packed_by}
     if "notes" in d:
         v = d.get("notes")
@@ -262,7 +299,7 @@ def set_sale_gifts(sale_id: int):
     sale = db.session.get(Sale, sale_id)
     if sale is None or sale.organization_id != g.u.organization_id:
         return jsonify({"error": "sale not found"}), 404
-    d = request.get_json(silent=True) or {}
+    d = _body()
     try:
         before = order_slips.set_gift_count(sale, d.get("giftCount"))
     except ValueError as e:
@@ -279,6 +316,193 @@ def set_sale_gifts(sale_id: int):
     return jsonify({"saleId": sale.id, "giftCount": sale.gift_count})
 
 
+@bp.patch("/sales/<int:sale_id>/product")
+@require("review.act")
+def change_sale_product(sale_id: int):
+    """Give a standing sale another product: the old one goes back to stock, the new one
+    leaves it. Once the order is being picked nothing is put back by itself and a note is
+    left for the packer."""
+    sale = db.session.get(Sale, sale_id)
+    if sale is None or sale.organization_id != g.u.organization_id:
+        return jsonify({"error": "sale not found"}), 404
+    d = _body()
+    sku_id = _whole(d.get("skuId"))
+    if not sku_id:
+        return jsonify({"error": "Choose a product."}), 400
+    try:
+        sku = catalog.get_sku(g.u.organization_id, sku_id)
+        row_id = d.get("rowId")
+        result = sale_items.change(
+            sale,
+            sku,
+            actor=Actor.user(g.u),
+            reason="product changed",
+            row_id=row_id if isinstance(row_id, int) and not isinstance(row_id, bool) else None,
+        )
+    except (catalog.CatalogError, sale_items.ChangeError) as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), getattr(e, "status", 400)
+    if result["changed"]:
+        names = {
+            i: n
+            for i, n in db.session.execute(
+                select(Sku.id, Sku.code).where(Sku.id.in_([result["from"], result["to"]]))
+            )
+        }
+        if result["picked"]:
+            pipeline.open_review(
+                sale.organization_id,
+                pipeline.SWAPPED_AFTER_PICKING,
+                f"{sale.buyer_username}'s {sale.quantity} × {names[result['from']]} was changed "
+                f"to {names[result['to']]} after its order was already being picked. Swap it "
+                f"in the package, and count the {names[result['from']]} back in Inventory.",
+                show_id=sale.show_id,
+                sale_id=sale.id,
+                dedupe=False,  # one note per change: each is another unit to count back
+            )
+        audit.record(
+            g.u.organization_id,
+            "sale.product_changed",
+            user=g.u,
+            target_type="sale",
+            target_id=sale.id,
+            details={
+                "buyer": sale.buyer_username,
+                "from": names[result["from"]],
+                "to": names[result["to"]],
+                "picked": result["picked"],
+            },
+        )
+    db.session.commit()
+    return jsonify({"sale": _fresh(sale), **result})
+
+
+def _fresh(sale: Sale) -> dict:
+    """The sale as it now stands, with every product it holds (the rows just changed)."""
+    db.session.refresh(sale)
+    sale.open_items  # noqa: B018 - load them, so the answer lists them
+    return serializers.sale(sale)
+
+
+@bp.patch("/sales/<int:sale_id>/allowed")
+@require("review.act")
+def set_sale_allowed(sale_id: int):
+    """How many products this one win may hold (a "two for one" nobody typed in chat). The
+    pick worker takes that many of the winner's spots."""
+    sale = db.session.get(Sale, sale_id)
+    if sale is None or sale.organization_id != g.u.organization_id:
+        return jsonify({"error": "sale not found"}), 404
+    d = _body()
+    if "products" not in d:
+        return jsonify({"error": "Say how many products this sale may hold."}), 400
+    try:
+        before = offers.set_allowed(sale, d["products"])
+    except offers.OfferError as e:
+        return jsonify({"error": str(e)}), e.status
+    if before != sale.products_allowed:
+        audit.record(
+            g.u.organization_id,
+            "sale.products_allowed",
+            user=g.u,
+            target_type="sale",
+            target_id=sale.id,
+            details={
+                "buyer": sale.buyer_username,
+                "before": before,
+                "after": sale.products_allowed,
+            },
+        )
+    db.session.commit()
+    return jsonify({"saleId": sale.id, "productsAllowed": sale.products_allowed})
+
+
+def _packers_note(sale: Sale, text: str) -> None:
+    pipeline.open_review(
+        sale.organization_id,
+        pipeline.SWAPPED_AFTER_PICKING,
+        text,
+        show_id=sale.show_id,
+        sale_id=sale.id,
+        dedupe=False,  # one note per change: each is another unit to deal with
+    )
+
+
+@bp.post("/sales/<int:sale_id>/products")
+@require("review.act")
+def add_sale_product(sale_id: int):
+    """Give a standing sale one more product (a "two for one"): it leaves the shelf like the
+    first; the price the buyer paid does not change."""
+    sale = db.session.get(Sale, sale_id)
+    if sale is None or sale.organization_id != g.u.organization_id:
+        return jsonify({"error": "sale not found"}), 404
+    d = _body()
+    sku_id = _whole(d.get("skuId"))
+    if not sku_id:
+        return jsonify({"error": "Choose a product."}), 400
+    quantity = d.get("quantity", 1)
+    try:
+        sku = catalog.get_sku(g.u.organization_id, sku_id)
+        result = sale_items.add(
+            sale, sku, actor=Actor.user(g.u), quantity=quantity, reason="product added"
+        )
+    except (catalog.CatalogError, sale_items.ChangeError) as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), getattr(e, "status", 400)
+    if result["picked"]:
+        _packers_note(
+            sale,
+            f"{sale.buyer_username}'s order got {result['quantity']} × {sku.code} more after "
+            "it was already being picked. Add it to the package.",
+        )
+    audit.record(
+        g.u.organization_id,
+        "sale.product_added",
+        user=g.u,
+        target_type="sale",
+        target_id=sale.id,
+        details={
+            "buyer": sale.buyer_username,
+            "product": sku.code,
+            "quantity": result["quantity"],
+            "picked": result["picked"],
+        },
+    )
+    db.session.commit()
+    return jsonify({"sale": _fresh(sale), **result})
+
+
+@bp.delete("/sales/<int:sale_id>/products/<int:row_id>")
+@require("review.act")
+def remove_sale_product(sale_id: int, row_id: int):
+    """Take one product off a sale that holds several; its stock goes back."""
+    sale = db.session.get(Sale, sale_id)
+    if sale is None or sale.organization_id != g.u.organization_id:
+        return jsonify({"error": "sale not found"}), 404
+    try:
+        result = sale_items.remove(sale, row_id, actor=Actor.user(g.u), reason="product removed")
+    except sale_items.ChangeError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), e.status
+    code = db.session.scalar(select(Sku.code).where(Sku.id == result["skuId"]))
+    if result["picked"]:
+        _packers_note(
+            sale,
+            f"{result['quantity']} × {code} was taken off {sale.buyer_username}'s order after "
+            "it was already being picked. Take it out of the package and count it back in "
+            "Inventory.",
+        )
+    audit.record(
+        g.u.organization_id,
+        "sale.product_removed",
+        user=g.u,
+        target_type="sale",
+        target_id=sale.id,
+        details={"buyer": sale.buyer_username, "product": code, "picked": result["picked"]},
+    )
+    db.session.commit()
+    return jsonify({"sale": _fresh(sale), **result})
+
+
 @bp.post("/shows/<int:show_id>/reconcile")
 @require("orders.reconcile")
 def reconcile_show(show_id: int):
@@ -286,7 +510,7 @@ def reconcile_show(show_id: int):
     if show is None or show.organization_id != g.u.organization_id:
         return jsonify({"error": "show not found"}), 404
     ratelimit.per_user("reconcile", g.u.id, 30, 600)
-    d = request.get_json(silent=True) or {}
+    d = _body()
     text = d.get("csv") or ""
     if not isinstance(text, str) or not text.strip():
         return jsonify({"error": "paste or upload the payment CSV"}), 400
