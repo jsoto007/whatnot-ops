@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApiError, api, money, type ReconcileRow } from '../../lib/api'
 import { reconcileActionLabel, summaryWords } from '../../lib/labels'
+import { invalidateSales } from '../../lib/invalidate'
 
 interface Plan {
   rows: ReconcileRow[]
@@ -27,7 +28,7 @@ export function Reconcile({ showId }: { showId: string }) {
       if (apply) {
         setText(null)
         setFileName('')
-        await qc.invalidateQueries()
+        await invalidateSales(qc)
       }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'import failed')

@@ -6,6 +6,7 @@ import { Modal } from '../../components/Modal'
 import { SkuPicker } from '../../components/SkuPicker'
 import { ApiError, api, apiGet, type Giveaway, type Product, type Sku } from '../../lib/api'
 import { fmtDate, plural } from '../../lib/format'
+import { invalidateSales } from '../../lib/invalidate'
 
 const nameOf = (s: { productName: string; name: string }) => `${s.productName} ${s.name}`.trim()
 
@@ -29,7 +30,7 @@ export function Giveaways() {
   }, [toast])
   const canAct = can('review.act')
   const done = async (msg: string) => {
-    await qc.invalidateQueries()
+    await invalidateSales(qc)
     setNaming(null)
     setToast(msg)
   }

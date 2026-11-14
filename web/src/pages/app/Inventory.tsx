@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../../auth/useAuth'
@@ -11,6 +11,7 @@ import { Import } from './inventory/Import'
 import { ItemPanel } from './inventory/ItemPanel'
 import { Receive } from './inventory/Receive'
 import { describe, stateOf } from './inventory/ledger'
+
 
 type Filter = 'all' | 'buy' | 'low' | 'out' | 'ok'
 const FILTERS: { key: Filter; label: string; match: (s: StockLevel) => boolean }[] = [
@@ -78,7 +79,7 @@ export function Inventory() {
     async (msg?: string) => {
       if (msg) setToast(msg)
       await Promise.all(
-        [['inventory'], ['inventory-activity'], ['products'], ['overview'], ['nav-counts']].map((queryKey) => qc.invalidateQueries({ queryKey })),
+        [['inventory'], ['inventory-activity'], ['movements'], ['products'], ['whatnot-catalog'], ['dashboard'], ['nav-counts']].map((queryKey) => qc.invalidateQueries({ queryKey })),
       )
     },
     [qc],
@@ -93,6 +94,13 @@ export function Inventory() {
       return (x < y ? -1 : x > y ? 1 : 0) * dir || byName(a, b)
     })
   }, [levels.data, sort])
+  // One lowercase search string per SKU, built when the stock changes, not on every keystroke.
+  const haystacks = useMemo(() => {
+    const m = new Map<number, string>()
+    for (const s of levels.data?.skus ?? []) m.set(s.id, `${s.productName} ${s.name} ${s.code} ${s.aliases.map((a) => a.alias).join(' ')}`.toLowerCase())
+    return m
+  }, [levels.data])
+  const deferredQ = useDeferredValue(q)
   if (levels.isPending) return <p className="muted">Loading…</p>
   if (levels.isError) return <p className="form-error">Could not load inventory.</p>
 
@@ -100,7 +108,8 @@ export function Inventory() {
   const active = skus.filter((s) => s.active)
   const counts = Object.fromEntries(FILTERS.map((f) => [f.key, active.filter(f.match).length])) as Record<Filter, number>
   const needle = q.trim().toLowerCase()
-  const shown = active.filter(FILTERS.find((f) => f.key === filter)!.match).filter((s) => !needle || `${s.productName} ${s.name} ${s.code} ${s.aliases.map((a) => a.alias).join(' ')}`.toLowerCase().includes(needle))
+  const searchFor = deferredQ.trim().toLowerCase()
+  const shown = active.filter(FILTERS.find((f) => f.key === filter)!.match).filter((s) => !searchFor || (haystacks.get(s.id) ?? '').includes(searchFor))
   const shelfUnits = active.reduce((n, s) => n + Math.max(0, s.onHand), 0)
   const shelfValue = active.reduce((n, s) => n + Math.max(0, s.onHand) * (s.priceCents ?? 0), 0)
   const held = active.reduce((n, s) => n + s.reserved, 0)

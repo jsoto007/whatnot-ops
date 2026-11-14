@@ -10,6 +10,7 @@ import { Kpis, Tally, TopLists } from './Dashboard'
 import { Reconcile } from './Reconcile'
 import { WhatnotRecap } from './WhatnotNumbers'
 import { WhatnotOrders } from './WhatnotOrders'
+import { invalidateSales, invalidateShow } from '../../lib/invalidate'
 
 const KIND_LABEL: Record<string, string> = { sale: 'Sale', claim: 'Claim', gift: 'Gift', cancel: 'Cancel', payment_failed: 'Payment failed', no_pick: 'No winner', listing: 'Listing', chatter: 'Chatter' }
 const TABS = ['sales', 'walkaways', 'payments', 'shelves', 'events', 'messages', 'analytics'] as const
@@ -30,8 +31,8 @@ export function ShowDetail() {
   const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats; clockProblems?: ClockProblem[]; noShelves?: boolean; laptopNeeded?: boolean }>(`/api/shows/${id}`) })
   const dash = useQuery({ queryKey: ['show-dashboard', id], queryFn: () => apiGet<{ tiles: ShowTiles; topBuyers: TopBuyer[]; topSkus: TopSku[]; winnersWithoutPurchase: WalkAway[]; whatnot?: WhatnotRecapData | null }>(`/api/dashboard/shows/${id}`) })
   const sales = useQuery({ queryKey: ['sales', id], queryFn: () => apiGet<{ sales: Sale[] }>(`/api/shows/${id}/sales`) })
-  const parse = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/parse`), onSuccess: () => qc.invalidateQueries() })
-  const aiAudit = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/ai-audit`), onSuccess: () => qc.invalidateQueries() })
+  const parse = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/parse`), onSuccess: () => invalidateSales(qc) })
+  const aiAudit = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/ai-audit`), onSuccess: () => invalidateSales(qc) })
 
   const t = dash.data?.tiles
   const s = show.data?.show
@@ -169,8 +170,8 @@ function ShelvesTab({ showId, canEdit }: { showId: string; canEdit: boolean }) {
     onSuccess: (r) => {
       qc.setQueryData(['shelves', showId], r)
       setText(null)
-      void qc.invalidateQueries({ queryKey: ['review'] })
-      void qc.invalidateQueries({ queryKey: ['show', showId] })
+      // A shelf code names the product: sales, tiles, stock and the review badge all move.
+      void invalidateSales(qc, ['shelves'])
     },
   })
   const copy = useMutation({
@@ -178,8 +179,8 @@ function ShelvesTab({ showId, canEdit }: { showId: string; canEdit: boolean }) {
     onSuccess: (r) => {
       qc.setQueryData(['shelves', showId], r)
       setText(null)
-      void qc.invalidateQueries({ queryKey: ['review'] })
-      void qc.invalidateQueries({ queryKey: ['show', showId] })
+      // A shelf code names the product: sales, tiles, stock and the review badge all move.
+      void invalidateSales(qc, ['shelves'])
     },
   })
   const rows = q.data?.shelves ?? []
@@ -242,7 +243,7 @@ function ShowSaleMode({ show, usual, canEdit }: { show: Show; usual?: SaleMode; 
   const qc = useQueryClient()
   const set = useMutation({
     mutationFn: (mode: SaleMode | null) => api<{ show: Show }>('POST', `/api/shows/${show.id}/mode`, { mode }),
-    onSuccess: () => qc.invalidateQueries(),
+    onSuccess: () => invalidateShow(qc),
   })
   const value = show.saleModeSet ? show.saleMode : 'usual'
   return (
@@ -378,7 +379,10 @@ function SalesTab({ sales, loading }: { sales: Sale[]; loading: boolean }) {
       return next
     })
   const f = FILTERS.find((x) => x.key === filter)!
-  const visible = sales.filter((s) => f.match(s) && (!q || s.buyer.toLowerCase().includes(q.toLowerCase()) || s.item.toLowerCase().includes(q.toLowerCase())))
+  const visible = useMemo(() => {
+    const needle = q.toLowerCase()
+    return sales.filter((s) => f.match(s) && (!q || s.buyer.toLowerCase().includes(needle) || s.item.toLowerCase().includes(needle)))
+  }, [sales, f, q])
   const groups = useMemo(() => {
     const m = new Map<string, Sale[]>()
     for (const s of visible) (m.get(s.buyer) ?? m.set(s.buyer, []).get(s.buyer)!).push(s)

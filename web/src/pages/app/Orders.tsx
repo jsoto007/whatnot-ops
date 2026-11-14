@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
@@ -10,6 +10,7 @@ import { ProductPicker, type PickerTarget } from '../../components/ProductPicker
 import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleProduct, type SaleStatus, type Show } from '../../lib/api'
 import { SHOP_TZ, fmtDate, fmtLongDate, fmtWhen, plural } from '../../lib/format'
 import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
+import { invalidateSales } from '../../lib/invalidate'
 
 const NEXT = ORDER_NEXT_STEP
 
@@ -85,26 +86,35 @@ export function Orders() {
     }
     setParams(next)
   }
-  const orders = (all.data?.orders ?? []).slice().sort((a, b) => RANK[a.status] - RANK[b.status] || wonAt(a) - wonAt(b) || a.id - b.id)
+  const orders = useMemo(() => (all.data?.orders ?? []).slice().sort((a, b) => RANK[a.status] - RANK[b.status] || wonAt(a) - wonAt(b) || a.id - b.id), [all.data])
   const current = VIEWS.find((v) => v.key === view) ?? VIEWS[0]!
-  const needle = find.trim().toLowerCase()
+  const deferredFind = useDeferredValue(find)
+  const needle = deferredFind.trim().toLowerCase()
   const inView = orders.filter(current.match)
   // The Shipped tab can be narrowed to where the parcels are; it only shows once Whatnot says where any is.
   const tracked = view === 'shipped' && inView.some((o) => o.parcel)
   const parcelFilter = (tracked && PARCEL_FILTERS.find((f) => f.key === (params.get('parcel') ?? ''))) || PARCEL_FILTERS[0]!
   const visible = inView.filter(parcelFilter.match).filter((o) => !needle || o.buyer.toLowerCase().includes(needle))
   // "Print ready slips": every order that is ready to pick, by show (the slips are a per-show document).
-  const readyByShow = new Map<number, { showDate: string; n: number }>()
-  for (const o of orders) if (o.status === 'paid') readyByShow.set(o.showId, { showDate: o.showDate, n: (readyByShow.get(o.showId)?.n ?? 0) + 1 })
+  const readyByShow = useMemo(() => {
+    const m = new Map<number, { showDate: string; n: number }>()
+    for (const o of orders) if (o.status === 'paid') m.set(o.showId, { showDate: o.showDate, n: (m.get(o.showId)?.n ?? 0) + 1 })
+    return m
+  }, [orders])
 
   // Lots nobody has named yet, grouped by show and title: "$1 BEAUTY PULLS #520" and "#521" are one group.
-  const groups = new Map<string, Sale[]>()
-  for (const o of orders)
-    for (const s of unknown(o)) {
-      const key = groupKey(s)
-      if (key) groups.set(key, [...(groups.get(key) ?? []), s])
-    }
-  const biggest = [...groups.values()].sort((a, b) => b.length - a.length)[0]
+  const { groups, biggest } = useMemo(() => {
+    const g = new Map<string, Sale[]>()
+    for (const o of orders)
+      for (const s of unknown(o)) {
+        const key = groupKey(s)
+        if (!key) continue
+        const list = g.get(key)
+        if (list) list.push(s)
+        else g.set(key, [s])
+      }
+    return { groups: g, biggest: [...g.values()].sort((a, b) => b.length - a.length)[0] }
+  }, [orders])
   const stuck = biggest && biggest.length > 1 && can('review.act') ? biggest : null
   const stuckOrders = stuck ? new Set(stuck.map((s) => s.orderId)).size : 0
 
@@ -116,7 +126,7 @@ export function Orders() {
   }
   /** The dialog stays up until the list has refetched, so no button can act on a lot just settled. */
   const done = async (msg: string) => {
-    await qc.invalidateQueries()
+    await invalidateSales(qc)
     setPicking(null)
     setDecline(null)
     setChanging(null)
@@ -392,7 +402,8 @@ function Actions({ o, onPick, onDecline, onChange, onRemoved }: { o: Order; onPi
   const [error, setError] = useState<string | null>(null)
   const move = useMutation({
     mutationFn: (to: OrderStatus) => api('POST', `/api/orders/${o.id}/status`, { status: to }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['orders'] }),
+    // The order's status shows on the detail, the pick list, shipping and the nav badge too.
+    onSuccess: () => invalidateSales(qc),
     onError: (e) => setError(e instanceof ApiError ? e.message : 'failed'),
   })
   const canReview = can('review.act')
@@ -616,7 +627,7 @@ export function OrderDetail() {
   const [changed, setChanged] = useState<string | null>(null)
   const status = useMutation({
     mutationFn: (to: OrderStatus) => api('POST', `/api/orders/${id}/status`, { status: to, tracking: tracking || undefined, packedBy: packedBy ?? undefined }),
-    onSuccess: () => qc.invalidateQueries(),
+    onSuccess: () => invalidateSales(qc),
     onError: (e) => setError(e instanceof ApiError ? e.message : 'failed'),
   })
   const save = useMutation({
@@ -658,7 +669,7 @@ export function OrderDetail() {
           add={changing.add}
           onClose={() => setChanging(null)}
           onDone={async (msg) => {
-            await qc.invalidateQueries()
+            await invalidateSales(qc)
             setChanging(null)
             setChanged(msg)
           }}
