@@ -134,7 +134,17 @@ test('fulfilment sets how many gifts go in with a lot', async () => {
 
 test("Whatnot's shipment list is checked against the slips, on screen only", async () => {
   mount(['orders.view'])
-  expect(await screen.findByTestId('whatnot-check')).toHaveTextContent('has not been read for this show')
+  const check = await screen.findByTestId('whatnot-check')
+  expect(check).toHaveTextContent('has not been read for this show')
+  expect(check).toHaveTextContent('Send shipments to Sales Ops') // not connected: the laptop sends them
+})
+
+test('a shop connected to Whatnot is not sent to the laptop: the app reads the parcels itself', async () => {
+  mount(['orders.view'], { ...doc, parcelsFromWhatnot: true })
+  const check = await screen.findByTestId('whatnot-check')
+  expect(check).toHaveTextContent('Sales Ops reads them from Whatnot by itself once the show has ended')
+  expect(check).not.toHaveTextContent('Send shipments')
+  expect(check).not.toHaveTextContent('Chat Scraper')
 })
 
 test('differences with Whatnot are spelled out', async () => {

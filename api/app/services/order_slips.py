@@ -47,6 +47,7 @@ from ..models import (
 )
 from . import rules, sale_chat, shipments
 from .orders import STANDING
+from .whatnot import connection
 
 NO_PICK = "No Pick"
 # `only=`: which buyers to keep. "ready" = the order is Ready to pick (the Orders page's queue).
@@ -344,6 +345,9 @@ def build(show: Show, *, only: str | None = None) -> dict:
         ),
         "showId": show.id,
         "showDate": show.show_date.isoformat(),
+        # The app reads the show's parcels from Whatnot itself (the shop is connected), so
+        # nobody has to send them from the laptop.
+        "parcelsFromWhatnot": connection.active(show.organization_id) is not None,
         "totals": {
             "buyers": len(slips),
             "items": sum(b["items"] for b in slips),

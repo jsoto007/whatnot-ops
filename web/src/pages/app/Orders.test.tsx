@@ -90,7 +90,7 @@ const orders: Order[] = [
     status: 'picking',
     verified: true,
     pickedAt: '2026-11-08T20:10:00Z',
-    sales: [sale({ buyer: 'kels.finds', orderId: 5, sku: RED, item: '$1 BEAUTY PULLS #530', lot: 530, status: 'paid', paidAt: '2026-11-08T03:30:00Z', wonAt: '2026-11-08T03:30:00Z' })],
+    sales: [sale({ buyer: 'kels.finds', orderId: 5, sku: RED, item: '$1 BEAUTY PULLS #530', lot: 530, status: 'paid', paidAt: '2026-11-08T03:30:00Z', wonAt: '2026-11-08T03:30:00Z', review: { id: 16, reason: 'decline_seen' } })],
   }),
   order({
     id: 7,
@@ -169,6 +169,9 @@ test('every row names its state and the one verb that moves it on', async () => 
   expect(amy).toHaveTextContent('2 × $1 Beauty Pulls')
   expect(within(amy).getByRole('button', { name: 'Start picking' })).toBeInTheDocument()
   expect(within(screen.getByTestId('order-kels.finds')).getByRole('button', { name: 'Mark packed' })).toBeInTheDocument()
+  // the stream showed this buyer's card declined; the sale stands until Whatnot's order says
+  expect(screen.getByTestId('decline-seen-kels.finds')).toHaveTextContent('card declined on the stream, waiting for Whatnot')
+  expect(screen.queryByTestId('decline-seen-amyshopsalot')).toBeNull()
   expect(within(screen.getByTestId('order-scrollstoppers')).getByRole('button', { name: 'Resolve decline' })).toBeInTheDocument()
   // the oldest win comes first within a state; ready orders come before stuck ones
   const rows = screen.getAllByTestId(/^order-/).map((r) => r.getAttribute('data-testid'))

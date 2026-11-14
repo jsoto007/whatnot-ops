@@ -465,6 +465,11 @@ def audit_show(show_id: int) -> dict:
         return {"skipped": "ai off or failed"}
     applied = proposed = 0
     sale_by_id = {s.id: s for s in open_sales}
+    from .whatnot import orders as whatnot_orders
+
+    # Whatnot's own order says whether a win was paid, and is applied with nobody looking:
+    # what the chat says about a payment is then put to a person, never applied.
+    left_to_whatnot = whatnot_orders.decides(show)
     for f in (d.fields.get("findings", []) or [])[:MAX_FINDINGS]:
         kind = f.get("type")
         conf = float(f.get("confidence") or 0)
@@ -489,6 +494,7 @@ def audit_show(show_id: int) -> dict:
             )
             if (
                 may_auto_apply(kind, conf)
+                and not (kind == "payment_failed" and left_to_whatnot)
                 and (
                     sale.status is SaleStatus.reserved
                     # Paid at the win only: a payment file or a person has not vouched for it.

@@ -102,7 +102,13 @@ function WhatnotCheck({ doc }: { doc: Doc }) {
   if (!w) {
     return (
       <p className="card small muted" data-testid="whatnot-check">
-        Whatnot's shipment list has not been read for this show. After the show, open Seller Hub → Shipments on the laptop with Chat Scraper, pick this show, and press <b>Send shipments to Sales Ops</b> in the panel.
+        {doc.parcelsFromWhatnot
+          ? "Whatnot's parcels for this show have not been read yet. Sales Ops reads them from Whatnot by itself once the show has ended; there is nothing to send from the laptop. Until then the slips list what the app recorded."
+          : (
+              <>
+                Whatnot's shipment list has not been read for this show. After the show, open Seller Hub → Shipments on the laptop with Chat Scraper, pick this show, and press <b>Send shipments to Sales Ops</b> in the panel.
+              </>
+            )}
       </p>
     )
   }

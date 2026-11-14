@@ -168,3 +168,23 @@ test('a winner who typed a shelf spot gets that product suggested, not remembere
   await waitFor(() => expect(posts).toHaveLength(1))
   expect(posts[0]!.body).toEqual({ action: 'assign_sku', skuId: 4, remember: false })
 })
+
+test('a card the stream showed declined is flagged: leave it to Whatnot, or close the sale if sure', async () => {
+  const standing = { id: 50, item: 'Red bundle', status: 'paid', sku: { id: 1, code: 'RED', name: '', productName: 'Red bundle' } } as Sale
+  const flag = { ...item, reason: 'decline_seen', summary: "Whatnot showed made_up_ann's card declined for 1 × Red bundle ($25.00).", sale: standing }
+  const posts = mount([flag, { ...item, id: 8, reason: 'order_declined', summary: "Whatnot declined made_up_bo's payment for 1 × Lot 4 ($11.00).", sale: null }], '/app/review/3')
+  const card = await screen.findByTestId('review-7')
+  expect(card).toHaveTextContent('Card declined: waiting for Whatnot')
+  expect(card).not.toHaveTextContent('decline_seen')
+  fireEvent.click(screen.getByRole('button', { name: 'Leave it to Whatnot' }))
+  await waitFor(() => expect(posts).toHaveLength(1))
+  expect(posts[0]).toEqual({ url: '/api/review/7/resolve', body: { action: 'dismiss' } })
+  fireEvent.click(screen.getByTestId('mark-declined'))
+  await waitFor(() => expect(posts).toHaveLength(2))
+  expect(posts[1]!.body).toEqual({ action: 'set_status', status: 'payment_failed' })
+  // A payment Whatnot declined with no sale here: nothing to do but know of it.
+  const other = screen.getByTestId('review-8')
+  expect(other).toHaveTextContent('Payment declined: nothing recorded')
+  expect(other.querySelectorAll('button')).toHaveLength(1)
+  expect(other.querySelector('button')).toHaveTextContent('Got it')
+})

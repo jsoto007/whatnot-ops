@@ -89,7 +89,7 @@ export function WhatnotConnection({ manage }: { manage: boolean }) {
             {(
               [
                 ['shadow', 'Compare only', "Each show's Payments tab shows what Whatnot's orders would change. A person presses Apply."],
-                ['auto', 'Apply as they arrive', 'A paid order the app missed becomes a sale, a failed or cancelled one closes its sale and returns the stock.'],
+                ['auto', 'Apply as they arrive', 'A paid order the app missed becomes a sale, a failed or cancelled one closes its sale and returns the stock. A declined card seen on the stream is flagged in Review and left to its order: many are paid a minute later.'],
               ] as const
             ).map(([value, label, hint]) => (
               <label key={value} className="radio-row">

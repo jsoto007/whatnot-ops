@@ -141,6 +141,21 @@ commands.
   real decline), said by the host/platform, or in the Seller Hub CSV — closes
   it `payment_failed` and restocks unless picking began; a person may restore
   it once in Review. A viewer's chat line never pays or declines anything.
+  **Where Whatnot's orders are applied as they arrive** (`whatnot/orders.decides(show)`:
+  mode "auto", the recording matched to a followed show, a token that can read orders
+  with their buyers), only Whatnot's order or a person declines a sale: a decline read
+  from the stream (the player, a host's line, the AI's reading of chat) closes nothing,
+  because half the cards declined at the win are paid a minute later. **A declined
+  payment is always put to a person** (Javier's call, 2026-11-13), and the item clears
+  itself when the payment goes through: the stream's decline flags the standing sale
+  (`pipeline.flag_decline`, reason `decline_seen`), and the buyer's order cannot move
+  into picking while that item is open (`orders.card_in_doubt`); a sale Whatnot's failed
+  order closes
+  gets `payment_declined`; a failed order with no sale here gets `order_declined`
+  (`whatnot/orders._flag_declines`). A declined win that never had a product and is then
+  paid on Whatnot goes back to waiting for its product (`pipeline.await_product`, the
+  one allowed step back: no stock was ever held, and never once the buyer's order has
+  shipped); with a product it is paid again through `_repay`.
 - **Order slips** (`services/order_slips.py`, `/app/orders/slips/:showId`) are
   the per-show packing document staff used to build from Whatnot's shipments
   tab: a cover with totals, then one printed page per buyer. Auction Number

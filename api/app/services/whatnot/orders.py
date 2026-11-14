@@ -19,7 +19,7 @@ this is Whatnot's own record, read with the shop's token.
 """
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -27,7 +27,10 @@ from sqlalchemy.orm import selectinload
 from ...db import db
 from ...models import (
     ChatMessage,
+    OrderStatus,
     ParsedEvent,
+    ReviewItem,
+    ReviewStatus,
     Sale,
     SaleStatus,
     Show,
@@ -36,6 +39,7 @@ from ...models import (
     WhatnotShow,
 )
 from .. import jobs, pipeline, reconcile
+from ..catalog import norm_alias
 from ..orders import STANDING
 from ..reconcile import Plan, Row
 from . import catalog, connection, sync
@@ -62,6 +66,41 @@ class OrdersError(Exception):
 
 def whatnot_show_of(show: Show) -> WhatnotShow | None:
     return db.session.get(WhatnotShow, show.whatnot_show_id) if show.whatnot_show_id else None
+
+
+# The token no longer reads the shop's orders: a person has to act before any arrive.
+BLIND = ("token_rejected", "no_permission")
+
+
+def decides(show: Show) -> bool:
+    """Whether Whatnot's own orders say, with nobody applying them, which of this show's
+    wins were paid: the shop applies orders as they arrive, the recording is matched to a
+    show on Whatnot, that show is one the app follows (not one over before the shop chose
+    to), the token can still read orders, and the orders say who bought them. A decline
+    read from the stream then closes nothing (`pipeline.process_show`,
+    `supervisor.audit_show`): the win's order will say, and a card declined at the win is
+    often paid a minute later. It is flagged for a person instead (`pipeline.flag_decline`).
+
+    False in every other case, where the stream's decline closes the sale as it always did:
+    "Compare only", a recording not matched yet, a token Whatnot rejects, orders with no
+    buyer (`apply` refuses those, so no order would ever close the sale)."""
+    conn = connection.active(show.organization_id)
+    if conn is None or conn.orders_mode != "auto" or conn.problem in BLIND:
+        return False
+    ws = whatnot_show_of(show)
+    if ws is None or sync.history(conn, ws):
+        return False
+    nameless = db.session.scalar(
+        select(WhatnotOrder.id)
+        .where(
+            WhatnotOrder.organization_id == ws.organization_id,
+            WhatnotOrder.whatnot_show_id == ws.whatnot_id,
+            WhatnotOrder.transaction_type.is_distinct_from(GIVEAWAY),
+            func.coalesce(WhatnotOrder.buyer_username, "") == "",
+        )
+        .limit(1)
+    )
+    return nameless is None
 
 
 def _orders(ws: WhatnotShow) -> list[WhatnotOrder]:
@@ -155,7 +194,7 @@ def _skip_retried(rows: list[Row]) -> None:
                     paid.first_ordered_at = min(
                         paid.first_ordered_at or row.ordered_at, row.ordered_at
                     )
-                    row.action, row.note = "skip", "declined, then paid in a later order"
+                    row.action, row.note = "skip", RETRIED
                     break
 
 
@@ -169,6 +208,20 @@ def _complete(ws: WhatnotShow) -> bool:
         and ws.orders_synced_at >= ws.ended_at
     )
 
+
+# A plan row's action that only Whatnot's orders have: the declined win with no product
+# goes back to waiting for one (`pipeline.await_product`).
+REOPEN = "reopen"
+# Why a failed order is left out: its win was paid in a later order, or the app never had
+# a sale for it. The second is a declined payment nobody else would hear of (`_flag_unrecorded`).
+RETRIED = "declined, then paid in a later order"
+NEVER_RECORDED = "never recorded here, and not paid on Whatnot"
+# The review item for a payment Whatnot declined when the app has no sale for the win.
+ORDER_DECLINED = "order_declined"
+# Items that doubt whether a standing sale was paid: the stream showed its card declined
+# (`pipeline.flag_decline`), the AI read as much in chat, or no order was found for it. A
+# paid order for the sale answers them.
+ANSWERED_BY_PAYMENT = (pipeline.DECLINE_SEEN, "payment_failed", "no_payment_record")
 
 HERE = {
     SaleStatus.cancelled: "cancelled here",
@@ -201,7 +254,22 @@ def _plan(show: Show, ws: WhatnotShow) -> tuple[Plan, dict, list[Show]]:
         sale = sales.get(row.sale_id)
         # An order nobody has a sale for: cancelled or failed, there is nothing to record.
         if row.action == "unmatched" and row.sale_id is None and row.status in ("void", "failed"):
-            row.action, row.note = "skip", "never recorded here, and not paid on Whatnot"
+            row.action, row.note = "skip", NEVER_RECORDED
+        elif (
+            row.action == "unmatched"
+            and sale is not None
+            and row.status == "paid"
+            and sale.status is SaleStatus.payment_failed
+            and sale.sku_id is None
+            # Its buyer's package already left without it: a person decides (as for a
+            # declined sale with a product, which `_repay` refuses once the order shipped).
+            and not (sale.order is not None and sale.order.status is OrderStatus.shipped)
+        ):
+            # Declined before anyone named its product, and paid after all (a retried card
+            # whose failed order was applied before the retry went through): nothing was
+            # held for it, so it simply waits for its product again. With a product, the
+            # engine marks it paid again itself.
+            row.action, row.note = REOPEN, "declined, then paid: it waits for its product again"
         elif row.action == "unmatched" and sale is not None:
             # The two records disagree about a sale already closed or shipped here: a
             # person decides. Said in words (the engine's own note is written for a file).
@@ -383,6 +451,22 @@ def apply(show: Show, *, user=None) -> dict:
             if waiting.sku_id is None:  # not named by a person meanwhile either
                 row.action, row.note = "unchanged", "waiting for its product to be named"
 
+    for row in plan.rows:
+        if row.action != REOPEN:
+            continue
+        sale = db.session.get(Sale, row.sale_id)
+        if sale is None or not pipeline.await_product(sale):
+            # Named or closed by a person while the orders were being applied: theirs.
+            row.action, row.note = "unchanged", "changed here a moment ago"
+        else:
+            if row.external_id:
+                sale.external_order_id = row.external_id  # the paid order, not the failed one
+            if sale.price_cents is None and row.price_cents is not None:
+                sale.price_cents = row.price_cents
+            if row.sku_id is not None:
+                # Its listing is linked to a product here: named at once, like any such win.
+                pipeline.name_from_listing(sale, row.sku_id, price_cents=row.price_cents)
+
     reconcile.apply(
         primary,
         plan,
@@ -405,10 +489,149 @@ def apply(show: Show, *, user=None) -> dict:
             _note_order_time(sale, row)
             if sale.external_order_id is None and row.action != "unmatched":
                 sale.external_order_id = row.external_id
+    _flag_declines(primary, plan, show_ids)
     summary = plan.summary
     if not _complete(ws):
         summary.pop("uncovered", None)
     return {"summary": summary, "created": created, "info": info, "plan": plan}
+
+
+def _flag_declines(show: Show, plan: Plan, show_ids: list[int]) -> None:
+    """A declined payment is always put to a person, and the item clears by itself when the
+    payment goes through:
+    - a sale Whatnot's order just closed gets the "payment declined" item a decline read
+      from the stream leaves (`pipeline.review_decline`);
+    - a sale that still stands and that Whatnot says is paid has its "the stream showed the
+      card declined" items answered;
+    - a failed order with no sale here (`_flag_unrecorded`);
+    - a second win of the same listing that the paid order did not cover (`_flag_twin`)."""
+    by_itself = decides(show)
+    for row in plan.rows:
+        sale = db.session.get(Sale, row.sale_id) if row.sale_id else None
+        if sale is None:
+            continue
+        if row.action == "decline" and sale.status is SaleStatus.payment_failed:
+            pipeline.review_decline(sale, by_itself=by_itself)
+        elif (
+            row.status == "paid"
+            and row.action in ("unchanged", "mark_paid", REOPEN)
+            and sale.status in STANDING
+        ):
+            for item in db.session.scalars(
+                select(ReviewItem).where(
+                    ReviewItem.sale_id == sale.id,
+                    ReviewItem.status == ReviewStatus.open,
+                    ReviewItem.reason.in_(ANSWERED_BY_PAYMENT),
+                )
+            ):
+                item.status = ReviewStatus.resolved
+                item.resolution = {"by": "paid on Whatnot"}
+                item.resolved_at = datetime.now(UTC)
+    _flag_unrecorded(show, plan, show_ids)
+    _flag_twin(show, plan)
+
+
+def _flag_twin(show: Show, plan: Plan) -> None:
+    """One buyer, two wins of one listing at one price, a failed order and a paid one: the
+    orders alone cannot say whether the paid one is the first win's retry or the second
+    win's own payment (`_skip_retried` reads it as a retry). So when such a paid order is
+    applied while the buyer has another standing win of that listing with no order of its
+    own, that win is put to a person at once, not only when the show is over: one of the
+    two was not paid. An order of its own arriving later answers the item."""
+    retried = [r for r in plan.rows if r.status == "paid" and r.first_ordered_at and r.sale_id]
+    if not retried or not plan.uncovered:
+        return
+    waiting = db.session.scalars(select(Sale).where(Sale.id.in_(plan.uncovered))).all()
+    for row in retried:
+        for other in waiting:
+            if (
+                other.id == row.sale_id
+                or other.buyer_username.lower() != row.buyer.lower()
+                or pipeline.same_win(
+                    other.item_text, pipeline.paid_price(other), pipeline.won_when(other),
+                    row.item, row.price_cents, row.ordered_at,
+                ) is None
+            ):  # fmt: skip
+                continue
+            pipeline.open_review(
+                show.organization_id,
+                "no_payment_record",
+                f"{other.buyer_username} won {other.item_text or 'this listing'} twice at "
+                f"{pipeline.money(row.price_cents)}, and Whatnot has one failed and one paid "
+                "order for the two: one of them was not paid. Check which, and mark it declined.",
+                show_id=other.show_id,
+                sale_id=other.id,
+                source="reconcile",
+            )
+
+
+def _flag_unrecorded(show: Show, plan: Plan, show_ids: list[int]) -> None:
+    """A payment Whatnot declined for a win the app has no sale for (a shop whose wins reach
+    it as orders: a failed order records nothing). There is nothing to close, but a person
+    is told, once per order item: an item a person dismissed is never opened again. It
+    clears by itself when the win is paid in a later order, or gets a sale here (whose own
+    item then says it)."""
+    standing: dict[int, Row] = {}
+    settled: dict[int, str] = {}
+    # A failed order with no time is never paired with its retry (`_skip_retried` has
+    # nothing to bound it by): a payment for the same buyer, listing and price answers it.
+    paid = {
+        (r.buyer.lower(), norm_alias(r.item), r.price_cents)
+        for r in plan.rows
+        if r.status in ("paid", "pending") and r.action != "skip"
+    }
+    for row in plan.rows:
+        if row.status != "failed" or row.ref is None:
+            continue
+        untimed_retry = (
+            row.ordered_at is None
+            and (row.buyer.lower(), norm_alias(row.item), row.price_cents) in paid
+        )
+        if untimed_retry:
+            settled[row.ref] = "paid on Whatnot"
+        elif row.action == "skip" and row.sale_id is None and row.note == NEVER_RECORDED:
+            standing[row.ref] = row
+        else:
+            settled[row.ref] = "paid on Whatnot" if row.note == RETRIED else "its sale says so"
+    if not standing and not settled:
+        return
+    known: dict[int, list[ReviewItem]] = {}
+    for item in db.session.scalars(
+        select(ReviewItem).where(
+            ReviewItem.organization_id == show.organization_id,
+            ReviewItem.show_id.in_(show_ids),
+            ReviewItem.reason == ORDER_DECLINED,
+        )
+    ):
+        known.setdefault((item.proposal or {}).get("orderItem"), []).append(item)
+    for ref, row in standing.items():
+        if ref in known:
+            continue
+        pipeline.open_review(
+            show.organization_id,
+            ORDER_DECLINED,
+            f"Whatnot declined {row.buyer}'s payment for {row.quantity} × {row.item} "
+            f"({pipeline.money(row.price_cents)}). No sale was recorded for it here, so there "
+            "is nothing to undo. If they pay, Whatnot's paid order records the sale and this "
+            "clears by itself.",
+            show_id=show.id,
+            proposal={
+                "action": "none",
+                "orderItem": ref,
+                "orderId": row.external_id,
+                "buyer": row.buyer,
+                "item": row.item,
+                "priceCents": row.price_cents,
+            },
+            source="reconcile",
+            dedupe=False,  # keyed by the order item, checked above
+        )
+    for ref, why in settled.items():
+        for item in known.get(ref, ()):
+            if item.status is ReviewStatus.open:
+                item.status = ReviewStatus.resolved
+                item.resolution = {"by": why}
+                item.resolved_at = datetime.now(UTC)
 
 
 @jobs.handler("whatnot_apply_show")
