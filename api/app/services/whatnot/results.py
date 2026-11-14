@@ -25,7 +25,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from sqlalchemy import BigInteger, cast, func, or_, select, update
+from sqlalchemy import BigInteger, case, cast, func, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import aliased
 
@@ -592,6 +592,49 @@ def figures(org_id: int, *, whatnot_show_id: str | None = None, since: datetime 
     }
 
 
+def nets_by_show(org_id: int, whatnot_show_ids: list[str]) -> dict[str, int]:
+    """Each show's net exactly as `figures(whatnot_show_id=…)` works it out, for many shows
+    in one query: the sum of its lines in the shop's currency, where a line that names no
+    show counts for every show its order's other lines name. A show with no line at all is
+    left out (`figures` is None for it)."""
+    ids = sorted(set(whatnot_show_ids))
+    if not ids:
+        return {}
+    conn = connection.get(org_id)
+    currency = (conn.currency if conn is not None else None) or "USD"
+    line = WhatnotLedgerEntry
+    mine = line.currency.is_(None) | (line.currency == currency)
+    earned = aliased(WhatnotLedgerEntry)
+    order_of_show = (
+        select(earned.whatnot_order_id.label("oid"), earned.whatnot_show_id.label("sid"))
+        .where(
+            earned.organization_id == org_id,
+            earned.whatnot_show_id.in_(ids),
+            earned.whatnot_order_id.is_not(None),
+        )
+        .distinct()
+        .subquery()
+    )
+    # A line in another currency is never added in, but it still makes the show one with
+    # a ledger (net 0), as `figures` says.
+    cents = case((mine, line.amount_cents), else_=0).label("cents")
+    named = select(line.whatnot_show_id.label("sid"), cents).where(
+        line.organization_id == org_id, line.whatnot_show_id.in_(ids)
+    )
+    by_order = (
+        select(order_of_show.c.sid, cents)
+        .join(order_of_show, order_of_show.c.oid == line.whatnot_order_id)
+        .where(line.organization_id == org_id, line.whatnot_show_id.is_(None))
+    )
+    both = union_all(named, by_order).subquery()
+    return {
+        sid: int(total)
+        for sid, total in db.session.execute(
+            select(both.c.sid, func.sum(both.c.cents)).group_by(both.c.sid)
+        )
+    }
+
+
 def status(org_id: int) -> dict:
     """Reports → Whatnot's ledger: where the reading stands."""
     runs = db.session.scalars(
@@ -622,4 +665,4 @@ def status(org_id: int) -> dict:
     }
 
 
-__all__ = ["LedgerError", "WhatnotError", "figures", "status"]
+__all__ = ["LedgerError", "WhatnotError", "figures", "nets_by_show", "status"]

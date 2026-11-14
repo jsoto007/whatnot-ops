@@ -188,6 +188,15 @@ can differ on its own page):
   fees is not documented, so adding or subtracting them could count fees twice. Only the
   shop's own currency is summed; lines in any other are counted and said.
   Refunds and carrier adjustments can arrive days later: a show's net can still move.
+- **The dashboard** (same people): when the shop is connected, its money card, the
+  Shows table's sales and Top buyers are Whatnot's for the last 7, 30 or 90 days: item
+  subtotals of paid orders (no shipping or tax, giveaways counted but never added in),
+  payment pending, and failed payments nobody paid afterwards (a card declined at the win
+  and paid on a retry counts as paid, by the same rule as Compare and Apply); the net
+  payout and Whatnot's fees from the ledger as above, dated by the ledger's own lines;
+  top buyers by what they paid, one row per Whatnot account under the name they use now.
+  The packing role, the show pages, the live band and the Excel workbook keep the app's
+  own counts.
 
 **Buyers** (the Buyers page; every role reads it, owners, managers and the packing table
 write the flag and the note):

@@ -535,6 +535,11 @@ code.sku { margin-left: 8px; }
 .comp-bar { display: flex; gap: 3px; height: 12px; border-radius: var(--pill); overflow: hidden; background: var(--fill); }
 .comp-bar .paid, .rev-bar .paid, .sw.paid { background: var(--paid); }
 .comp-bar .awaiting, .rev-bar .awaiting, .sw.awaiting { background: var(--awaiting); }
+.comp-bar .failed, .rev-bar .failed, .sw.failed { background: var(--failed); }
+.money-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.period { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.money-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; }
+.money.stale { opacity: 0.6; transition: opacity var(--motion); }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 14px; margin-top: 10px; color: var(--text); }
 .dcard-head .legend { margin-top: 0; font-size: 13px; color: var(--text-muted); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }

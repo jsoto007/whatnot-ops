@@ -351,7 +351,14 @@ commands.
 - **Numbers.** Dashboard tiles and the Excel sheets both read
   `services/dashboard.py`; add a metric there, never inline in a route or
   the workbook builder. The gifts tile counts Whatnot's giveaway orders for a
-  show linked to Whatnot, else the host/platform chat lines. Reports are built synchronously with openpyxl
+  show linked to Whatnot, else the host/platform chat lines. The dashboard's
+  money, Shows revenue and top buyers are Whatnot's for roles with
+  `reports.view` when the shop has a working connection
+  (`dashboard.whatnot_money`, `GET /api/dashboard/whatnot?days=7|30|90`): orders by
+  Whatnot status (a decline a retry paid is paid, `whatnot/orders.retried`), net from
+  the ledger only (`results.nets_by_show` = `figures` per show), top buyers by
+  Whatnot account. The packing role, the show pages, the live band and the Excel
+  sheet keep the app's own counts. Reports are built synchronously with openpyxl
   (`services/reports.py`); move them to a job if a shop outgrows that.
 - **Query cost.** A page or job must not cost a statement per row: eager-load what the
   serializer reads (`selectinload`), and batch-load what a loop reads
