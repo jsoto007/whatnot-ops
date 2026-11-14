@@ -307,6 +307,17 @@ describe('DeclineWatcher', () => {
     expect(dw.check(show(...page), scan(true))).toHaveLength(1)
   })
 
+  it('reports a Sold-tab decline as holding until it is recorded, so the page scan is never skipped while it waits', () => {
+    recordWin('chonwhite828', '$188')
+    const page = [idle('x'), soldTab(soldRow('chonwhite828', T760, '$188', 'Payment failed'))]
+    expect(dw.pageHolding).toBe(false)
+    expect(dw.check(show(...page), scan(true))).toEqual([])
+    expect(dw.pageHolding).toBe(true)
+    at(t + UNTIED_HOLD_MS)
+    expect(dw.check(show(...page), scan(true))).toHaveLength(1)
+    expect(dw.pageHolding).toBe(false)
+  })
+
   it('a resumed recording ties to saved wins and does not decline a saved decline again', () => {
     const win = recordWin('chonwhite828', '$188')
     const page = [footerDecline(won('chonwhite828', '$188'))]

@@ -239,3 +239,80 @@ describe('quiet chat', () => {
     c.destroy()
   })
 })
+
+describe('page-wide decline scan', () => {
+  it('is skipped while nothing outside the chat and the panel changed, and runs again on a change, a holding decline or the backstop', async () => {
+    stubChrome()
+    vi.useFakeTimers()
+    const { Controller } = await import('../src/content/controller')
+    const c = new Controller()
+    const chat = document.createElement('div')
+    const other = document.createElement('div')
+    document.body.append(chat, other)
+    const pages: boolean[] = []
+    const declines = {
+      holding: false,
+      get pageHolding() {
+        return this.holding
+      },
+      check: (_d: Document, scan: { page: boolean }) => {
+        pages.push(scan.page)
+        return []
+      },
+      noteWin: () => {},
+    }
+    const priv = c as unknown as {
+      wins: { check(): null } | null
+      recorder: { attached: boolean; box: Element; currentSelector: string } | null
+      declines: typeof declines | null
+      watchPage(): void
+      checkPlayer(timer?: boolean): void
+    }
+    priv.wins = { check: () => null }
+    priv.recorder = { attached: true, box: chat, currentSelector: '' }
+    priv.declines = declines
+    priv.watchPage()
+    const tick = async (ms = 1000) => {
+      vi.advanceTimersByTime(ms)
+      await Promise.resolve() // MutationObserver callbacks run as microtasks
+      priv.checkPlayer(true)
+    }
+    await tick() // first scan: nothing has been looked at yet
+    expect(pages.at(-1)).toBe(true)
+    await tick()
+    expect(pages.at(-1)).toBe(false) // nothing changed
+    chat.append(document.createElement('p')) // chat lines arrive all the time: not a reason to walk the page
+    await tick()
+    expect(pages.at(-1)).toBe(false)
+    c.panel.setStatus('something', 'info') // our own panel neither
+    await tick()
+    expect(pages.at(-1)).toBe(false)
+    const player = document.createElement('div')
+    document.body.append(player)
+    await tick() // adding it is a change outside the chat
+    ;(c as unknown as { observedPlayer: Element | null }).observedPlayer = player
+    player.textContent = '0:09' // the auction clock ticks every second: read on its own changes
+    await tick()
+    expect(pages.at(-1)).toBe(false)
+    other.append(document.createElement('p')) // a Sold-tab row, say
+    await tick()
+    expect(pages.at(-1)).toBe(true)
+    await tick()
+    expect(pages.at(-1)).toBe(false)
+    declines.holding = true // a decline is waiting to be held: it needs a scan that still sees it
+    await tick()
+    expect(pages.at(-1)).toBe(true)
+    declines.holding = false
+    await tick()
+    expect(pages.at(-1)).toBe(false)
+    await tick(15_000) // the backstop: a change the observer cannot see
+    expect(pages.at(-1)).toBe(true)
+    priv.recorder = null
+    priv.wins = null
+    priv.declines = null
+    c.destroy()
+    chat.remove()
+    other.remove()
+    player.remove()
+  })
+})

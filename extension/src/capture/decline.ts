@@ -144,6 +144,16 @@ export class DeclineWatcher {
     if (win) this.wins.push({ ...win, id: row.id, at: Date.parse(row.capturedAt) || this.now() })
   }
 
+  /**
+   * A decline phrase outside the player is still holding. The caller must keep scanning the
+   * page while this is true, even if nothing changed: the hold is only met by a scan that
+   * still sees the phrase.
+   */
+  get pageHolding(): boolean {
+    for (const p of this.pending.values()) if (p.scope === 'page') return true
+    return false
+  }
+
   get declinedCount(): number {
     return this.declined.size
   }
