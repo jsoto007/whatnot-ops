@@ -191,6 +191,9 @@ commands.
   buyer per show** (`whatnot/shipping.py`): labels only after the show ended, never
   for a buyer in two open packages; label PDFs and links are fetched when printed
   and never stored (they show the address). Only the buyer's id and username are kept.
+  Orders → Shipped shows where each shipped order's parcel is (`shipping.parcels_of`: one
+  word per order from the mirrored shipments, read-only, a fixed number of queries per list;
+  no new order status).
   A show's results and the financial ledger (`whatnot/results.py`, read-only, shown via
   `dashboard.whatnot_show` / `whatnot_ledger` to roles with `reports.view`): ledger
   lines are stored once by Whatnot's transaction id; the "net" is the sum of Whatnot's

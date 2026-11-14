@@ -183,6 +183,16 @@ const PACKAGE_STATUS: Record<string, string> = {
 }
 export const packageStatusLabel = (s: string): string => PACKAGE_STATUS[s] ?? (s.startsWith('cancelled') ? 'Cancelled' : 'Other')
 
+/** Where a shipped order's parcel is: every parcel of the buyer in that show, in one phrase. */
+const PARCEL_STATE: Record<string, string> = {
+  waiting: 'Waiting for the carrier',
+  late: 'Not with the carrier yet',
+  moving: 'On its way',
+  delivered: 'Delivered',
+  failed: 'Delivery failed',
+}
+export const parcelStateLabel = (s: string): string => PARCEL_STATE[s] ?? 'Check it on Whatnot'
+
 /** What Whatnot wants done before a package ships. */
 const PACKAGE_HOLD: Record<string, string> = {
   order_pending_cancellation: 'Do not pack: a cancellation is pending',

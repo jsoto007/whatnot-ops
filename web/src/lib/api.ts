@@ -347,6 +347,14 @@ export interface AiStatus {
 
 // ---------- orders / fulfilment (Phase 7) ----------
 export type OrderStatus = 'open' | 'paid' | 'picking' | 'packed' | 'shipped' | 'cancelled'
+/** Where a shipped order's parcel is, as Whatnot last said (labels.ts has the words). */
+export type ParcelState = 'waiting' | 'late' | 'moving' | 'delivered' | 'failed' | 'other'
+export interface OrderParcel {
+  /** One word for the order: every parcel of the buyer in that show taken together. */
+  state: ParcelState
+  changedAt: string
+  parcels: { status: string; carrier: string | null; tracking: string | null; changedAt: string; url: string | null }[]
+}
 export interface Order {
   id: number
   showId: number
@@ -358,6 +366,8 @@ export interface Order {
   totalCents: number
   notes: string | null
   tracking: string | null
+  /** Shipped orders only; null when Whatnot lists no parcel for the buyer, or the shop is not connected. */
+  parcel?: OrderParcel | null
   pickedAt: string | null
   packedAt: string | null
   /** The packer's name or initials ("Packed by" on the paper slip); set on the first move to packed. */

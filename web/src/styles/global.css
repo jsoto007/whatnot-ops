@@ -773,6 +773,10 @@ body.sheet-open, body.modal-open { overflow: hidden; }
 .chip-btn { border: 0; background: var(--fill); color: var(--text); border-radius: var(--pill); min-height: 34px; padding: 0 14px; font: 500 13px var(--font-family); cursor: pointer; white-space: nowrap; transition: background var(--motion); }
 .chip-btn:hover { background: var(--fill-strong); }
 .chip-btn.on { background: var(--accent); color: #fff; }
+/* Orders, Shipped tab: narrow the list to where the parcels are. */
+.parcel-filters { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-3) 0; }
+.parcel-filters .tab-count { margin-left: 4px; }
+.chip-btn.on .tab-count { color: inherit; }
 .diff { font-weight: 600; white-space: nowrap; color: var(--text-muted); }
 .diff.up { color: var(--tint-green-ink); }
 .diff.down { color: var(--tint-red-ink); }

@@ -834,6 +834,99 @@ def label_pdf(row: WhatnotShipment) -> tuple[bytes, str]:
     raise ShippingError("This package has no label yet.")
 
 
+# ---------- where a shipped order's parcel is ----------
+
+# An order marked shipped here whose parcel the carrier still has not got, this long after.
+LATE_AFTER = timedelta(days=3)
+
+
+def parcels_of(org_id: int, orders: list[Order]) -> dict[int, dict]:
+    """order id → where its parcel is, as Whatnot last said: one word for the order
+    (`state`) and each parcel's own status, carrier and tracking number. For the Orders
+    page's Shipped tab. Read-only, three queries however many orders. An order is left out
+    when the shop is not connected, its show is not matched to Whatnot, or Whatnot lists no
+    parcel for that buyer in that show.
+
+    `state`: "failed" (a delivery failed), "delivered" (every parcel), "moving" (the carrier
+    has every parcel), "late" (not with the carrier LATE_AFTER after it was marked shipped),
+    "waiting" (a label, not with the carrier yet), "other" (a status the app does not know)."""
+    if not orders or connection.active(org_id) is None:
+        return {}
+    shows = dict(
+        db.session.execute(
+            select(Show.id, WhatnotShow.whatnot_id)
+            .join(WhatnotShow, WhatnotShow.id == Show.whatnot_show_id)
+            .where(Show.organization_id == org_id, Show.id.in_({o.show_id for o in orders}))
+        ).all()
+    )
+    if not shows:
+        return {}
+    buyer = func.lower(func.ltrim(WhatnotOrder.buyer_username, "@"))
+    held: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for whatnot_show_id, name, shipment_id in db.session.execute(
+        select(WhatnotOrder.whatnot_show_id, buyer, WhatnotOrderItem.whatnot_shipment_id)
+        .join(WhatnotOrderItem, WhatnotOrderItem.order_id == WhatnotOrder.id)
+        .where(
+            WhatnotOrder.organization_id == org_id,
+            WhatnotOrder.whatnot_show_id.in_(set(shows.values())),
+            WhatnotOrder.status.in_(SHIPPABLE),
+            WhatnotOrderItem.whatnot_shipment_id.is_not(None),
+            buyer.in_({o.buyer_username.lower().lstrip("@") for o in orders}),
+        )
+        .distinct()
+    ):
+        held[(whatnot_show_id, name)].add(shipment_id)
+    wanted = {i for ids in held.values() for i in ids}
+    if not wanted:
+        return {}
+    rows = {
+        s.whatnot_id: s
+        for s in db.session.scalars(
+            select(WhatnotShipment).where(
+                WhatnotShipment.organization_id == org_id, WhatnotShipment.whatnot_id.in_(wanted)
+            )
+        )
+    }
+    now = datetime.now(UTC)
+    out: dict[int, dict] = {}
+    for o in orders:
+        key = (shows.get(o.show_id), o.buyer_username.lower().lstrip("@"))
+        parcels = sorted(
+            (rows[i] for i in held.get(key, ()) if i in rows and rows[i].api_status not in GONE),
+            key=lambda s: s.id,
+        )
+        if not parcels:
+            continue
+        statuses = [s.api_status or "" for s in parcels]
+        if "failed" in statuses:
+            state = "failed"
+        elif all(s == "delivered" for s in statuses):
+            state = "delivered"
+        elif all(s in WITH_CARRIER for s in statuses):
+            state = "moving"
+        elif all(s in WITH_CARRIER or s in (OPEN, LABELLED) for s in statuses):
+            late = o.shipped_at is not None and now - o.shipped_at > LATE_AFTER
+            state = "late" if late else "waiting"
+        else:
+            state = "other"
+        changed = [s.whatnot_updated_at or s.updated_at for s in parcels]
+        out[o.id] = {
+            "state": state,
+            "changedAt": max(changed).isoformat(),
+            "parcels": [
+                {
+                    "status": s.api_status or "",
+                    "carrier": s.carrier,
+                    "tracking": s.tracking_code,
+                    "changedAt": (s.whatnot_updated_at or s.updated_at).isoformat(),
+                    "url": s.url,
+                }
+                for s in parcels
+            ],
+        }
+    return out
+
+
 # ---------- carrier news → the app's orders ----------
 
 
