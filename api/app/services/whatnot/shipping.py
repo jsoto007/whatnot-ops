@@ -21,6 +21,7 @@ carrier ("auto" mode, or a person pressing the button).
 """
 
 import hashlib
+import io
 import ipaddress
 import logging
 import socket
@@ -30,6 +31,8 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 import requests
+from pypdf import PdfReader, PdfWriter
+from pypdf.errors import PyPdfError
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
@@ -91,6 +94,16 @@ RECENT = timedelta(days=21)
 MAX_LABEL_BYTES = 15 * 1024 * 1024
 FETCH_SECONDS = 45  # the whole download, not each read
 LABELS_PER_REQUEST = 400
+# One "Print labels": each label is a call to Whatnot and a download, inside one request.
+LABELS_PER_PRINT = 20
+MAX_PRINT_BYTES = 40 * 1024 * 1024  # all the labels of one print, before they are joined
+MAX_LABEL_PAGES = 12  # a label with Whatnot's slip is a page or two; more is not a label
+# One press stops starting new labels after this long: the rest are the next press, and the
+# request ends well inside the server's time limit even when Whatnot answers slowly.
+PRINT_SECONDS = 50
+# The class half of the (class, Whatnot show) advisory lock: one print of a show at a time.
+PRINT_LOCK = 0x4C62_6C73  # "Lbls"
+NOT_A_LABEL = "What Whatnot sent is not a label that can be printed."
 
 
 class ShippingError(Exception):
@@ -559,6 +572,7 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
                     if s.label_requested_at
                     else None,
                     "labelProblem": s.label_problem,
+                    "printedAt": s.label_printed_at.isoformat() if s.label_printed_at else None,
                 }
             )
         packs.sort(key=lambda p: p["id"])
@@ -597,6 +611,11 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
         "buyers": out,
         "totals": {"buyers": len(out), **count},
         "labelsToMake": sum(1 for b in out for p in b["packages"] if p["askable"]),
+        # Labels that exist and have not been printed from here; and the ones that have.
+        "labelsToPrint": sum(
+            1 for b in out for p in b["packages"] if p["labelReady"] and not p["printedAt"]
+        ),
+        "labelsPrinted": sum(1 for b in out for p in b["packages"] if p["printedAt"]),
         "toMarkShipped": len(to_ship),
     }, to_ship
 
@@ -808,10 +827,10 @@ def _fetch(url: str, *, max_bytes: int = MAX_LABEL_BYTES) -> bytes:
     return b"".join(chunks)
 
 
-def label_pdf(row: WhatnotShipment) -> tuple[bytes, str]:
-    """The shipment's label (with Whatnot's packing slip when it has the two combined),
-    fetched from Whatnot right now. Returns (pdf bytes, which). Nothing is kept: the file
-    shows the buyer's address, and the link to it is short-lived on purpose."""
+def label_pdf(row: WhatnotShipment, *, slip: bool = True) -> tuple[bytes, str]:
+    """The shipment's label (with Whatnot's packing slip when it has the two combined, unless
+    `slip` is False), fetched from Whatnot right now. Returns (pdf bytes, which). Nothing is
+    kept: the file shows the buyer's address, and the link to it is short-lived on purpose."""
     if not row.whatnot_id:
         raise ShippingError("This shipment was read from Seller Hub, not from Whatnot's API.")
     data = client_for(row.organization_id).shipment(row.whatnot_id)
@@ -823,15 +842,117 @@ def label_pdf(row: WhatnotShipment) -> tuple[bytes, str]:
             "Whatnot did not send the label. The access token needs the permission to read "
             "customers, because a label shows the buyer's address."
         )
-    for which in ("bundled_url", "label_url"):
+    for which in ("bundled_url", "label_url") if slip else ("label_url", "bundled_url"):
         url = _safe_url(documents.get(which))
         if url is None:
             continue
         pdf = _fetch(url)
         if len(pdf) > MAX_LABEL_BYTES or not pdf.startswith(b"%PDF"):
-            raise ShippingError("What Whatnot sent is not a label that can be printed.")
+            raise ShippingError(NOT_A_LABEL)
         return pdf, "label and slip" if which == "bundled_url" else "label"
     raise ShippingError("This package has no label yet.")
+
+
+def mark_printed(org_id: int, shipment_ids: list[int]) -> None:
+    """These labels went to a printer just now. `updated_at` is left as it was: it is read
+    as when Whatnot's data for the package last changed, and printing is not that."""
+    if not shipment_ids:
+        return
+    db.session.execute(
+        update(WhatnotShipment)
+        .where(WhatnotShipment.organization_id == org_id, WhatnotShipment.id.in_(shipment_ids))
+        .values(label_printed_at=datetime.now(UTC), updated_at=WhatnotShipment.updated_at)
+    )
+
+
+def _label_pages(pdf: bytes) -> list:
+    """The pages of one label, read in full before any of them is joined to the others, so a
+    file that breaks half way adds nothing. The file comes from outside: anything pypdf
+    cannot read, or more pages than a label has, is "not a label"."""
+    try:
+        pages = list(PdfReader(io.BytesIO(pdf)).pages)
+        if not 0 < len(pages) <= MAX_LABEL_PAGES:
+            raise ShippingError(NOT_A_LABEL)
+        alone = PdfWriter()  # joining is where a damaged page fails: try it away from the rest
+        for page in pages:
+            alone.add_page(page)
+    except ShippingError:
+        raise
+    except (PyPdfError, ValueError, KeyError, TypeError, AttributeError, OSError, RecursionError):
+        raise ShippingError(NOT_A_LABEL) from None
+    return pages
+
+
+def print_labels(show: Show, *, slip: bool = True) -> dict:
+    """One PDF holding the next labels of this show that have not been printed from here, in
+    the order of the order slips (most items first, then A to Z), so labels and slips come off
+    the printer in the same order. Each label is fetched from Whatnot now and the pages are
+    joined in memory: nothing of them is kept. At most LABELS_PER_PRINT a time, and no new
+    label is started after PRINT_SECONDS; the rest are the next print. A label Whatnot does
+    not hand over is left out, stays unprinted, and the ones behind it still print.
+
+    Returns {"pdf", "printed", "failed", "left"} and marks the printed ones."""
+    view = packages(show)
+    if not view["matched"]:
+        raise ShippingError("This show is not matched to a show on Whatnot yet.")
+    # Two people pressing together would each print the same labels. The second is told so;
+    # the lock lasts until this request's transaction ends, marks included.
+    if not db.session.scalar(
+        select(func.pg_try_advisory_xact_lock(PRINT_LOCK, show.whatnot_show_id))
+    ):
+        raise ShippingError(
+            "Someone else is printing this show's labels right now. Try again in a moment."
+        )
+    # Read again under the lock: what the other print marked is not printed twice.
+    view = packages(show)
+    waiting = [
+        p for b in view["buyers"] for p in b["packages"] if p["labelReady"] and not p["printedAt"]
+    ]
+    if not waiting:
+        raise ShippingError("No label is waiting to be printed for this show.")
+    writer = PdfWriter()
+    printed: list[int] = []
+    failed, size, problem = 0, 0, None
+    started = time.monotonic()
+    for p in waiting:
+        # A label that fails does not use up a place: the ones behind it are still reached.
+        if len(printed) >= LABELS_PER_PRINT or time.monotonic() - started > PRINT_SECONDS:
+            break
+        row = db.session.get(WhatnotShipment, p["id"])
+        try:
+            pdf, _ = label_pdf(row, slip=slip)
+            if printed and size + len(pdf) > MAX_PRINT_BYTES:
+                break  # this one and the rest are the next print
+            pages = _label_pages(pdf)
+        except (ShippingError, WhatnotError) as e:
+            # One label that cannot be had (not made after all, a link that expired, a file
+            # that is not a PDF) must not stop the others.
+            failed += 1
+            problem = problem or e
+            if isinstance(e, Unauthorized):
+                break  # the token stopped working: every other label would fail the same way
+            continue
+        for page in pages:
+            writer.add_page(page)
+        size += len(pdf)
+        printed.append(row.id)
+    if not printed:
+        if isinstance(problem, Unauthorized):
+            connection.note_failure(show.organization_id, problem)
+        raise ShippingError(
+            str(problem)
+            if isinstance(problem, ShippingError)
+            else "Whatnot did not send the labels. Try again in a minute."
+        )
+    out = io.BytesIO()
+    writer.write(out)
+    mark_printed(show.organization_id, printed)
+    return {
+        "pdf": out.getvalue(),
+        "printed": len(printed),
+        "failed": failed,
+        "left": len(waiting) - len(printed),
+    }
 
 
 # ---------- carrier news → the app's orders ----------

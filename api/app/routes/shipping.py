@@ -16,6 +16,8 @@ bp = Blueprint("shipping", __name__)
 REFRESH_PER_10_MIN = 10
 LABEL_REQUESTS_PER_10_MIN = 20
 PRINTS_PER_MIN = 120  # one buyer after another, at the packing table
+# "Print labels" for a show: each press fetches up to shipping.LABELS_PER_PRINT labels.
+BATCH_PRINTS_PER_MIN = 12
 
 
 @bp.errorhandler(WhatnotError)
@@ -142,6 +144,46 @@ def mark_shipped(show_id: int):
     return jsonify({"showId": show.id, **shipping.packages(show), "marked": n})
 
 
+@bp.post("/shows/<int:show_id>/labels/print")
+@require("orders.fulfill", heavy=True)
+def print_labels(show_id: int):
+    """The show's next labels that have not been printed, as one PDF in the order of the order
+    slips. Fetched from Whatnot now and joined in memory: nothing of them is kept, only the
+    time each was printed. `slips: false` leaves Whatnot's packing slips out.
+
+    The counts ride in headers (the body is the PDF): how many are in it, how many Whatnot
+    did not hand over, and how many are still to print."""
+    show = _show_or_404(show_id)
+    if show is None:
+        return jsonify({"error": "show not found"}), 404
+    body = request.get_json(silent=True)
+    slips = body.get("slips", True) if isinstance(body, dict) else True
+    if not isinstance(slips, bool):
+        return jsonify({"error": "slips must be true or false"}), 400
+    ratelimit.per_user("labels-print", g.u.id, BATCH_PRINTS_PER_MIN, 60)
+    out = shipping.print_labels(show, slip=slips)
+    audit.record(
+        g.u.organization_id,
+        "labels.printed",
+        user=g.u,
+        target_type="show",
+        target_id=show.id,
+        details={"printed": out["printed"], "failed": out["failed"], "left": out["left"]},
+    )
+    db.session.commit()
+    return Response(
+        out["pdf"],
+        mimetype="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="labels-show-{show.id}.pdf"',
+            "X-Content-Type-Options": "nosniff",
+            "X-Labels-Printed": str(out["printed"]),
+            "X-Labels-Failed": str(out["failed"]),
+            "X-Labels-Left": str(out["left"]),
+        },
+    )
+
+
 @bp.get("/shipments/<int:shipment_id>/label.pdf")
 @require("orders.fulfill")
 def label(shipment_id: int):
@@ -152,6 +194,7 @@ def label(shipment_id: int):
         return jsonify({"error": "package not found"}), 404
     ratelimit.per_user("label-print", g.u.id, PRINTS_PER_MIN, 60)
     pdf, _ = shipping.label_pdf(row)
+    shipping.mark_printed(row.organization_id, [row.id])  # "Print labels" skips it from now on
     audit.record(
         g.u.organization_id,
         "label.printed",

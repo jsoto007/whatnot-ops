@@ -59,6 +59,35 @@ export async function api<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: 
 
 export const apiGet = <T>(path: string) => api<T>('GET', path)
 
+/**
+ * A write that answers with a file (a PDF) instead of JSON: the same CSRF handling as `api`,
+ * and the response headers, which carry what the file holds.
+ */
+export async function apiFile(path: string, body: unknown = {}): Promise<{ blob: Blob; headers: Headers }> {
+  const send = async () =>
+    fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': await ensureCsrf() },
+      credentials: 'same-origin',
+      body: JSON.stringify(body),
+    })
+  let res = await send()
+  if (res.status === 403 && (await res.clone().text()).includes(CSRF_ERROR)) {
+    csrf = null
+    res = await send()
+  }
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`
+    try {
+      msg = ((await res.json()) as { error?: string }).error ?? msg
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(res.status, msg)
+  }
+  return { blob: await res.blob(), headers: res.headers }
+}
+
 export type Health = { status: 'ok' | 'degraded'; db: boolean }
 export const getHealth = () => apiGet<Health>('/api/health')
 
@@ -612,6 +641,8 @@ export interface ShippingPackage {
   labelProblem: string | null
   /** "Make labels" would ask for this package's label right now (the server decides). */
   askable: boolean
+  /** When its label was last opened to print from here; "Print labels" skips it then. */
+  printedAt?: string | null
 }
 export interface ShippingBuyer {
   buyer: string | null
@@ -635,6 +666,9 @@ export interface Shipping {
   totals: Partial<Record<ShippingState | 'buyers', number>>
   /** How many labels "Make labels" would ask Whatnot for right now. */
   labelsToMake?: number
+  /** Labels that exist and have not been printed from here; and the ones that have. */
+  labelsToPrint?: number
+  labelsPrinted?: number
   /** Orders the carrier already has that the app still shows as waiting. */
   toMarkShipped?: number
   queued?: boolean

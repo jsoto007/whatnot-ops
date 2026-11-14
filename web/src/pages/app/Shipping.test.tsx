@@ -203,3 +203,123 @@ test('a parcel shared with a show that is live now waits, and says so', async ()
   expect(row.textContent).toContain('wait for it to end before making the label')
   expect(screen.getByTestId('shipping-make-labels').textContent).toBe('No labels to make')
 })
+
+// ---------- "Print labels": the show's labels not printed yet, as one PDF ----------
+
+/** The page with a server that answers "Print labels" with a PDF and the counts in its headers. */
+function openForPrinting(first: Doc, after: Doc, answer: () => Response) {
+  const calls: { method: string; url: string; body: unknown }[] = []
+  let printed = false
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/auth/csrf') return new Response(JSON.stringify({ token: 't' }))
+      const method = init?.method ?? 'GET'
+      calls.push({ method, url, body: init?.body ? JSON.parse(init.body as string) : undefined })
+      if (url.endsWith('/labels/print')) {
+        const r = answer()
+        printed = printed || r.ok
+        return r
+      }
+      return new Response(JSON.stringify(printed ? after : first), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }),
+  )
+  const tab = { location: { href: '' }, close: vi.fn() }
+  const opened = vi.fn(() => tab)
+  vi.stubGlobal('open', opened)
+  URL.createObjectURL = vi.fn(() => 'blob:labels')
+  URL.revokeObjectURL = vi.fn()
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <AuthContext.Provider value={auth(['orders.view', 'orders.fulfill'])}>
+        <MemoryRouter initialEntries={['/app/orders/shipping/7']}>
+          <Routes>
+            <Route path="/app/orders/shipping/:showId" element={<Shipping />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+  return { calls, tab, opened }
+}
+const pdf = (printed: number, failed: number, left: number) =>
+  new Response(new Blob(['%PDF-1.4']), { status: 200, headers: { 'Content-Type': 'application/pdf', 'X-Labels-Printed': String(printed), 'X-Labels-Failed': String(failed), 'X-Labels-Left': String(left) } })
+const labelled = (id: number, over: Partial<ShippingPackage> = {}) => pack({ id, status: 'label_generated', labelReady: true, tracking: '9400', ...over })
+
+test('"Print labels" opens the show’s unprinted labels as one PDF, and says what is still to print', async () => {
+  localStorage.clear()
+  const before = doc([buyer('buyer_a', 'labelled', [labelled(11)]), buyer('buyer_b', 'labelled', [labelled(12)]), buyer('buyer_c', 'labelled', [labelled(13)])], { labelsToPrint: 3, labelsPrinted: 0 })
+  const after = doc(
+    [buyer('buyer_a', 'labelled', [labelled(11, { printedAt: '2026-11-08T03:40:00Z' })]), buyer('buyer_b', 'labelled', [labelled(12, { printedAt: '2026-11-08T03:40:00Z' })]), buyer('buyer_c', 'labelled', [labelled(13)])],
+    { labelsToPrint: 1, labelsPrinted: 2 },
+  )
+  const { calls, tab, opened } = openForPrinting(before, after, () => pdf(2, 1, 1))
+  const button = await screen.findByTestId('shipping-print-labels')
+  expect(button).toHaveTextContent('Print 3 labels')
+  // Nothing is printed yet: no "printed" line, and each row offers a first print.
+  expect(screen.queryByTestId('ship-printed')).toBeNull()
+  expect(screen.getAllByTestId('ship-print')[0]).toHaveTextContent('Print label and slip')
+
+  fireEvent.click(button)
+  await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toEqual([{ method: 'POST', url: '/api/shipping/shows/7/labels/print', body: { slips: true } }]))
+  // The tab was opened in the click (so the browser allows it) and then given the PDF.
+  expect(opened).toHaveBeenCalledWith('', '_blank')
+  await waitFor(() => expect(tab.location.href).toBe('blob:labels'))
+  expect(await screen.findByTestId('shipping-note')).toHaveTextContent('Opened 2 labels to print. Whatnot did not send 1 label: try again in a minute. 1 label is still to print.')
+  // A way back to the PDF if its tab was closed before printing.
+  expect(screen.getByTestId('shipping-open-pdf')).toHaveAttribute('href', 'blob:labels')
+  // The page reads the show again: two rows say when they were printed and offer a reprint.
+  await waitFor(() => expect(screen.getAllByTestId('ship-printed')).toHaveLength(2))
+  expect(screen.getByTestId('shipping-print-labels')).toHaveTextContent('Print 1 label')
+  expect(within(screen.getByTestId('ship-buyer_a')).getByTestId('ship-print')).toHaveTextContent('Print label and slip again')
+  expect(within(screen.getByTestId('ship-buyer_c')).getByTestId('ship-print')).toHaveTextContent(/^Print label and slip$/)
+})
+
+test('Whatnot’s packing slips can be left out, and the choice is kept on this laptop', async () => {
+  localStorage.clear()
+  const d = doc([buyer('buyer_a', 'labelled', [labelled(11)])], { labelsToPrint: 1, labelsPrinted: 0 })
+  const { calls } = openForPrinting(d, d, () => pdf(1, 0, 0))
+  const box = await screen.findByRole('checkbox', { name: /Print Whatnot’s packing slip with each label/ })
+  expect(box).toBeChecked()
+  fireEvent.click(box)
+  expect(localStorage.getItem('wn.labelSlips')).toBe('no')
+  fireEvent.click(screen.getByTestId('shipping-print-labels'))
+  await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ slips: false }))
+})
+
+test('when the labels cannot be had, the page says why and the empty tab is closed', async () => {
+  localStorage.clear()
+  const d = doc([buyer('buyer_a', 'labelled', [labelled(11)])], { labelsToPrint: 1, labelsPrinted: 0 })
+  const { tab } = openForPrinting(d, d, () => new Response(JSON.stringify({ error: 'Whatnot did not send the labels. Try again in a minute.' }), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+  fireEvent.click(await screen.findByTestId('shipping-print-labels'))
+  expect(await screen.findByText('Whatnot did not send the labels. Try again in a minute.')).toBeInTheDocument()
+  expect(tab.close).toHaveBeenCalled()
+  expect(tab.location.href).toBe('')
+  expect(screen.getByTestId('shipping-print-labels')).toBeEnabled()
+})
+
+test('once every label is printed the button is gone and the page says so', async () => {
+  const d = doc([buyer('buyer_a', 'labelled', [labelled(11, { printedAt: '2026-11-08T03:40:00Z' })])], { labelsToPrint: 0, labelsPrinted: 1 })
+  openForPrinting(d, d, () => pdf(0, 0, 0))
+  expect(await screen.findByTestId('shipping-print-state')).toHaveTextContent('Every label of this show has been printed (1). One can be printed again from its row.')
+  expect(screen.queryByTestId('shipping-print-labels')).toBeNull()
+})
+
+test('a viewer is not offered "Print labels"', async () => {
+  const d = doc([buyer('buyer_a', 'labelled', [labelled(11)])], { labelsToPrint: 1, labelsPrinted: 0 })
+  open(d, ['orders.view'])
+  await screen.findByTestId('shipping-buyers')
+  expect(screen.queryByTestId('shipping-print-labels')).toBeNull()
+  expect(screen.queryByTestId('shipping-print-state')).toBeNull()
+})
+
+test('a blocked pop-up asks nothing of the server: no label is marked printed with nothing on screen', async () => {
+  localStorage.clear()
+  const d = doc([buyer('buyer_a', 'labelled', [labelled(11)])], { labelsToPrint: 1, labelsPrinted: 0 })
+  const { calls, opened } = openForPrinting(d, d, () => pdf(1, 0, 0))
+  opened.mockReturnValue(null as never)
+  fireEvent.click(await screen.findByTestId('shipping-print-labels'))
+  expect(await screen.findByText(/The browser blocked the new tab for the labels/)).toBeInTheDocument()
+  expect(calls.filter((c) => c.method === 'POST')).toEqual([])
+  expect(screen.getByTestId('shipping-print-labels')).toHaveTextContent('Print 1 label')
+})
