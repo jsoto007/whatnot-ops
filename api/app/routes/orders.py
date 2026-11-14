@@ -22,6 +22,7 @@ from ..services.buyers import BuyerError
 from ..services.inventory import Actor, InventoryError
 from ..services.orders import OrderError
 from ..services.reconcile import ReconcileError
+from ..services.whatnot import shipping
 
 bp = Blueprint("orders", __name__)
 BUYER_HISTORY_LIMIT = 200  # newest orders; a regular buyer's full history is not one page
@@ -104,11 +105,30 @@ def list_orders():
     reviews = _open_reviews(rows) if with_sales else {}
     if with_sales:
         sale_mode.prime({o.show_id for o in rows})  # each sale says how its show sells
+    parcels = _parcels(rows)
     return jsonify(
         {
-            "orders": [serializers.order(o, with_sales=with_sales, reviews=reviews) for o in rows],
+            "orders": [
+                serializers.order(
+                    o, with_sales=with_sales, reviews=reviews, parcel=parcels.get(o.id)
+                )
+                for o in rows
+            ],
             "truncated": truncated,
         }
+    )
+
+
+def _parcels(orders: list[Order]) -> dict[int, dict]:
+    """Where the parcel of each shipped order is, as Whatnot last said."""
+    shipped = [o for o in orders if o.status is OrderStatus.shipped]
+    return shipping.parcels_of(g.u.organization_id, shipped) if shipped else {}
+
+
+def _one(o: Order) -> dict:
+    """An order as its own page shows it."""
+    return serializers.order(
+        o, with_gifts=True, reviews=_open_reviews([o]), parcel=_parcels([o]).get(o.id)
     )
 
 
@@ -118,7 +138,7 @@ def get_order(order_id: int):
     o = _order_or_404(order_id)
     if o is None:
         return jsonify({"error": "order not found"}), 404
-    return jsonify({"order": serializers.order(o, with_gifts=True, reviews=_open_reviews([o]))})
+    return jsonify({"order": _one(o)})
 
 
 @bp.post("/<int:order_id>/status")
@@ -151,7 +171,7 @@ def set_status(order_id: int):
     )
     db.session.commit()
     o = _order_or_404(o.id)
-    return jsonify({"order": serializers.order(o, with_gifts=True, reviews=_open_reviews([o]))})
+    return jsonify({"order": _one(o)})
 
 
 @bp.patch("/<int:order_id>")
@@ -183,7 +203,7 @@ def update_order(order_id: int):
         },
     )
     db.session.commit()
-    return jsonify({"order": serializers.order(o, with_gifts=True, reviews=_open_reviews([o]))})
+    return jsonify({"order": _one(o)})
 
 
 @bp.get("/buyers/<path:username>")

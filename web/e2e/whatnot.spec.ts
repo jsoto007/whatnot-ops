@@ -165,6 +165,11 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   await page.getByRole('link', { name: /^Orders/ }).click()
   await page.getByRole('tab', { name: /Shipped/ }).click()
   await expect(page.getByTestId('order-lani808')).toBeVisible()
+  // Shipped: where the parcel is, as Whatnot last said. The carrier has it.
+  await expect(page.getByTestId('parcel-lani808')).toContainText('On its way')
+  await expect(page.getByTestId('parcel-lani808')).toContainText('9400111899223344556677')
+  await expect(page.getByTestId('parcel-filters').getByRole('button', { name: /On its way/ })).toContainText('1')
+  await shot(page, '4c-orders-shipped-parcel')
   await page.getByRole('link', { name: /^Orders/ }).click()
   await page.getByRole('tab', { name: /Needs review/ }).click()
   await expect(page.getByTestId('order-newbie')).toContainText('CHOOSE ANY PRODUCT YOU WANT')

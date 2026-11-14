@@ -7,8 +7,8 @@ import { DeclineDialog } from '../../components/DeclineDialog'
 import { Icon } from '../../components/Icon'
 import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
 import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleStatus, type Show } from '../../lib/api'
-import { SHOP_TZ, fmtDate, fmtLongDate, plural } from '../../lib/format'
-import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, orderStatusLabel, saleStatusLabel } from '../../lib/labels'
+import { SHOP_TZ, fmtDate, fmtLongDate, fmtWhen, plural } from '../../lib/format'
+import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, orderStatusLabel, packageStatusLabel, parcelStateLabel, saleStatusLabel } from '../../lib/labels'
 
 const NEXT = ORDER_NEXT_STEP
 
@@ -27,6 +27,14 @@ const VIEWS: { key: string; label: string; match: (o: Order) => boolean }[] = [
   { key: 'declined', label: 'Payment declined', match: (o) => declined(o).length > 0 },
   { key: 'shipped', label: 'Shipped', match: (o) => o.status === 'shipped' },
   { key: 'all', label: 'All', match: () => true },
+]
+/** On the Shipped tab: where the parcels are, as Whatnot last said. */
+const PARCEL_FILTERS: { key: string; label: string; match: (o: Order) => boolean }[] = [
+  { key: '', label: 'All shipped', match: () => true },
+  { key: 'carrier', label: 'Not with the carrier yet', match: (o) => o.parcel?.state === 'waiting' || o.parcel?.state === 'late' },
+  { key: 'moving', label: 'On its way', match: (o) => o.parcel?.state === 'moving' },
+  { key: 'failed', label: 'Delivery failed', match: (o) => o.parcel?.state === 'failed' },
+  { key: 'delivered', label: 'Delivered', match: (o) => o.parcel?.state === 'delivered' },
 ]
 const RANK: Record<OrderStatus, number> = { paid: 0, picking: 1, packed: 2, open: 3, shipped: 4, cancelled: 5 }
 const STANDING: SaleStatus[] = ['reserved', 'paid', 'fulfilled', 'detected']
@@ -72,7 +80,11 @@ export function Orders() {
   const orders = (all.data?.orders ?? []).slice().sort((a, b) => RANK[a.status] - RANK[b.status] || wonAt(a) - wonAt(b) || a.id - b.id)
   const current = VIEWS.find((v) => v.key === view) ?? VIEWS[0]!
   const needle = find.trim().toLowerCase()
-  const visible = orders.filter(current.match).filter((o) => !needle || o.buyer.toLowerCase().includes(needle))
+  const inView = orders.filter(current.match)
+  // The Shipped tab can be narrowed to where the parcels are; it only shows once Whatnot says where any is.
+  const tracked = view === 'shipped' && inView.some((o) => o.parcel)
+  const parcelFilter = (tracked && PARCEL_FILTERS.find((f) => f.key === (params.get('parcel') ?? ''))) || PARCEL_FILTERS[0]!
+  const visible = inView.filter(parcelFilter.match).filter((o) => !needle || o.buyer.toLowerCase().includes(needle))
   // "Print ready slips": every order that is ready to pick, by show (the slips are a per-show document).
   const readyByShow = new Map<number, { showDate: string; n: number }>()
   for (const o of orders) if (o.status === 'paid') readyByShow.set(o.showId, { showDate: o.showDate, n: (readyByShow.get(o.showId)?.n ?? 0) + 1 })
@@ -153,6 +165,18 @@ export function Orders() {
           <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a buyer" aria-label="Find a buyer" />
         </label>
       </div>
+      {tracked && (
+        <div className="parcel-filters" role="group" aria-label="Where the parcels are" data-testid="parcel-filters">
+          {PARCEL_FILTERS.map((f) => {
+            const n = inView.filter(f.match).length
+            return (
+              <button key={f.key} type="button" className={'chip-btn' + (parcelFilter.key === f.key ? ' on' : '')} aria-pressed={parcelFilter.key === f.key} onClick={() => set({ parcel: f.key })}>
+                {f.label} <span className="tab-count">{n}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
       {all.data?.truncated && (
         <p className="muted small" role="status" data-testid="orders-truncated">
           Showing the newest {all.data.orders.length} orders. Older ones are left out: pick a show above to see all of its orders.
@@ -314,8 +338,26 @@ function Status({ o }: { o: Order }) {
           <span className="status payment_failed">{saleStatusLabel('payment_failed')}</span> {dec.map((s) => `${s.quantity}× ${s.sku ? s.sku.code : s.item || '?'}`).join(', ')}
         </div>
       )}
-      {o.tracking && <div className="muted small sub">{o.tracking}</div>}
+      {o.parcel ? <Parcel o={o} /> : o.tracking && <div className="muted small sub">{o.tracking}</div>}
     </>
+  )
+}
+
+/** Where a shipped order's parcel is, as Whatnot last said: one phrase, then each parcel's carrier and tracking number. */
+function Parcel({ o }: { o: Order }) {
+  const p = o.parcel!
+  const many = p.parcels.length > 1
+  return (
+    <div className="small sub" data-testid={`parcel-${o.buyer}`}>
+      <span className={p.state === 'failed' || p.state === 'late' ? 'form-error' : ''}>{parcelStateLabel(p.state)}</span>
+      <span className="faint"> · {fmtWhen(p.changedAt)}</span>
+      {p.parcels.map((x, i) => (
+        <div key={i} className="muted">
+          {many ? `${packageStatusLabel(x.status)} · ` : ''}
+          {[x.carrier, x.tracking].filter(Boolean).join(' ') || (many ? 'no tracking number yet' : '')}
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -512,6 +554,12 @@ export function OrderDetail() {
         <Link to={`/app/buyers/${encodeURIComponent(o.buyer)}`}>About {o.buyer}: everything they have bought, and the team's notes</Link>
       </p>
       <PackingSlip o={o} />
+      {o.parcel && (
+        <div className="card no-print" data-testid="order-parcel">
+          <b>Where the parcel is</b>
+          <Parcel o={o} />
+        </div>
+      )}
       {can('orders.fulfill') && (
         <div className="card no-print">
           <label className="field">

@@ -296,3 +296,65 @@ test('with nothing ready to pick the print button waits', async () => {
   expect(print).toHaveTextContent('Print ready slips')
   expect(print).toBeDisabled()
 })
+
+// ---------- Shipped: where each parcel is, as Whatnot last said (buyers are made up) ----------
+
+const box = (status: string, tracking: string | null) => ({ status, carrier: 'USPS', tracking, changedAt: '2026-11-10T16:00:00Z', url: null })
+const parcel = (state: NonNullable<Order['parcel']>['state'], parcels: ReturnType<typeof box>[]): Order['parcel'] => ({ state, changedAt: '2026-11-10T16:00:00Z', parcels })
+const shippedOrder = (id: number, buyer: string, where: Order['parcel'], over: Partial<Omit<Order, 'sales'>> = {}) =>
+  order({ id, buyer, status: 'shipped', verified: true, shippedAt: '2026-11-09T15:00:00Z', parcel: where, sales: [sale({ buyer, orderId: id, sku: RED, status: 'fulfilled' })], ...over })
+const SHIPPED: Order[] = [
+  shippedOrder(21, 'buyer_a', parcel('moving', [box('in_transit', '9400A')])),
+  shippedOrder(22, 'buyer_b', parcel('delivered', [box('delivered', '9400B')])),
+  shippedOrder(23, 'buyer_c', parcel('failed', [box('failed', '9400C')])),
+  shippedOrder(24, 'buyer_d', parcel('late', [box('label_generated', '9400D')])),
+  // Whatnot lists no parcel for this one: the tracking number someone typed is what there is.
+  shippedOrder(25, 'buyer_e', null, { tracking: 'typed by hand 123' }),
+]
+
+test('the Shipped tab says where each parcel is, and narrows to the ones that need a look', async () => {
+  mount(undefined, '/app/orders?view=shipped', SHIPPED)
+  const a = await screen.findByTestId('parcel-buyer_a')
+  expect(a).toHaveTextContent('On its way')
+  expect(a).toHaveTextContent('USPS 9400A')
+  expect(screen.getByTestId('parcel-buyer_b')).toHaveTextContent('Delivered')
+  // The two that need a person are in the warning colour.
+  expect(within(screen.getByTestId('parcel-buyer_c')).getByText('Delivery failed')).toHaveClass('form-error')
+  expect(within(screen.getByTestId('parcel-buyer_d')).getByText('Not with the carrier yet')).toHaveClass('form-error')
+  expect(within(a).getByText('On its way')).not.toHaveClass('form-error')
+  expect(screen.queryByTestId('parcel-buyer_e')).toBeNull()
+  expect(screen.getByTestId('order-buyer_e')).toHaveTextContent('typed by hand 123')
+
+  const filters = screen.getByTestId('parcel-filters')
+  expect(within(filters).getAllByRole('button').map((b) => b.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['All shipped 5', 'Not with the carrier yet 1', 'On its way 1', 'Delivery failed 1', 'Delivered 1'])
+  expect(within(filters).getByRole('button', { name: /All shipped/ })).toHaveAttribute('aria-pressed', 'true')
+
+  fireEvent.click(within(filters).getByRole('button', { name: /Delivery failed/ }))
+  await waitFor(() => expect(screen.getAllByTestId(/^order-/).map((r) => r.getAttribute('data-testid'))).toEqual(['order-buyer_c']))
+  fireEvent.click(within(filters).getByRole('button', { name: /Not with the carrier yet/ }))
+  await waitFor(() => expect(screen.getAllByTestId(/^order-/).map((r) => r.getAttribute('data-testid'))).toEqual(['order-buyer_d']))
+  fireEvent.click(within(filters).getByRole('button', { name: /All shipped/ }))
+  await waitFor(() => expect(screen.getAllByTestId(/^order-/)).toHaveLength(5))
+})
+
+test('a buyer with two parcels reads each one', async () => {
+  mount(undefined, '/app/orders?view=shipped', [shippedOrder(21, 'buyer_a', parcel('moving', [box('delivered', '9400A'), box('in_transit', null)]))])
+  const a = await screen.findByTestId('parcel-buyer_a')
+  expect(a).toHaveTextContent('On its way')
+  expect(a).toHaveTextContent('Delivered · USPS 9400A')
+  expect(a).toHaveTextContent('In transit · USPS')
+})
+
+test('with nothing known about any parcel the Shipped tab is as before: no filters', async () => {
+  mount(undefined, '/app/orders?view=shipped', [shippedOrder(25, 'buyer_e', null, { tracking: 'typed by hand 123' })])
+  expect(await screen.findByTestId('order-buyer_e')).toHaveTextContent('typed by hand 123')
+  expect(screen.queryByTestId('parcel-filters')).toBeNull()
+})
+
+test('the parcel filters belong to the Shipped tab only', async () => {
+  mount(undefined, '/app/orders?view=all&parcel=failed', SHIPPED)
+  await screen.findByTestId('order-buyer_a')
+  expect(screen.queryByTestId('parcel-filters')).toBeNull()
+  // A filter left in the address from the Shipped tab narrows nothing here.
+  expect(screen.getAllByTestId(/^order-/)).toHaveLength(5)
+})

@@ -110,7 +110,13 @@ placed. Each recording is matched on its own to the Whatnot show that was live w
      printed again from its row at any time. Whatnot's packing slips can be left out;
    - when the carrier has every parcel of a buyer, the order can be marked shipped in one
      press (or is, in "Apply as they arrive") with its tracking number, without clicking
-     through picking and packing.
+     through picking and packing;
+   - Orders → Shipped says where each parcel is, as Whatnot last said: waiting for the
+     carrier, not with the carrier yet (three days after the order was marked shipped), on
+     its way, delivered, or delivery failed, with the carrier and tracking number. The list
+     can be narrowed to each of these. Parcels are read every 30 minutes while any is on
+     its way, and at once when Whatnot sends news; nothing is asked of Whatnot when the
+     page opens.
 
    Making labels from the app needs `write:shipments` on the token. Without it the page says
    so, and labels made in Seller Hub show up here all the same.

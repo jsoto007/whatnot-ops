@@ -263,7 +263,14 @@ def review_item(r, context, shelf: dict | None = None) -> dict:
     }
 
 
-def order(o, *, with_sales: bool = True, with_gifts: bool = False, reviews=None) -> dict:
+def order(
+    o,
+    *,
+    with_sales: bool = True,
+    with_gifts: bool = False,
+    reviews=None,
+    parcel: dict | None = None,
+) -> dict:
     """`with_gifts` adds the buyer's gift lines for the show (one query; detail view only).
     `reviews` maps sale id → the open review item waiting on it (routes/orders looks them up)."""
     from .services.orders import gifts_for, verified
@@ -282,6 +289,9 @@ def order(o, *, with_sales: bool = True, with_gifts: bool = False, reviews=None)
         "totalCents": sum((s.price_cents or 0) * s.quantity for s in standing),
         "notes": o.notes,
         "tracking": o.tracking,
+        # Where the parcel is, as Whatnot last said (services/whatnot/shipping.parcels_of);
+        # None when Whatnot lists no parcel for this buyer, or the shop is not connected.
+        "parcel": parcel,
         "pickedAt": o.picked_at.isoformat() if o.picked_at else None,
         "packedAt": o.packed_at.isoformat() if o.packed_at else None,
         "packedBy": o.packed_by,

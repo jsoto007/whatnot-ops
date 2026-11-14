@@ -195,6 +195,9 @@ commands.
   joins the next labels not printed yet into one PDF in memory, in the order of the order
   slips, at most `LABELS_PER_PRINT` a time; only `label_printed_at` (a time) is kept, and it
   is set without touching the shipment's `updated_at` (read as when Whatnot's data changed).
+  Orders → Shipped shows where each shipped order's parcel is (`shipping.parcels_of`: one
+  word per order from the mirrored shipments, read-only, a fixed number of queries per list;
+  no new order status).
   A show's results and the financial ledger (`whatnot/results.py`, read-only, shown via
   `dashboard.whatnot_show` / `whatnot_ledger` to roles with `reports.view`): ledger
   lines are stored once by Whatnot's transaction id; the "net" is the sum of Whatnot's
