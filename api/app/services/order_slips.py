@@ -48,7 +48,7 @@ from ..models import (
     Sku,
     WhatnotLot,
 )
-from . import rules, sale_chat, sale_items, shipments
+from . import giveaways, rules, sale_chat, sale_items, shipments
 from .orders import STANDING
 from .whatnot import connection
 
@@ -60,21 +60,33 @@ FILTERS = frozenset({READY})
 MAX_UNIT_ROWS = 50
 
 
+def _sku_name(sku: Sku) -> str:
+    product, variant = sku.product.name.strip(), (sku.name or "").strip()
+    if variant and variant.lower() not in (product.lower(), "default"):
+        return f"{product} - {variant}"
+    return product
+
+
 def product_label(sale: Sale) -> str:
     """The Product Checklist text: the matched product (and variant), "No Pick" when the
     title only names the lot, else what the line said."""
     if sale.sku is not None:
-
-        def name(sku: Sku) -> str:
-            product, variant = sku.product.name.strip(), (sku.name or "").strip()
-            if variant and variant.lower() not in (product.lower(), "default"):
-                return f"{product} - {variant}"
-            return product
-
-        # A win with several products ("two for one") lists them all on its line.
-        return sale_items.label(sale, name)
+        # A win with several products ("two for one") lists them all in one text.
+        return sale_items.label(sale, _sku_name)
     item = (sale.item_text or "").strip()
     return NO_PICK if not item or rules.is_lot_title(item) else item
+
+
+def _lines(sale: Sale | None, product: str, units: int) -> list[str]:
+    """The Product Checklist lines of one win, as the paper sheet has them: a line per unit
+    of its product, or, when the win holds several products (or a count its own quantity
+    does not say), a line per product with its count. The price goes on the first line."""
+    if sale is not None and sale.sku is not None and sale_items.spelled(sale):
+        return [
+            _sku_name(p["sku"]) + (f" ×{p['quantity']}" if p["quantity"] > 1 else "")
+            for p in sale_items.products(sale)
+        ]
+    return [product] * min(max(1, units), MAX_UNIT_ROWS)
 
 
 def _won_at(sale: Sale):
@@ -221,6 +233,9 @@ def build(show: Show, *, only: str | None = None) -> dict:
         kept, more = _said(lines) if first and product == NO_PICK else ([], 0)
         return {"said": kept, "saidMore": more}
 
+    # Whatnot's own giveaways (its orders), each with the product a person chose for it.
+    given = giveaways.for_show(show)
+    named = {gv["order"]: gv["product"] for gv in given if gv["product"]}
     whatnot_gifts = False
     for lot in lots:
         s = matched.get(lot.id)
@@ -228,18 +243,16 @@ def build(show: Show, *, only: str | None = None) -> dict:
         gift = bool(_GIVEAWAY.search(lot.sale_type))
         whatnot_gifts |= gift
         product = lot_product(s, lot)
+        chosen = named.get(lot.whatnot_order_id) if gift else None
         if gift and product == NO_PICK:
-            product = "Gift"
+            product = chosen or "Gift"
         b["needsReview"] |= (
             (product == NO_PICK)
             or (s is not None and s.status is SaleStatus.detected)
             # More units than a box holds is a misread Qty column, not 999 lines to print.
             or lot.quantity > MAX_UNIT_ROWS
         )
-        # A win whose product text spells its own counts ("Red bundle + Blue bundle ×2")
-        # prints once: a line per unit would repeat every product.
-        units = 1 if s is not None and sale_items.spelled(s) else lot.quantity
-        for unit in range(min(max(1, units), MAX_UNIT_ROWS)):
+        for unit, line in enumerate(_lines(s, product, lot.quantity)):
             first = unit == 0
             b["rows"].append(
                 {
@@ -248,8 +261,8 @@ def build(show: Show, *, only: str | None = None) -> dict:
                     "auction": "Gift"
                     if gift
                     else rules.lot_label(lot.title, rules.auction_type(lot.title)),
-                    "product": product,
-                    "matched": bool(s and s.sku_id is not None),
+                    "product": line,
+                    "matched": bool(s and s.sku_id is not None) or bool(chosen),
                     "giftCount": s.gift_count if s and first else 0,
                     "priceCents": lot.price_cents if first else None,
                     "continued": not first,
@@ -269,15 +282,14 @@ def build(show: Show, *, only: str | None = None) -> dict:
         b["needsReview"] |= s.status is SaleStatus.detected or s.quantity > MAX_UNIT_ROWS
         auction = rules.lot_label(s.item_text, s.auction_type)
         product = product_label(s)
-        units = 1 if sale_items.spelled(s) else s.quantity
-        for unit in range(min(max(1, units), MAX_UNIT_ROWS)):
+        for unit, line in enumerate(_lines(s, product, s.quantity)):
             first = unit == 0
             b["rows"].append(
                 {
                     "kind": "sale",
                     "saleId": s.id,
                     "auction": auction,
-                    "product": product,
+                    "product": line,
                     "matched": s.sku_id is not None,
                     "giftCount": s.gift_count if first else 0,
                     # The lot's price once, on its first row; the sheet shows "-" after.
@@ -292,8 +304,28 @@ def build(show: Show, *, only: str | None = None) -> dict:
                     **pick_chat(chat.get(s.id, []), product, first),
                 }
             )
-    # Whatnot's own giveaway lots replace the ones read from chat, when it lists any.
-    for name, item, _ in [] if whatnot_gifts else gifts:
+    # Whatnot's own giveaways replace the ones read from chat: its lots (the Shipments table)
+    # when that lists any, else its orders. A row per unit, with the product once chosen.
+    for gv in [] if whatnot_gifts else given:
+        for unit in range(min(gv["quantity"], MAX_UNIT_ROWS)):
+            buyer(gv["buyer"])["rows"].append(
+                {
+                    "kind": "gift",
+                    "saleId": None,
+                    "auction": "Gift",
+                    "product": gv["product"] or "Gift",
+                    "matched": gv["product"] is not None,
+                    "giftCount": 0,
+                    "priceCents": None,
+                    "continued": unit > 0,
+                    "whatnotOrder": gv["order"],
+                    "inApp": True,
+                    "onWhatnot": True,
+                    "said": [],
+                    "saidMore": 0,
+                }
+            )
+    for name, item, _ in [] if whatnot_gifts or given else gifts:
         buyer(name)["rows"].append(
             {
                 "kind": "gift",

@@ -1726,7 +1726,23 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
     elif action == "apply_proposal":
         from .supervisor import apply_proposal
 
+        pick = (item.proposal or {}).get("pick")
+        pick = pick if isinstance(pick, dict) else {}
+        if pick.get("extra") and item.sale is not None:
+            from . import picks
+
+            if not picks.extras_usable(item.sale, pick):
+                # Before anything is applied: half a "two for one" is not what was shown.
+                raise ReviewError(
+                    "One of the products the winner picked is no longer in use. "
+                    "Name the products by hand."
+                )
         apply_proposal(item, actor=actor, user=user)
+        if pick.get("extra") and item.sale is not None:
+            # A win that may hold several products: the winner's other picks go on it too.
+            from . import picks
+
+            picks.add_extras(item.sale, pick, actor=actor)
     elif action == "set_status":
         sale = item.sale
         if sale is None:

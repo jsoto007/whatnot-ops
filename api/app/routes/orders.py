@@ -23,6 +23,7 @@ from ..services import (
     buyers,
     catalog,
     dashboard,
+    offers,
     order_slips,
     orders,
     pipeline,
@@ -51,6 +52,19 @@ ORDER_LIST_LIMIT = 500
 def order_error(e):
     db.session.rollback()
     return jsonify({"error": str(e)}), e.status
+
+
+def _body() -> dict:
+    """The request's JSON object; anything else (a list, a number, nothing) is no fields."""
+    d = request.get_json(silent=True)
+    return d if isinstance(d, dict) else {}
+
+
+def _whole(value) -> int:
+    """A whole number a row id can be, as sent, else 0: 1.9 or true would quietly name some
+    other row, and a number past the column's range is a database error."""
+    ok = isinstance(value, int) and not isinstance(value, bool) and 0 < value < 2**31
+    return value if ok else 0
 
 
 def _loaded():
@@ -171,7 +185,7 @@ def set_status(order_id: int):
     o = _order_or_404(order_id)
     if o is None:
         return jsonify({"error": "order not found"}), 404
-    d = request.get_json(silent=True) or {}
+    d = _body()
     try:
         status = OrderStatus(d.get("status", ""))
     except ValueError:
@@ -204,7 +218,7 @@ def update_order(order_id: int):
     o = _order_or_404(order_id)
     if o is None:
         return jsonify({"error": "order not found"}), 404
-    d = request.get_json(silent=True) or {}
+    d = _body()
     before = {"notes": o.notes, "tracking": o.tracking, "packedBy": o.packed_by}
     if "notes" in d:
         v = d.get("notes")
@@ -280,7 +294,7 @@ def set_sale_gifts(sale_id: int):
     sale = db.session.get(Sale, sale_id)
     if sale is None or sale.organization_id != g.u.organization_id:
         return jsonify({"error": "sale not found"}), 404
-    d = request.get_json(silent=True) or {}
+    d = _body()
     try:
         before = order_slips.set_gift_count(sale, d.get("giftCount"))
     except ValueError as e:
@@ -306,11 +320,8 @@ def change_sale_product(sale_id: int):
     sale = db.session.get(Sale, sale_id)
     if sale is None or sale.organization_id != g.u.organization_id:
         return jsonify({"error": "sale not found"}), 404
-    d = request.get_json(silent=True) or {}
-    try:
-        sku_id = int(d.get("skuId") or 0)
-    except (TypeError, ValueError):
-        sku_id = 0
+    d = _body()
+    sku_id = _whole(d.get("skuId"))
     if not sku_id:
         return jsonify({"error": "Choose a product."}), 400
     try:
@@ -368,6 +379,38 @@ def _fresh(sale: Sale) -> dict:
     return serializers.sale(sale)
 
 
+@bp.patch("/sales/<int:sale_id>/allowed")
+@require("review.act")
+def set_sale_allowed(sale_id: int):
+    """How many products this one win may hold (a "two for one" nobody typed in chat). The
+    pick worker takes that many of the winner's spots."""
+    sale = db.session.get(Sale, sale_id)
+    if sale is None or sale.organization_id != g.u.organization_id:
+        return jsonify({"error": "sale not found"}), 404
+    d = _body()
+    if "products" not in d:
+        return jsonify({"error": "Say how many products this sale may hold."}), 400
+    try:
+        before = offers.set_allowed(sale, d["products"])
+    except offers.OfferError as e:
+        return jsonify({"error": str(e)}), e.status
+    if before != sale.products_allowed:
+        audit.record(
+            g.u.organization_id,
+            "sale.products_allowed",
+            user=g.u,
+            target_type="sale",
+            target_id=sale.id,
+            details={
+                "buyer": sale.buyer_username,
+                "before": before,
+                "after": sale.products_allowed,
+            },
+        )
+    db.session.commit()
+    return jsonify({"saleId": sale.id, "productsAllowed": sale.products_allowed})
+
+
 def _packers_note(sale: Sale, text: str) -> None:
     pipeline.open_review(
         sale.organization_id,
@@ -387,11 +430,8 @@ def add_sale_product(sale_id: int):
     sale = db.session.get(Sale, sale_id)
     if sale is None or sale.organization_id != g.u.organization_id:
         return jsonify({"error": "sale not found"}), 404
-    d = request.get_json(silent=True) or {}
-    try:
-        sku_id = int(d.get("skuId") or 0)
-    except (TypeError, ValueError):
-        sku_id = 0
+    d = _body()
+    sku_id = _whole(d.get("skuId"))
     if not sku_id:
         return jsonify({"error": "Choose a product."}), 400
     quantity = d.get("quantity", 1)
@@ -465,7 +505,7 @@ def reconcile_show(show_id: int):
     if show is None or show.organization_id != g.u.organization_id:
         return jsonify({"error": "show not found"}), 404
     ratelimit.per_user("reconcile", g.u.id, 30, 600)
-    d = request.get_json(silent=True) or {}
+    d = _body()
     text = d.get("csv") or ""
     if not isinstance(text, str) or not text.strip():
         return jsonify({"error": "paste or upload the payment CSV"}), 400

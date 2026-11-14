@@ -53,6 +53,7 @@ export function HowYouSell() {
   const { me, setMe } = useAuth()
   const [mode, setMode] = useState<SaleMode>(me?.organization.saleMode ?? 'winners_pick')
   const [autoPick, setAutoPick] = useState(me?.organization.autoPick ?? false)
+  const [mods, setMods] = useState((me?.organization.trustedMods ?? []).join(', '))
   return (
     <>
       <h3>How you sell</h3>
@@ -60,7 +61,14 @@ export function HowYouSell() {
         className="stack-form"
         submitLabel="Save how you sell"
         onSubmit={async () => {
-          const r = await api<{ organization: Organization }>('PATCH', '/api/team/organization', { saleMode: mode, autoPick })
+          const r = await api<{ organization: Organization }>('PATCH', '/api/team/organization', {
+            saleMode: mode,
+            autoPick,
+            trustedMods: mods
+              .split(/[\s,]+/)
+              .map((n) => n.trim())
+              .filter(Boolean),
+          })
           if (me) setMe({ ...me, organization: r.organization })
         }}
       >
@@ -75,6 +83,13 @@ export function HowYouSell() {
           ))}
         </div>
         <span className="muted small">New shows start this way. A show that is sold differently can be changed on its own page.</span>
+        <label className="field">
+          <span>Trusted moderators</span>
+          <input type="text" value={mods} onChange={(e) => setMods(e.target.value)} placeholder="mod_name, other.mod" aria-label="Trusted moderators" data-testid="trusted-mods" />
+          <span className="muted small">
+            Whatnot names, besides the host, whose chat lines may set an offer on a lot: "#45 is two for one" or "#45 bogo" lets that win hold two products. A viewer's line never does.
+          </span>
+        </label>
         <label className="field check choice">
           <input type="checkbox" checked={autoPick} onChange={(e) => setAutoPick(e.target.checked)} data-testid="auto-pick" />
           <span>

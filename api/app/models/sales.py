@@ -118,6 +118,9 @@ class Sale(db.Model):
     flagged: Mapped[bool] = mapped_column(db.Boolean, nullable=False, default=False)
     # Free gifts packed with this lot ("Gift 2" on the order slips). Set by a person only.
     gift_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # How many products this win may hold, when a person set it on the sale. None: one, or
+    # what an offer typed in chat says for its lot (services/offers.py).
+    products_allowed: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
@@ -168,6 +171,39 @@ Sale.open_items = relationship(
     order_by=lambda: SaleItem.id,
     viewonly=True,
 )
+
+
+class GiveawayItem(db.Model):
+    """The product a person chose for a giveaway Whatnot lists (services/giveaways.py). A
+    giveaway is not a sale: no price, and it stays out of sales counts and revenue. Keyed by
+    Whatnot's own id of the order line, so reading the orders again never loses the choice.
+    One open row per giveaway: a changed product closes the row (`closed_at`, its stock
+    went back) and opens another, each with its own key in the stock ledger."""
+
+    __tablename__ = "giveaway_items"
+    __table_args__ = (
+        Index(
+            "uq_giveaway_items_open",
+            "organization_id",
+            "whatnot_item_id",
+            unique=True,
+            postgresql_where=text("closed_at IS NULL"),
+        ),
+        Index("ix_giveaway_items_sku", "sku_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    whatnot_item_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    sku_id: Mapped[int] = mapped_column(ForeignKey("skus.id"), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    assigned_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    sku: Mapped[Sku] = relationship()
 
 
 class ReviewStatus(enum.StrEnum):

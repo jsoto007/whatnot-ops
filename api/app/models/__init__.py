@@ -16,6 +16,7 @@ from .inventory import InventoryMovement, MovementKind, Product, ProductAlias, S
 from .orders import Order, OrderStatus
 from .sales import (
     EventKind,
+    GiveawayItem,
     Job,
     JobStatus,
     ParsedEvent,
@@ -47,6 +48,7 @@ __all__ = [
     "Device",
     "DevicePairing",
     "EventKind",
+    "GiveawayItem",
     "InventoryMovement",
     "Invite",
     "Job",

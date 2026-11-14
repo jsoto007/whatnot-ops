@@ -186,6 +186,21 @@ commands.
   is split evenly in whole cents over its products, the odd cents to the first
   (`sale_items.split`), so products add up to the show's total. `inventory.move` locks
   the product row with `populate_existing`: keep it (a stale copy lost units).
+- **Offers** (`services/offers.py`). A win holds one product unless the host or a trusted
+  moderator (`Organization.trusted_mods`, set in Settings) types an offer that names the
+  lot ("#45 bogo", "#45 is two for one"; the words are only in `rules.offer`), or a person
+  sets `Sale.products_allowed` on that one sale. The latest word on a lot stands, only for
+  its show. A viewer's line never sets an offer (`tests/test_offers.py`). The pick worker
+  takes up to that many spots from the winner (`picks._final`, `add_extras` through
+  `sale_items.add`); fewer than allowed is left for a person ("picked 1 of 2").
+- **Giveaways** (`services/giveaways.py`, `/app/orders/giveaways`). A giveaway in
+  Whatnot's orders is never a sale: no price, not in any sales count or revenue, untouched
+  by the pick worker. It waits in "Giveaways to assign" until a person names its product
+  (`giveaway_items`, keyed by Whatnot's id of the order line; one open row per giveaway,
+  under an advisory lock). Stock leaves when the product is named and comes back when it
+  is changed or taken off, each row under its own ledger key ("giveaway", row id). Only
+  Whatnot's orders make one: a chat "won the giveaway!" line never does. On the slips,
+  Whatnot's giveaways replace the ones read from chat and print the chosen product.
 - **The pick worker** (`services/picks.py`, job `pick_show`). In a winner's-pick show
   the winner names the product by typing a shelf spot ("B4"; `shelves.said` reads each
   win's final pick). Ten minutes after the show ends on Whatnot, the wins still waiting

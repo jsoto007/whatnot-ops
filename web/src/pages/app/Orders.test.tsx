@@ -421,3 +421,28 @@ test('a win with two products lists both, and each can be changed or taken off; 
     orders.pop()
   }
 })
+
+test("a win still waiting for its winner's pick can be made a two for one, and back", async () => {
+  const waiting = sale({ buyer: 'made_up_bo', orderId: 31, saleMode: 'winners_pick', item: 'CHOOSE ANY PRODUCT #6', lot: 6, review: { id: 41, reason: 'unmatched_item' } })
+  const already = sale({ buyer: 'made_up_cy', orderId: 32, saleMode: 'winners_pick', item: 'CHOOSE ANY PRODUCT #7', lot: 7, productsAllowed: 2, review: { id: 42, reason: 'unmatched_item' } })
+  orders.push(order({ id: 31, buyer: 'made_up_bo', sales: [waiting] }), order({ id: 32, buyer: 'made_up_cy', sales: [already] }))
+  try {
+    mount()
+    const sent = () => {
+      const calls = (globalThis.fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls
+      return calls.filter(([url, init]) => init?.method === 'PATCH' && /\/allowed$/.test(url)).map(([url, init]) => [url, JSON.parse(String(init!.body))])
+    }
+    fireEvent.click(within(await screen.findByTestId('order-made_up_bo')).getByRole('button', { name: 'More for made_up_bo' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Two for one: lot #6 takes 2 products' }))
+    await waitFor(() => expect(sent()).toEqual([[`/api/orders/sales/${waiting.id}/allowed`, { products: 2 }]]))
+    fireEvent.click(within(screen.getByTestId('order-made_up_cy')).getByRole('button', { name: 'More for made_up_cy' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Back to one product for lot #7' }))
+    await waitFor(() => expect(sent()[1]).toEqual([`/api/orders/sales/${already.id}/allowed`, { products: 1 }]))
+    // a listing show's unnamed win is one product: no such entry
+    fireEvent.click(within(screen.getByTestId('order-moonlove3')).getByRole('button', { name: 'More for moonlove3' }))
+    expect(screen.queryByRole('menuitem', { name: /Two for one/ })).toBeNull()
+  } finally {
+    orders.pop()
+    orders.pop()
+  }
+})

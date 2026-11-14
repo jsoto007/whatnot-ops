@@ -14,6 +14,8 @@ def organization(o: Organization) -> dict:
         "saleMode": o.sale_mode,
         # Whether a winner's pick names the product by itself after the show (services/picks.py).
         "autoPick": o.auto_pick,
+        # Whatnot names, besides the host, whose chat lines may set an offer on a lot.
+        "trustedMods": list(o.trusted_mods or []),
     }
 
 
@@ -227,6 +229,8 @@ def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
         # Every product of the sale, when it holds more than one ("two for one"), each with
         # its part of the price (services/sale_items.py). Only where the caller loaded them.
         "products": _products(s),
+        # How many products a person allowed on this win (None: one, or the show's offers).
+        "productsAllowed": s.products_allowed,
         "item": s.item_text,
         "itemTitle": rules.item_title(s.item_text or ""),
         "lot": rules.lot_number(s.item_text or ""),

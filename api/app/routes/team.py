@@ -6,7 +6,7 @@ from ..auth import require
 from ..config import is_dev
 from ..db import db
 from ..models import Invite, Role, User
-from ..services import accounts, mail, ratelimit, sale_mode, text
+from ..services import accounts, mail, offers, ratelimit, sale_mode, text
 from ..services.accounts import AccountError
 from ..services.permissions import invitable_roles
 
@@ -100,6 +100,15 @@ def update_organization():
             return jsonify({"error": str(e)}), e.status
         if before != now:
             changes["saleMode"] = [before, now]
+    if "trustedMods" in d:
+        try:
+            names = offers.clean_names(d["trustedMods"])
+        except offers.OfferError as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), e.status
+        if names != list(org.trusted_mods or []):
+            changes["trustedMods"] = [len(org.trusted_mods or []), len(names)]
+            org.trusted_mods = names
     if "autoPick" in d:
         if not isinstance(d["autoPick"], bool):
             return jsonify({"error": "Say yes or no."}), 400

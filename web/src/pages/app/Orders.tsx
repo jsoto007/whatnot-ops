@@ -154,6 +154,7 @@ export function Orders() {
               </Link>
             </>
           )}
+          <GiveawaysLink />
           <PrintReady byShow={readyByShow} />
         </div>
       </div>
@@ -440,6 +441,28 @@ function Actions({ o, onPick, onDecline, onChange, onRemoved }: { o: Order; onPi
   // entry per such sale: a buyer's order often holds several lots.
   if (canReview && o.status !== 'shipped' && o.status !== 'cancelled')
     for (const s of o.sales ?? []) {
+      if (!s.sku && s.status === 'detected' && s.saleMode === 'winners_pick') {
+        // Still waiting for the winner's pick: a "two for one" nobody typed in chat.
+        const two = (s.productsAllowed ?? 1) > 1
+        more.push(
+          <button
+            key={`allow-${s.id}`}
+            type="button"
+            role="menuitem"
+            onClick={async () => {
+              try {
+                await api('PATCH', `/api/orders/sales/${s.id}/allowed`, { products: two ? 1 : 2 })
+                await onRemoved(two ? `${o.buyer}'s ${lotText(s)} takes one product again.` : `${o.buyer}'s ${lotText(s)} is a two for one: it takes two of the winner's spots.`)
+              } catch (e) {
+                setError(e instanceof ApiError ? e.message : 'Could not save that. Try again.')
+              }
+            }}
+          >
+            <Icon name={two ? 'minus' : 'plus'} size={16} />
+            {two ? `Back to one product for ${lotText(s)}` : `Two for one: ${lotText(s)} takes 2 products`}
+          </button>,
+        )
+      }
       if (!s.sku || (s.status !== 'paid' && s.status !== 'reserved')) continue
       const several = (s.products ?? []).length > 1
       // One product: change it. Several ("two for one"): change or take off each by name.
@@ -814,6 +837,19 @@ function BuyerHistory({ buyer, current }: { buyer: string; current: number }) {
         </tbody>
       </table>
     </>
+  )
+}
+
+/** The way to "Giveaways to assign", with how many wait; hidden until Whatnot lists one. */
+function GiveawaysLink() {
+  const q = useQuery({ queryKey: ['giveaways'], queryFn: () => apiGet<{ giveaways: unknown[]; waiting: number }>('/api/giveaways') })
+  if (!q.data?.giveaways?.length) return null
+  return (
+    <Link className="btn ghost" to="/app/orders/giveaways" data-testid="giveaways-link">
+      <Icon name="gift" size={16} />
+      Giveaways
+      {q.data.waiting > 0 && <span className="tab-count">{q.data.waiting}</span>}
+    </Link>
   )
 }
 

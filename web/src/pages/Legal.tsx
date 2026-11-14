@@ -147,6 +147,7 @@ export function Privacy() {
         </li>
         <li>
           <b>Live show chat.</b> The public chat of the shop's shows, with the Whatnot usernames shown in it, as captured on the show laptop.
+          The shop may also list the Whatnot usernames of its moderators, so the offers they type in chat are followed.
         </li>
         <li>
           <b>Buyers.</b> Their Whatnot user number and usernames, what they won in the shop's shows, and any note or flag the team adds. No

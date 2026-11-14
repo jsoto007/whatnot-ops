@@ -520,9 +520,12 @@ def test_every_reader_counts_both_products_and_the_money_still_adds_up(
         top = {t["code"]: (t["sold"], t["paidCents"]) for t in dashboard.top_skus(world["org"])}
         assert top == {"RED": (1, 1250), "BLUE": (2, 1250)}
         assert sum(paid for _, paid in top.values()) == sale.price_cents * sale.quantity
-        # The packing slip names every product on the win's line.
         slip = order_slips.build(show)["slips"][0]
-        assert [r["product"] for r in slip["rows"]] == ["Red bundle + Blue bundle ×2"]
+        # The packing slip has a line per product, the price on the first, as on paper.
+        assert [(r["product"], r["priceCents"]) for r in slip["rows"]] == [
+            ("Red bundle", 2500),
+            ("Blue bundle ×2", None),
+        ]
         # The workbook: one sale line; a line per product whose money adds up to it; one
         # line per product to put in the box.
         from openpyxl import load_workbook
@@ -627,7 +630,7 @@ def test_the_slip_spells_every_count_when_the_sales_quantity_does_not_say_it(app
         assert [r["product"] for r in rows_] == ["Blue bundle ×2"]
 
 
-def test_a_two_unit_sale_with_one_more_product_prints_one_line_with_its_counts(app, world, blue):
+def test_a_two_unit_sale_with_one_more_product_prints_a_line_per_product(app, world, blue):
     from app.models import Show
     from app.services import order_slips
 
@@ -636,7 +639,7 @@ def test_a_two_unit_sale_with_one_more_product_prints_one_line_with_its_counts(a
     add(app, blue)
     with app.app_context():
         rows_ = order_slips.build(db.session.get(Show, world["show"]))["slips"][0]["rows"]
-        assert [r["product"] for r in rows_] == ["Red bundle ×2 + Blue bundle"]
+        assert [r["product"] for r in rows_] == ["Red bundle ×2", "Blue bundle"]
 
 
 def test_inventory_counts_the_second_product_as_sold_and_as_running_low(app, world, blue):

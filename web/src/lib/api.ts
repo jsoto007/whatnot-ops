@@ -24,7 +24,7 @@ function ensureCsrf(): Promise<string> {
   return csrf
 }
 
-export async function api<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
+export async function api<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
   const send = async () => {
     const headers: Record<string, string> = { Accept: 'application/json' }
     if (body !== undefined) headers['Content-Type'] = 'application/json'
@@ -115,6 +115,8 @@ export interface Organization {
   saleMode?: SaleMode
   /** Whether a winner's shelf spot names the product by itself ten minutes after the show ends. */
   autoPick?: boolean
+  /** Whatnot names, besides the host, whose chat lines may set an offer on a lot ("#45 bogo"). */
+  trustedMods?: string[]
 }
 /** What the pick worker found for a win still waiting for its product, once the show was over. */
 export interface PickFound {
@@ -123,8 +125,11 @@ export interface PickFound {
   spots?: string[]
   skuId?: number
   name?: string
+  /** A win that may hold several products ("two for one"): the winner's other picks, and how many it may hold. */
+  extra?: { spot: string; skuId: number; name: string }[]
+  allowed?: number
   /** Why a product the winner picked was not assigned by itself. */
-  held?: ('off' | 'unconfirmed' | 'clock' | 'doubt' | 'near' | 'unclear')[]
+  held?: ('off' | 'unconfirmed' | 'clock' | 'doubt' | 'near' | 'unclear' | 'short')[]
 }
 /** The licence in force and whether to ask this person to accept it (only the shop's owner). */
 export interface LicenceStatus {
@@ -301,6 +306,8 @@ export interface Sale {
   /** Every product of the sale with its part of the price, where the server sent them (the
    * orders pages). One entry for almost every sale; more for a "two for one". */
   products?: SaleProduct[] | null
+  /** How many products a person allowed on this win (null: one, or the show's offers). */
+  productsAllowed?: number | null
   item: string
   /** The listing title without Whatnot's lot number ("$1 BEAUTY PULLS" for "… #520"). */
   itemTitle?: string
@@ -836,4 +843,18 @@ export interface WhatnotCatalog {
   notAllowed: boolean
   listings: WhatnotListing[]
   counts: { all: number; linked: number; undecided: number; differs: number }
+}
+
+/** A giveaway Whatnot lists for a show, and the product a person said it was (null: waiting). */
+export interface Giveaway {
+  id: number
+  buyer: string
+  title: string
+  quantity: number
+  showId: number
+  showDate: string
+  wonAt: string | null
+  /** Whatnot cancelled it: nothing ships, and a product still on it should be taken off. */
+  cancelled: boolean
+  product: { id: number; code: string; name: string; productName: string } | null
 }

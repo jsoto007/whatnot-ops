@@ -221,7 +221,7 @@ test('after the show, each waiting win says what its winner picked, in words', a
   expect(none).toHaveTextContent('no shelf spot from this winner before the show ended')
   expect(screen.getByTestId('review-13')).toHaveTextContent('Typed D7. No product is on D7 for this show.')
   expect(screen.getByTestId('review-13')).toHaveTextContent('Pick needs a person')
-  expect(screen.getByTestId('review-14')).toHaveTextContent('Typed B4 and C3: more than one spot, so none was chosen.')
+  expect(screen.getByTestId('review-14')).toHaveTextContent('Typed B4 and C3: more spots than this win takes, so none was chosen.')
   expect(screen.getByTestId('review-15')).toHaveTextContent('Whatnot has not confirmed this win as paid')
   expect(screen.getByTestId('review-15')).toHaveTextContent("the laptop's clock could not be checked")
   // No code reaches the page.
@@ -230,4 +230,17 @@ test('after the show, each waiting win says what its winner picked, in words', a
   fireEvent.click(picked.querySelector('[data-testid="apply-proposal"]')!)
   await waitFor(() => expect(posts).toHaveLength(1))
   expect(posts[0]).toEqual({ url: '/api/review/11/resolve', body: { action: 'apply_proposal' } })
+})
+
+test('a two for one says both spots, and when the winner picked fewer than the win may hold', async () => {
+  const win = (id: number, pick: Record<string, unknown>): ReviewItem => ({ ...item, id, proposal: { action: 'assign_sku', skuId: 4, pick } })
+  mount(
+    [
+      win(21, { state: 'product', spot: 'B4', skuId: 4, name: 'Red bundle', extra: [{ spot: 'C3', skuId: 5, name: 'Blue bundle' }], allowed: 2, held: ['off'] }),
+      win(22, { state: 'product', spot: 'B4', skuId: 4, name: 'Red bundle', allowed: 2, held: ['short'] }),
+    ],
+    '/app/review/3',
+  )
+  expect(await screen.findByTestId('review-21')).toHaveTextContent('Typed B4 and C3 in chat: Red bundle + Blue bundle.')
+  expect(screen.getByTestId('review-22')).toHaveTextContent('this win may hold 2 products and the winner picked 1')
 })

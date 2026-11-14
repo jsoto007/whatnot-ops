@@ -43,7 +43,7 @@ PICK_WORDS = {
     "suggested": "picked, left for a person to confirm",
     "none": "did not pick",
     "unknown_code": "typed a spot with no product",
-    "several": "typed more than one spot",
+    "several": "typed more spots than the win takes",
     "unread": "not read because a laptop's clock was out",
     "no_layout": "not read because the show has no shelf layout",
 }
@@ -82,6 +82,7 @@ MOVEMENT_SOURCE = {
     "count": "stock count",
     "import": "sheet import",
     "manual": "by hand",
+    "giveaway": "giveaway",
 }
 
 
@@ -295,6 +296,13 @@ def _org_updated(d: dict, _target: str) -> str:
         )
     if "saleMode" in d:
         parts.append(f"set how the shop usually sells to {_q(sale_mode_words(d['saleMode'][1]))}")
+    if "trustedMods" in d:
+        n = d["trustedMods"][1]
+        parts.append(
+            f"set the trusted moderators ({n} name{'' if n == 1 else 's'})"
+            if n
+            else "cleared the trusted moderators"
+        )
     if "autoPick" in d:
         parts.append(
             "switched on assigning winners' picks after each show"
@@ -387,6 +395,28 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
         lambda d, t: (
             f"Changed {d.get('buyer', 'a buyer')}'s product from {_q(d['from'])} to {_q(d['to'])}"
             + (" after picking had begun" if d.get("picked") else "")
+        ),
+    ),
+    "sale.products_allowed": (
+        "Set how many products a sale may hold",
+        lambda d, t: (
+            f"Set {d.get('buyer', 'a buyer')}'s sale to hold up to {d.get('after') or 1} "
+            f"product{'' if (d.get('after') or 1) == 1 else 's'}"
+        ),
+    ),
+    "giveaway.product_set": (
+        "Named a giveaway's product",
+        lambda d, t: (
+            f"Named {d.get('buyer') or 'a buyer'}'s giveaway: "
+            f"{d.get('quantity', 1)} × {_q(d['product'])}"
+            + (f" (was {_q(d['from'])})" if d.get("from") else "")
+        ),
+    ),
+    "giveaway.product_cleared": (
+        "Took the product off a giveaway",
+        lambda d, t: (
+            f"Took {_q(d['product'])} off {d.get('buyer') or 'a buyer'}'s giveaway; "
+            "it is back in stock"
         ),
     ),
     "sale.product_added": (

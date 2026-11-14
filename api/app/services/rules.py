@@ -137,6 +137,74 @@ def lot_number(item: str) -> int | None:
 _LOT_REF = re.compile(rf"\b{_LOT_WORDS}\s*#?\s*(\d{{1,6}})\b|#\s?(\d{{1,6}})\b", re.I)
 
 
+_COUNT = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
+# "2 for 1", never a price: "2 for 1.50", "2 for 1 dollar", "2 for 1 USD".
+_N_FOR_1 = (
+    r"(?P<{n}>[2-6]|two|three|four|five|six)\s*-?\s*for\s*-?\s*(?:1|one)\b"
+    r"(?!\s*[.,]\s*\d|\s*(?:[$£€]|usd\b|dollars?\b|bucks?\b|cents?\b|each\b))"
+)
+_BOGO = r"(?P<{b}>bogo|buy\s+one,?\s+get\s+one)\b"
+_LOT_IN_LINE = rf"(?:\b{_LOT_WORDS}\s*#?\s*|#\s?)(?P<{{lot}}>\d{{{{1,6}}}})\b"
+# "#45 is two for one", "#45 bogo", "lot 45 2 for 1", and the other way round ("bogo on #45").
+# The lot and the offer stand side by side, with only small words between them: in "#1
+# sold! next one is bogo" the offer is for some other lot.
+_OFFER_GLUE = (
+    r"(?:[\s,:=–—-]|\b(?:is|are|a|an|now|also|today|tonight|not|no|isn['’]?t|it['’]?s)\b)*"
+)
+_OFFER_ON = r"(?:[\s,:=–—-]|\b(?:on|for|is|the)\b)*"
+_OFFER = re.compile(
+    "(?:"
+    + _LOT_IN_LINE.format(lot="lot1")
+    + _OFFER_GLUE
+    + "(?:"
+    + _N_FOR_1.format(n="n1")
+    + "|"
+    + _BOGO.format(b="b1")
+    + "))|(?:(?:"
+    + _N_FOR_1.format(n="n2")
+    + "|"
+    + _BOGO.format(b="b2")
+    + ")"
+    + _OFFER_ON
+    + _LOT_IN_LINE.format(lot="lot2")
+    + ")",
+    re.I,
+)
+# Words that put the offer on some other lot, or at some other time, than the one named:
+# "next one after #45 is bogo", "#45 sold, bogo next", "bogo ends at #45".
+_OFFER_ELSEWHERE = re.compile(
+    r"\b(?:next|after|before|coming|upcoming|following|until|till|ends?|ending|ended|sold|"
+    r"then|later|soon|previous|last|congrats|congratulations|thanks|thank)\b",
+    re.I,
+)
+OFFER_MAX = 6
+# "#45 is not bogo", "no bogo on #45": the lot goes back to one product.
+_OFFER_OFF = re.compile(r"\b(?:no|not|isn['’]?t|ain['’]?t|never|without|cancel(?:led|ed)?)\b", re.I)
+
+
+def offer(text: str) -> tuple[int, int] | None:
+    """(lot, how many products) when a chat line names one lot and an offer on it: "#45 is
+    two for one", "#45 bogo", "lot 45 3 for 1", "bogo on #45". None for anything else, and
+    for a line that names more than one lot. Who may say it is not decided here: only the
+    host's or a trusted moderator's line counts (services/offers.py).
+
+    A line that takes the offer back ("#45 is not bogo") says one product, so the latest
+    word on a lot can undo an earlier one. A question ("is #45 bogo?") says nothing."""
+    text = text or ""
+    if len(lot_refs(text)) != 1 or "?" in text or "？" in text or _OFFER_ELSEWHERE.search(text):
+        return None
+    m = _OFFER.search(text)
+    if not m:
+        return None
+    lot = int(m["lot1"] or m["lot2"])
+    if _OFFER_OFF.search(text):
+        return lot, 1
+    if m["b1"] or m["b2"]:
+        return lot, 2
+    word = (m["n1"] or m["n2"]).lower()
+    return lot, _COUNT.get(word) or int(word)
+
+
 def lot_refs(text: str) -> set[int]:
     """The lot numbers a chat line names, so a pick can go to the lot it is about."""
     return {int(m[1] or m[2]) for m in _LOT_REF.finditer(text or "")}
