@@ -189,6 +189,8 @@ def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
         "item": s.item_text,
         "itemTitle": rules.item_title(s.item_text or ""),
         "lot": rules.lot_number(s.item_text or ""),
+        # False when the title names one lot of one show: "remember this name" is not offered.
+        "rememberName": bool(s.item_text) and not rules.names_a_lot(s.item_text),
         "quantity": s.quantity,
         "priceCents": s.price_cents,
         "auctionType": s.auction_type,

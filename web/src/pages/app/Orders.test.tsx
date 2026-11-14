@@ -31,6 +31,7 @@ const sale = (over: Partial<Sale> & { buyer: string; orderId: number }): Sale =>
   item: '$1 BEAUTY PULLS #520',
   itemTitle: '$1 BEAUTY PULLS',
   lot: 520,
+  rememberName: false,
   quantity: 1,
   priceCents: 700,
   auctionType: '',
@@ -187,6 +188,8 @@ test('naming the product is for that buyer’s lot alone unless the person widen
   expect(dialog).toHaveTextContent('Which product is “$1 BEAUTY PULLS #520”?')
   expect(dialog).toHaveTextContent('moonlove3 · lot #520')
   expect(within(dialog).getByRole('combobox', { name: 'Product for moonlove3’s lot #520'.replace('’', "'") })).toBeInTheDocument()
+  // "… #520" names one lot of one show: it is never learned, so the box is not offered
+  expect(within(dialog).queryByRole('checkbox', { name: /Remember this name/ })).toBeNull()
   const widen = within(dialog).getByTestId('apply-similar')
   expect(widen).not.toBeChecked()
   expect(dialog).toHaveTextContent('Also use it for the 2 other lots titled “$1 BEAUTY PULLS #…” in this show')
@@ -198,7 +201,7 @@ test('naming the product is for that buyer’s lot alone unless the person widen
   expect(within(dialog).getByTestId('stock-note')).toHaveTextContent('412 available · 1 unit will be sold from it')
   fireEvent.click(use)
   await waitFor(() => expect(posts).toHaveLength(1))
-  expect(posts[0]).toEqual({ url: '/api/review/11/resolve', body: { action: 'assign_sku', skuId: 7, remember: true, applyToSimilar: false } })
+  expect(posts[0]).toEqual({ url: '/api/review/11/resolve', body: { action: 'assign_sku', skuId: 7, remember: false, applyToSimilar: false } })
   expect(await screen.findByRole('status')).toHaveTextContent("$1 Beauty Pulls set for moonlove3's lot #520.")
   expect(screen.queryByRole('dialog')).toBeNull()
 })
@@ -219,7 +222,7 @@ test('the banner names the item once for every lot with that title, and says so'
   expect(within(dialog).getByTestId('stock-note')).toHaveTextContent('3 units will be sold from it')
   fireEvent.click(use)
   await waitFor(() => expect(posts).toHaveLength(1))
-  expect(posts[0]).toEqual({ url: '/api/review/11/resolve', body: { action: 'assign_sku', skuId: 7, remember: true, applyToSimilar: true, applyTo: [12, 13] } })
+  expect(posts[0]).toEqual({ url: '/api/review/11/resolve', body: { action: 'assign_sku', skuId: 7, remember: false, applyToSimilar: true, applyTo: [12, 13] } })
   expect(await screen.findByRole('status')).toHaveTextContent("set for moonlove3's lot #520 and 2 other lots.")
 })
 

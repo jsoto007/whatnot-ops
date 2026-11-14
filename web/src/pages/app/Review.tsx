@@ -161,7 +161,9 @@ function ShowQueue({ group, elsewhere, skus, onDone }: { group: ShowGroup | unde
 function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onDone: () => Promise<unknown> }) {
   // The spot the winner typed is a choice for this win, not a name for the product: not remembered.
   const [skuId, setSkuId] = useState(item.shelf ? String(item.shelf.skuId) : '')
-  const [remember, setRemember] = useState(!item.shelf)
+  // A title that names one lot of one show ("… #520") is never learned: the box is not offered.
+  const canRemember = item.sale?.rememberName !== false
+  const [remember, setRemember] = useState(!item.shelf && canRemember)
   const [error, setError] = useState<string | null>(null)
   const resolve = useMutation({
     mutationFn: (body: Record<string, unknown>) => api('POST', `/api/review/${item.id}/resolve`, body),
@@ -213,7 +215,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
               <span className="sku-label">SKU</span>
               <SkuPicker skus={skus} value={skuId} onChange={setSkuId} label={`SKU for review ${item.id}`} />
             </div>
-            {item.reason === 'unmatched_item' && (
+            {item.reason === 'unmatched_item' && canRemember && (
               <label className="field check">
                 <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> <span>remember this name</span>
               </label>
