@@ -219,6 +219,48 @@ test('a manager lays out the shelves; the page lists them by spot', async () => 
   expect(screen.getByRole('textbox', { name: 'Shelf spots' })).toHaveValue('B4 HOLO')
 })
 
+test("a winner's-pick show with no shelves says so, and can copy the last show's", async () => {
+  const layout = [{ spot: 'B4', skuId: 4, code: 'HOLO', name: 'Holo slab Charizard' }]
+  const posts: string[] = []
+  let copied = false
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/auth/csrf') return new Response(JSON.stringify({ token: 't' }), { status: 200 })
+      if (url.endsWith('/shelves/copy') && init?.method === 'POST') {
+        posts.push(url)
+        copied = true
+        return new Response(JSON.stringify({ shelves: layout, canCopy: false }), { status: 200 })
+      }
+      if (url.endsWith('/shelves')) return new Response(JSON.stringify({ shelves: copied ? layout : [], canCopy: !copied }), { status: 200 })
+      if (url === '/api/shows/3') {
+        const show = { id: 3, key: 'k', date: '2026-11-12', startedAt: '2026-11-13T05:29:00Z', updatedAt: '2026-11-13T06:29:00Z', sourceUrl: null, messageCount: 9, title: null, recorded: true }
+        return new Response(JSON.stringify({ show, stats: {}, noShelves: !copied }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }),
+  )
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={qc}>
+      <AuthContext.Provider value={{ ...auth, can: () => true }}>
+        <MemoryRouter initialEntries={['/app/shows/3']}>
+          <Routes>
+            <Route path="/app/shows/:id" element={<ShowDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+  const warning = await screen.findByTestId('no-shelves')
+  expect(warning).toHaveTextContent('This show has no shelves laid out.')
+  fireEvent.click(screen.getByRole('button', { name: 'Lay out the shelves' }))
+  fireEvent.click(await screen.findByTestId('copy-shelves'))
+  expect(await screen.findByText('Holo slab Charizard')).toBeInTheDocument()
+  expect(posts).toEqual(['/api/shows/3/shelves/copy'])
+  expect(screen.queryByTestId('copy-shelves')).toBeNull()
+})
+
 test('the shelves form waits for the saved layout: a failed read offers no save that would wipe it', async () => {
   vi.stubGlobal(
     'fetch',

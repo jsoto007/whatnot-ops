@@ -142,6 +142,50 @@ def save(show: Show, lines: list[tuple[str, str]]) -> list[dict]:
     return read(show)
 
 
+def _last_with_shelves(show: Show) -> int | None:
+    """The shop's latest other show that has shelves laid out (not a recording of this same
+    Whatnot show), by show date, then start."""
+    q = (
+        select(Show.id)
+        .where(
+            Show.organization_id == show.organization_id,
+            Show.id != show.id,
+            Show.id.in_(select(ShowShelf.show_id)),
+        )
+        .order_by(Show.show_date.desc(), Show.started_at.desc(), Show.id.desc())
+        .limit(1)
+    )
+    if show.whatnot_show_id is not None:
+        q = q.where(Show.whatnot_show_id.is_(None) | (Show.whatnot_show_id != show.whatnot_show_id))
+    return db.session.scalar(q)
+
+
+def can_copy(show: Show) -> bool:
+    """Whether "copy from the last show" has something to do: this show has no shelves and
+    an earlier one has."""
+    return not _sources({show.id}) and _last_with_shelves(show) is not None
+
+
+def copy_last(show: Show) -> list[dict]:
+    """Lay this show's shelves out as the shop's last show had them: most shows use the same
+    shelves. Only onto a show with no layout (nothing is overwritten), and only the spots
+    whose product is still in use. Returns the new layout."""
+    if _sources({show.id}):
+        raise ShelfError("This show already has its shelves laid out.")
+    source = _last_with_shelves(show)
+    if source is None:
+        raise ShelfError("No earlier show has shelves to copy.")
+    lines = db.session.execute(
+        select(ShowShelf.code, Sku.code)
+        .join(Sku, Sku.id == ShowShelf.sku_id)
+        .where(ShowShelf.show_id == source, Sku.active)
+        .order_by(ShowShelf.code)
+    ).all()
+    if not lines:
+        raise ShelfError("None of the last show's products is in use any more.")
+    return save(show, [(spot, code) for spot, code in lines])
+
+
 def spots(show: Show) -> dict[str, tuple[int, str]]:
     """spot → (sku id, product name) of the layout this show uses, for the spots whose product
     is in use. Empty when the show has no layout."""

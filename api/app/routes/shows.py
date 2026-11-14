@@ -104,6 +104,10 @@ def get_show(show_id: int):
             "stats": _stats(show),
             # Laptops whose clock is out for this show: winners' picks are then not suggested.
             "clockProblems": sale_chat.clock_problems(show),
+            # A winner's-pick show with no shelves laid out: no pick can be read from chat.
+            "noShelves": (
+                sale_mode.of_show(show)[0] == sale_mode.WINNERS_PICK and not shelves.spots(show)
+            ),
         }
     )
 
@@ -166,7 +170,31 @@ def get_shelves(show_id: int):
     show = _show_or_404(show_id)
     if show is None:
         return jsonify({"error": "show not found"}), 404
-    return jsonify({"shelves": shelves.read(show)})
+    return jsonify({"shelves": shelves.read(show), "canCopy": shelves.can_copy(show)})
+
+
+@bp.post("/<int:show_id>/shelves/copy")
+@require("review.act")
+def copy_shelves(show_id: int):
+    """Lay the show's shelves out as the shop's last show had them."""
+    show = _show_or_404(show_id)
+    if show is None:
+        return jsonify({"error": "show not found"}), 404
+    try:
+        layout = shelves.copy_last(show)
+    except shelves.ShelfError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), e.status
+    audit.record(
+        g.u.organization_id,
+        "show.shelves",
+        user=g.u,
+        target_type="show",
+        target_id=show.id,
+        details={"spots": len(layout), "copied": True},
+    )
+    db.session.commit()
+    return jsonify({"shelves": layout, "canCopy": False})
 
 
 @bp.post("/<int:show_id>/shelves")

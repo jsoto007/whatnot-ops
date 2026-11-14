@@ -113,3 +113,74 @@ def test_review_suggests_the_product_on_the_spot_the_winner_typed(app, client, w
     assert by_buyer["kat.c"]["shelf"] is None
     assert by_buyer["buyer77"]["shelf"] is None
     assert by_buyer["jess88"]["shelf"]["spot"] == "B4"
+
+
+# ---------- copy from the last show; a winner's-pick show with no shelves ----------
+
+
+def _another_show(world, app, key="2026-10-20T20:00:00.000Z", day=20):
+    from datetime import UTC, date, datetime
+
+    with app.app_context():
+        show = Show(
+            organization_id=world["org"],
+            show_key=key,
+            started_at=datetime(2026, 10, day, 20, tzinfo=UTC),
+            show_date=date(2026, 10, day),
+        )
+        db.session.add(show)
+        db.session.commit()
+        return show.id
+
+
+def test_a_new_show_copies_the_last_shows_shelves(app, client, world, sign_in):
+    _layout(world, app)
+    h = sign_in(world["org"], "manager")
+    first = f"/api/shows/{world['show']}/shelves"
+    body = {"shelves": [{"spot": "A1", "code": "RED"}, {"spot": "B4", "code": "BLU-1"}]}
+    assert client.post(first, json=body, headers=h).status_code == 200
+    new = _another_show(world, app)
+    url = f"/api/shows/{new}/shelves"
+    got = client.get(url).get_json()
+    assert got == {"shelves": [], "canCopy": True}
+    # A winner's-pick show with no shelves says so on its page.
+    assert client.get(f"/api/shows/{new}").get_json()["noShelves"] is True
+    r = client.post(url + "/copy", headers=h)
+    assert r.status_code == 200
+    assert [(s["spot"], s["code"]) for s in r.get_json()["shelves"]] == [
+        ("A1", "RED"),
+        ("B4", "BLU-1"),
+    ]
+    assert client.get(url).get_json()["canCopy"] is False
+    assert client.get(f"/api/shows/{new}").get_json()["noShelves"] is False
+    # Never over a layout that is there.
+    r = client.post(url + "/copy", headers=h)
+    assert r.status_code == 400 and "already" in r.get_json()["error"]
+    with app.app_context():
+        last = db.session.scalars(
+            select(AuditLog).where(AuditLog.action == "show.shelves").order_by(AuditLog.id.desc())
+        ).first()
+        assert activity.describe("show.shelves", last.details) == (
+            "Laid out 2 shelf spots for a show, copied from the last show"
+        )
+
+
+def test_copying_needs_an_earlier_layout_and_the_right_to_change_shelves(
+    app, client, world, sign_in
+):
+    h = sign_in(world["org"], "manager")
+    url = f"/api/shows/{world['show']}/shelves"
+    assert client.get(url).get_json()["canCopy"] is False
+    r = client.post(url + "/copy", headers=h)
+    assert r.status_code == 400 and r.get_json()["error"] == "No earlier show has shelves to copy."
+    viewer = sign_in(world["org"], "viewer")
+    assert client.post(url + "/copy", headers=viewer).status_code == 403
+
+
+def test_a_show_that_sells_one_product_per_listing_is_not_told_it_has_no_shelves(
+    app, client, world, sign_in
+):
+    h = sign_in(world["org"])
+    assert client.get(f"/api/shows/{world['show']}").get_json()["noShelves"] is True
+    client.patch("/api/team/organization", json={"saleMode": "listing"}, headers=h)
+    assert client.get(f"/api/shows/{world['show']}").get_json()["noShelves"] is False

@@ -382,7 +382,10 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "show.mode": ("Changed how a show sells", _show_mode),
     "show.shelves": (
         "Laid out the shelves for a show",
-        lambda d, t: f"Laid out {d.get('spots', 0)} shelf spots for a show",
+        lambda d, t: (
+            f"Laid out {d.get('spots', 0)} shelf spots for a show"
+            + (", copied from the last show" if d.get("copied") else "")
+        ),
     ),
     "device.created": ("Added a laptop", lambda d, t: f"Added laptop {_q(d['name'])}"),
     "device.pairing_started": (
