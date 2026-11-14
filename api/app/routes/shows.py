@@ -17,7 +17,7 @@ from ..models import (
     Show,
     WhatnotShow,
 )
-from ..services import audit, jobs, pipeline, ratelimit, sale_chat, sale_mode, shelves
+from ..services import audit, jobs, picks, pipeline, ratelimit, sale_chat, sale_mode, shelves
 from ..services.whatnot import WhatnotError, connection
 from ..services.whatnot import orders as whatnot_orders
 from ..services.whatnot import sync as whatnot_sync
@@ -493,4 +493,7 @@ def whatnot_apply(show_id: int):
     )
     db.session.commit()
     show = _show_or_404(show_id)
+    # A show that is over: its winners' picks are read once they close (services/picks.py).
+    picks.schedule(whatnot_orders.whatnot_show_of(show))
+    db.session.commit()
     return jsonify({**_whatnot_view(show), "applied": result["summary"]})

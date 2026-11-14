@@ -11,6 +11,7 @@ appears later uses the oldest one's (`_sources`).
 
 import re
 from collections import defaultdict
+from datetime import datetime
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import selectinload
@@ -141,11 +142,56 @@ def save(show: Show, lines: list[tuple[str, str]]) -> list[dict]:
     return read(show)
 
 
+def spots(show: Show) -> dict[str, tuple[int, str]]:
+    """spot → (sku id, product name) of the layout this show uses, for the spots whose product
+    is in use. Empty when the show has no layout."""
+    source = _sources({show.id}).get(show.id)
+    if source is None:
+        return {}
+    return {
+        spot: (sku_id, name)
+        for spot, sku_id, name in db.session.execute(
+            select(ShowShelf.code, Sku.id, _NAME)
+            .join(Sku, Sku.id == ShowShelf.sku_id)
+            .join(Product, Product.id == Sku.product_id)
+            .where(ShowShelf.show_id == source, Sku.active)
+        )
+    }
+
+
+def typed(text: str) -> list[str]:
+    """The shelf spots a chat line names, in the order typed, each once ("b04 then C3" →
+    ["B4", "C3"])."""
+    out: list[str] = []
+    for code in _IN_CHAT.findall(text or ""):
+        spot = _spot(code)
+        if spot and spot not in out:
+            out.append(spot)
+    return out
+
+
 def suggest(sales: list[Sale]) -> dict[int, dict]:
     """sale id → the spot its winner named, as {"spot", "skuId", "name"}: from the winner's
     latest own chat line after the win that names a spot, when it names exactly one and that
     spot is laid out with a product in use. Only for shows with a layout. Which win a line
     belongs to is sale_chat's rule, so it needs every standing sale of those shows."""
+    return {
+        sale_id: {"spot": said_["spots"][0], "skuId": said_["skuId"], "name": said_["name"]}
+        for sale_id, said_ in said(sales).items()
+        if said_["skuId"] is not None
+    }
+
+
+def said(sales: list[Sale], *, until: datetime | None = None) -> dict[int, dict]:
+    """sale id → what its winner last typed about a shelf spot after the win, as {"spots",
+    "skuId", "name", "at"}: the spots named in the winner's latest own chat line that names
+    any, and the product when that is exactly one spot laid out with a product in use
+    (`skuId` None otherwise: two spots in one line, or a spot with nothing on it). A sale
+    whose winner named no spot is left out. Only for shows with a layout, and never for a
+    show whose laptops' clocks would hand a line to the wrong win (`sale_chat.unsafe`).
+
+    The latest line decides: "actually C9" after "B4" drops B4, even when C9 is not laid out.
+    `until`: lines typed after that moment are not read (picks close when the show ends)."""
     sources = _sources({s.show_id for s in sales})
     if not sources:
         return {}
@@ -180,12 +226,17 @@ def suggest(sales: list[Sale]) -> dict[int, dict]:
         for line in reversed(lines.get(sale.id, []) if spots else []):
             if line["role"] != "buyer" or not line["after"]:
                 continue
-            named = {spot for spot in map(_spot, _IN_CHAT.findall(line["body"])) if spot}
+            if until is not None and datetime.fromisoformat(line["capturedAt"]) > until:
+                continue
+            named = sorted({spot for spot in map(_spot, _IN_CHAT.findall(line["body"])) if spot})
             if not named:
                 continue
-            # The latest line naming a spot decides: "actually C9" after "B4" drops B4, even
-            # when C9 is not laid out; two spots in one line suggest nothing.
-            if len(named) == 1 and (spot := next(iter(named))) in spots:
-                out[sale.id] = {"spot": spot, "skuId": spots[spot][0], "name": spots[spot][1]}
+            one = spots.get(named[0]) if len(named) == 1 else None
+            out[sale.id] = {
+                "spots": named,
+                "skuId": one[0] if one else None,
+                "name": one[1] if one else None,
+                "at": line["capturedAt"],
+            }
             break
     return out

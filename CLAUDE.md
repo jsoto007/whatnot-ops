@@ -172,6 +172,19 @@ commands.
   is answered; a buyer whose sale gave way and whose own paid order turns up later has
   the win recorded again; a payment for another listing id is never a declined card's
   retry. "Buy it now" orders are left alone.
+- **The pick worker** (`services/picks.py`, job `pick_show`). In a winner's-pick show
+  the winner names the product by typing a shelf spot ("B4"; `shelves.said` reads each
+  win's final pick). Ten minutes after the show ends on Whatnot, the wins still waiting
+  are settled: the product is named through `pipeline.resolve` (actor "pick", the spot
+  kept on the decision) only when the shop switched it on (`Organization.auto_pick`, off
+  by default) AND the line is the win's own buyer's, after the win and before the show
+  ended, naming exactly one spot with a product in use, AND Whatnot holds the win's
+  order as paid, AND every laptop that recorded the chat is KNOWN to be in step
+  (`picks.clocks_sure`: "cannot be told" is not enough), AND nothing about the sale is in
+  doubt. Everything else is left to a person with what was found on the review item
+  (`proposal["pick"]`: the pick and why it was held, did not pick, a spot with no
+  product, several spots, or "not read" when a clock was out). Never loosen a gate
+  without a money-safety review: chat is typed by anyone watching.
 - **Order slips** (`services/order_slips.py`, `/app/orders/slips/:showId`) are
   the per-show packing document staff used to build from Whatnot's shipments
   tab: a cover with totals, then one printed page per buyer. Auction Number

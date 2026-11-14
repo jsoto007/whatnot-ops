@@ -814,6 +814,11 @@ def apply_show_job(payload: dict) -> None:
             target_id=show.id,
             details=result["summary"],
         )
+    # The show is over: its winners' picks are read once they close (services/picks.py).
+    from .. import picks
+
+    db.session.commit()
+    picks.schedule(ws)
 
 
 def last_read(ws: WhatnotShow) -> datetime | None:

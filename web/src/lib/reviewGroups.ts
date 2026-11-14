@@ -24,11 +24,20 @@ export function groupByShow(items: ReviewItem[]): ShowGroup[] {
       groups.set(key, g)
     }
     g.items.push(it)
-    g.byReason.set(it.reason, (g.byReason.get(it.reason) ?? 0) + 1)
+    const under = reasonKey(it)
+    g.byReason.set(under, (g.byReason.get(under) ?? 0) + 1)
   }
   return [...groups.values()].sort((a, b) => {
     if (a.showId == null) return 1
     if (b.showId == null) return -1
     return (b.showDate ?? '').localeCompare(a.showDate ?? '') || b.showId - a.showId
   })
+}
+
+/** What a decision is listed under: its reason, or for a win the pick worker has looked at,
+ * what the worker found (a winner who did not pick is its own list). */
+export function reasonKey(it: ReviewItem): string {
+  const state = (it.proposal?.pick as { state?: string } | undefined)?.state
+  if (it.reason !== 'unmatched_item' || !state || state === 'product') return it.reason
+  return state === 'none' ? 'did_not_pick' : state === 'unread' || state === 'no_layout' ? 'pick_unread' : 'pick_unclear'
 }

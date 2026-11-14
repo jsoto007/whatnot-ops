@@ -200,3 +200,34 @@ test('one lot shown won by two buyers: cancel this sale, or leave it to Whatnot'
   await waitFor(() => expect(posts).toHaveLength(1))
   expect(posts[0]).toEqual({ url: '/api/review/7/resolve', body: { action: 'set_status', status: 'cancelled' } })
 })
+
+test('after the show, each waiting win says what its winner picked, in words', async () => {
+  const win = (id: number, pick: Record<string, unknown>, action = 'none'): ReviewItem => ({ ...item, id, summary: `made_up_${id} bought "CHOOSE ANY PRODUCT YOU WANT #${id}" — which product is that?`, proposal: { action, pick, ...(pick.skuId ? { skuId: pick.skuId } : {}) } })
+  const posts = mount(
+    [
+      win(11, { state: 'product', spot: 'B4', skuId: 4, name: 'Holo slab Charizard', held: ['off'] }, 'assign_sku'),
+      win(12, { state: 'none' }),
+      win(13, { state: 'unknown_code', spot: 'D7' }),
+      win(14, { state: 'several', spots: ['B4', 'C3'] }),
+      win(15, { state: 'product', spot: 'C3', skuId: 4, name: 'Holo slab Charizard', held: ['unconfirmed', 'clock'] }, 'assign_sku'),
+    ],
+    '/app/review/3',
+  )
+  const picked = await screen.findByTestId('review-11')
+  expect(picked).toHaveTextContent('Typed B4 in chat: Holo slab Charizard. Assigning picks by themselves is switched off, so confirm it here.')
+  expect(picked).toHaveTextContent('Item not recognised') // a product was picked: it stays under its usual heading
+  const none = screen.getByTestId('review-12')
+  expect(none).toHaveTextContent('Did not pick')
+  expect(none).toHaveTextContent('no shelf spot from this winner before the show ended')
+  expect(screen.getByTestId('review-13')).toHaveTextContent('Typed D7. No product is on D7 for this show.')
+  expect(screen.getByTestId('review-13')).toHaveTextContent('Pick needs a person')
+  expect(screen.getByTestId('review-14')).toHaveTextContent('Typed B4 and C3: more than one spot, so none was chosen.')
+  expect(screen.getByTestId('review-15')).toHaveTextContent('Whatnot has not confirmed this win as paid')
+  expect(screen.getByTestId('review-15')).toHaveTextContent("the laptop's clock could not be checked")
+  // No code reaches the page.
+  for (const code of ['unknown_code', 'unconfirmed', 'assign_sku']) expect(document.body.textContent).not.toContain(code)
+  // One press confirms what the winner picked.
+  fireEvent.click(picked.querySelector('[data-testid="apply-proposal"]')!)
+  await waitFor(() => expect(posts).toHaveLength(1))
+  expect(posts[0]).toEqual({ url: '/api/review/11/resolve', body: { action: 'apply_proposal' } })
+})

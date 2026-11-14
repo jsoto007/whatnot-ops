@@ -52,6 +52,7 @@ const SALE_MODES = Object.keys(SALE_MODE_LABEL) as SaleMode[]
 export function HowYouSell() {
   const { me, setMe } = useAuth()
   const [mode, setMode] = useState<SaleMode>(me?.organization.saleMode ?? 'winners_pick')
+  const [autoPick, setAutoPick] = useState(me?.organization.autoPick ?? false)
   return (
     <>
       <h3>How you sell</h3>
@@ -59,7 +60,7 @@ export function HowYouSell() {
         className="stack-form"
         submitLabel="Save how you sell"
         onSubmit={async () => {
-          const r = await api<{ organization: Organization }>('PATCH', '/api/team/organization', { saleMode: mode })
+          const r = await api<{ organization: Organization }>('PATCH', '/api/team/organization', { saleMode: mode, autoPick })
           if (me) setMe({ ...me, organization: r.organization })
         }}
       >
@@ -74,6 +75,16 @@ export function HowYouSell() {
           ))}
         </div>
         <span className="muted small">New shows start this way. A show that is sold differently can be changed on its own page.</span>
+        <label className="field check choice">
+          <input type="checkbox" checked={autoPick} onChange={(e) => setAutoPick(e.target.checked)} data-testid="auto-pick" />
+          <span>
+            <b>Assign each winner's pick by itself</b>{' '}
+            <span className="muted">
+              Ten minutes after a winner's-pick show ends, the shelf spot each winner typed names their product, when Whatnot has confirmed the win as paid. Off: the pick is suggested in Review and a
+              person confirms it.
+            </span>
+          </span>
+        </label>
       </Form>
     </>
   )

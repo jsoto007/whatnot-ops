@@ -3,10 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router'
 import { Icon } from '../../components/Icon'
 import { SkuPicker } from '../../components/SkuPicker'
-import { api, apiGet, type Product, type ReviewItem, type Sku } from '../../lib/api'
+import { api, apiGet, type PickFound, type Product, type ReviewItem, type Sku } from '../../lib/api'
 import { fmtLongDate, plural } from '../../lib/format'
-import { reviewSourceLabel } from '../../lib/labels'
-import { groupByShow, type ShowGroup } from '../../lib/reviewGroups'
+import { pickWords, reviewSourceLabel } from '../../lib/labels'
+import { groupByShow, reasonKey, type ShowGroup } from '../../lib/reviewGroups'
 
 /** A SKU as the picker lists it: with its product's name (the chat names come along from /api/products). */
 type ReviewSku = Sku & { productName: string }
@@ -31,6 +31,9 @@ const REASON_LABEL: Record<string, string> = {
   decline_untied: 'Declined payment: which sale?',
   decline_seen: 'Card declined: waiting for Whatnot',
   lot_won_twice: 'One lot, two winners',
+  did_not_pick: 'Did not pick',
+  pick_unclear: 'Pick needs a person',
+  pick_unread: 'Picks not read',
   order_declined: 'Payment declined: nothing recorded',
   closed_after_picking: 'Closed after picking',
 }
@@ -163,7 +166,8 @@ function ShowQueue({ group, elsewhere, skus, onDone }: { group: ShowGroup | unde
 
 function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onDone: () => Promise<unknown> }) {
   // The spot the winner typed is a choice for this win, not a name for the product: not remembered.
-  const [skuId, setSkuId] = useState(item.shelf ? String(item.shelf.skuId) : '')
+  const pick = item.proposal?.pick as PickFound | undefined
+  const [skuId, setSkuId] = useState(pick?.state === 'product' && pick.skuId ? String(pick.skuId) : item.shelf ? String(item.shelf.skuId) : '')
   // A title that names one lot of one show ("… #520") is never learned: the box is not offered.
   const canRemember = item.sale?.rememberName !== false
   // In a winner's-pick show the product chosen here is that winner's pick, not the lot's name:
@@ -179,7 +183,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
     <div className="card review" data-testid={`review-${item.id}`}>
       <div className="product-head">
         <h3>
-          {REASON_LABEL[item.reason] ?? 'Something to check'}
+          {REASON_LABEL[reasonKey(item)] ?? 'Something to check'}
           <span className="muted small"> · {reviewSourceLabel(item.source)}</span>
         </h3>
         {item.showId && (
@@ -191,7 +195,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
       <p>{item.summary}</p>
       {!!item.proposal?.action && item.proposal.action !== 'none' && (
         <p className="proposal" data-testid="proposal">
-          <b>AI suggests:</b> {ACTION_LABEL[String(item.proposal.action)] ?? 'Take a look'}
+          <b>{pick ? 'The winner picked:' : 'AI suggests:'}</b> {pick ? (pick.name ?? 'Take a look') : (ACTION_LABEL[String(item.proposal.action)] ?? 'Take a look')}
           {typeof item.proposal.confidence === 'number' && <span className="muted"> · {Math.round(Number(item.proposal.confidence) * 100)}% sure</span>}
           {item.proposal.reasoning ? <span className="muted small"> — {String(item.proposal.reasoning)}</span> : null}
           {item.proposal.summary ? <span className="muted small"> — {String(item.proposal.summary)}</span> : null}
@@ -211,7 +215,12 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
       <div className="inline-form">
         {(item.reason === 'unmatched_item' || item.reason === 'insufficient_stock') && (
           <>
-            {item.shelf && (
+            {pick && (
+              <p className="small" data-testid="pick-found">
+                {pickWords(pick)}
+              </p>
+            )}
+            {!pick && item.shelf && (
               <p className="small" data-testid="shelf-pick">
                 Typed <b>{item.shelf.spot}</b> in chat: {item.shelf.name} on this show’s shelves.
               </p>
@@ -287,7 +296,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
         )}
         {!!item.proposal?.action && item.proposal.action !== 'none' && item.proposal.action !== 'dismiss' && (
           <button className="btn primary" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'apply_proposal' })} data-testid="apply-proposal">
-            Apply suggestion
+            {pick ? "Use the winner's pick" : 'Apply suggestion'}
           </button>
         )}
         <button className="btn" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'dismiss' })}>

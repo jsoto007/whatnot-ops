@@ -2,6 +2,7 @@ from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -11,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +41,13 @@ class Organization(db.Model):
     # in; a show can differ (ShowSaleMode).
     sale_mode: Mapped[str] = mapped_column(
         String(16), nullable=False, default="winners_pick", server_default="winners_pick"
+    )
+    # Whether a winner's pick names the product with no person (services/picks.py): the
+    # shelf spot the win's own buyer typed, applied ten minutes after the show ends. Off
+    # (the default): the pick is only suggested, and what would have been assigned is kept
+    # on the review item, so a real show can be compared before this is switched on.
+    auto_pick: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow

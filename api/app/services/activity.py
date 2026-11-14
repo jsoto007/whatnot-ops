@@ -37,6 +37,18 @@ RECONCILE_ACTION = {
 }
 
 
+# What the pick worker found for the wins still waiting (services/picks.py).
+PICK_WORDS = {
+    "assigned": "assigned from the winner's shelf spot",
+    "suggested": "picked, left for a person to confirm",
+    "none": "did not pick",
+    "unknown_code": "typed a spot with no product",
+    "several": "typed more than one spot",
+    "unread": "not read because a laptop's clock was out",
+    "no_layout": "not read because the show has no shelf layout",
+}
+
+
 WHATNOT_ORDER_ACTION = {
     "mark_paid": "marked paid",
     "cancel": "cancelled",
@@ -126,7 +138,7 @@ WHO = {
 
 def who(action: str, actor_type: str | None, label: str | None) -> str:
     """The activity log's "Who" column."""
-    if actor_type not in ("user", "device", "ai", "whatnot") and action in WHO:
+    if actor_type not in ("user", "device", "ai", "whatnot", "pick") and action in WHO:
         return WHO[action]
     return actor(actor_type, label)
 
@@ -140,6 +152,8 @@ def actor(actor_type: str | None, label: str | None) -> str:
         return "AI"
     if actor_type == "whatnot":
         return "Whatnot"  # what Whatnot's own records said (an order paid, a parcel sent)
+    if actor_type == "pick":
+        return "The winner's pick"  # the shelf spot the winner typed in chat
     return "Automatic"
 
 
@@ -279,6 +293,12 @@ def _org_updated(d: dict, _target: str) -> str:
         )
     if "saleMode" in d:
         parts.append(f"set how the shop usually sells to {_q(sale_mode_words(d['saleMode'][1]))}")
+    if "autoPick" in d:
+        parts.append(
+            "switched on assigning winners' picks after each show"
+            if d["autoPick"][1]
+            else "switched off assigning winners' picks (they are suggested again)"
+        )
     text = "; ".join(parts)
     return text[:1].upper() + text[1:]
 
@@ -426,6 +446,13 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "whatnot.disconnected": (
         "Disconnected the shop from Whatnot",
         lambda d, t: f"Disconnected the shop from Whatnot (@{d['username']})",
+    ),
+    "picks.read": (
+        "Read the winners' picks after a show",
+        lambda d, t: (
+            "Read the winners' picks after a show"
+            + (f": {c}" if (c := _counts(d, PICK_WORDS)) else "")
+        ),
     ),
     "whatnot.orders_applied": (
         "Applied Whatnot's orders to a show",

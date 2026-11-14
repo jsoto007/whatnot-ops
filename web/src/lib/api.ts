@@ -113,6 +113,18 @@ export interface Organization {
   hostUsername: string | null
   /** How the shop usually sells. A new show starts this way; a show can differ. */
   saleMode?: SaleMode
+  /** Whether a winner's shelf spot names the product by itself ten minutes after the show ends. */
+  autoPick?: boolean
+}
+/** What the pick worker found for a win still waiting for its product, once the show was over. */
+export interface PickFound {
+  state: 'product' | 'none' | 'unknown_code' | 'several' | 'unread' | 'no_layout'
+  spot?: string
+  spots?: string[]
+  skuId?: number
+  name?: string
+  /** Why a product the winner picked was not assigned by itself. */
+  held?: ('off' | 'unconfirmed' | 'clock' | 'doubt' | 'near' | 'unclear')[]
 }
 /** The licence in force and whether to ask this person to accept it (only the shop's owner). */
 export interface LicenceStatus {
@@ -316,7 +328,7 @@ export interface Sale {
   /** When the win happened (the winning line's capture time). */
   wonAt: string | null
   /** The decision waiting on this sale in Review, when there is one (orders routes only). */
-  review?: { id: number; reason: string } | null
+  review?: { id: number; reason: string; pick?: PickFound['state'] | null } | null
   /** What the winner said around the win; only on a show's sales list. */
   chat?: SaleChatLine[]
   createdAt: string
