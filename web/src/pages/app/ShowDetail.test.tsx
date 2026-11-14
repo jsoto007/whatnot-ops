@@ -316,3 +316,43 @@ test('a link to the Shelves tab of a one-product show lands on Sales', async () 
   expect(screen.queryByTestId('shelves')).toBeNull()
   expect(screen.getByRole('tab', { name: 'Sales' })).toHaveAttribute('aria-selected', 'true')
 })
+
+test('a laptop whose clock is out is named on the show page, with what to put right', async () => {
+  const show = { id: 3, key: 'k', date: '2026-11-12', startedAt: '2026-11-13T05:29:00Z', updatedAt: '2026-11-13T06:29:00Z', sourceUrl: null, messageCount: 9, title: null, recorded: true }
+  const clockProblems = [
+    { laptop: 'Front laptop', seconds: 62 },
+    { laptop: 'Back laptop', seconds: -40 },
+    { laptop: null, seconds: null },
+  ]
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url === '/api/shows/3') return new Response(JSON.stringify({ show, stats: {}, clockProblems }), { status: 200 })
+      if (url.endsWith('/sales')) return new Response(JSON.stringify({ sales: [] }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }),
+  )
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter initialEntries={['/app/shows/3']}>
+          <Routes>
+            <Route path="/app/shows/:id" element={<ShowDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+  const warning = await screen.findByTestId('clock-warning')
+  expect(warning).toHaveTextContent('Winners’ picks are not suggested for this show.')
+  expect(warning).toHaveTextContent('The clock on Front laptop is about 62 seconds fast.')
+  expect(warning).toHaveTextContent('The clock on Back laptop is about 40 seconds slow.')
+  expect(warning).toHaveTextContent('The clock on a laptop was not steady during the show')
+  expect(warning).toHaveTextContent('Set that laptop to set its date and time automatically')
+})
+
+test('a show whose laptops keep good time says nothing about clocks', async () => {
+  mountShow({ saleMode: 'winners_pick', saleModeSet: false })
+  await screen.findByTestId('show-mode')
+  expect(screen.queryByTestId('clock-warning')).toBeNull()
+})

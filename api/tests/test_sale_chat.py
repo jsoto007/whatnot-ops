@@ -244,7 +244,7 @@ def _reference_around(sales):
     own = {s.event.message_id for s in sales}
     waiting = {s.id for s in sales if s.sku_id is None}
     since = min(sale_chat.won_at(s) for s in sales) - BEFORE
-    for m in _lines(show, list(wins), host, since):
+    for m in _lines([show.id], list(wins), host, since):
         if m.id in own:
             continue
         named = sale_chat.rules.lot_refs(m.body)

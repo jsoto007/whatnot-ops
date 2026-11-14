@@ -117,6 +117,16 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
     return rows, info
 
 
+def _note_order_time(sale: Sale, row: Row) -> None:
+    """The sale's order time is when Whatnot first recorded an order for the win: for a card
+    declined and then paid, the declined attempt's time, which is when the lot was won. The
+    winner's pick in chat is read from then on (services/sale_chat.py). It only ever moves
+    earlier, so reading the orders again settles on the same time."""
+    first = row.first_ordered_at or row.ordered_at
+    if first is not None and (sale.ordered_at is None or first < sale.ordered_at):
+        sale.ordered_at = first
+
+
 def _skip_retried(rows: list[Row]) -> None:
     """A card declined at the win and then paid on a retry is two orders on Whatnot: a failed
     one, then a paid (or settling) one for the same win (the 2026-11-13 show: 10 of 20 lots).
@@ -131,7 +141,9 @@ def _skip_retried(rows: list[Row]) -> None:
         if row.status in ("paid", "pending"):
             paid_later.setdefault(buyer, []).append(row)
         elif row.status == "failed" and row.ordered_at is not None:
-            for paid in paid_later.get(buyer, ()):
+            # The payment nearest after it: with two wins of one listing by one buyer, the
+            # declined attempt belongs to the first payment that follows, not the latest.
+            for paid in reversed(paid_later.get(buyer, ())):
                 # Both times known, so a retry is always within `same_win`'s half hour.
                 if paid.ordered_at is not None and pipeline.same_win(
                     row.item, row.price_cents, row.ordered_at,
@@ -139,6 +151,10 @@ def _skip_retried(rows: list[Row]) -> None:
                 ) is not None:  # fmt: skip
                     # The win's sale may already be tied to the failed order: the payment is its.
                     paid.sale_hint = paid.sale_hint or row.sale_hint
+                    # The win happened when the first order was placed, not when a retry paid.
+                    paid.first_ordered_at = min(
+                        paid.first_ordered_at or row.ordered_at, row.ordered_at
+                    )
                     row.action, row.note = "skip", "declined, then paid in a later order"
                     break
 
@@ -337,6 +353,7 @@ def apply(show: Show, *, user=None) -> dict:
                 price_cents=row.price_cents,
                 external_order_id=row.external_id,
                 ordered_at=row.ordered_at,
+                won_at=row.first_ordered_at,
                 settled=row.status == "paid",
                 sku_id=row.sku_id,
                 by_text=not row.listing_off,
@@ -345,7 +362,7 @@ def apply(show: Show, *, user=None) -> dict:
             row.action = "recorded"
         else:
             row.action = "unchanged"
-        sale.ordered_at = sale.ordered_at or row.ordered_at
+        _note_order_time(sale, row)
         row.sale_id = sale.id
         taken.add(sale.id)
         return True
@@ -385,7 +402,7 @@ def apply(show: Show, *, user=None) -> dict:
             item.sale_id = row.sale_id
         sale = db.session.get(Sale, row.sale_id)
         if sale is not None:
-            sale.ordered_at = sale.ordered_at or row.ordered_at
+            _note_order_time(sale, row)
             if sale.external_order_id is None and row.action != "unmatched":
                 sale.external_order_id = row.external_id
     summary = plan.summary
