@@ -101,6 +101,13 @@ placed. Each recording is matched on its own to the Whatnot show that was live w
    - "Print label and slip" opens Whatnot's own combined PDF. The app fetches it from
      Whatnot at that moment and passes it through: it is never stored, and neither is its
      link (it shows the buyer's address);
+   - "Print N labels" opens the show's labels that have not been printed from the app as one
+     PDF, in the order of the order slips, so labels and slips come off the printer in the
+     same order. Up to 20 a press; the page says how many are still to print. Each label
+     is fetched at that moment and the pages are joined in memory: nothing of them is stored,
+     only the time each was printed, so a second press skips it. A label Whatnot does not
+     hand over is left out, stays to print, and the others still print. One label can be
+     printed again from its row at any time. Whatnot's packing slips can be left out;
    - when the carrier has every parcel of a buyer, the order can be marked shipped in one
      press (or is, in "Apply as they arrive") with its tracking number, without clicking
      through picking and packing;
@@ -183,7 +190,8 @@ link):
 
 - Kept: Whatnot's ids, statuses, listing titles, prices, the buyer's **id and usernames**
   (every name an account has used, so a rename is still the same person),
-  tracking numbers, whether a label exists, each show's results, and the ledger's lines
+  tracking numbers, whether a label exists and when it was last printed from the app, each
+  show's results, and the ledger's lines
   (amounts, fees, the buyer's username; not the buyer's state or country).
 - Never kept: addresses, emails, phone numbers, label PDFs, label links, the webhook body
   (only the ids it names), the token, the signing secret.

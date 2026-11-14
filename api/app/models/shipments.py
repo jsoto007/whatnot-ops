@@ -93,6 +93,9 @@ class WhatnotShipment(db.Model):
         ForeignKey("users.id", name="fk_whatnot_shipments_label_requested_by")
     )
     label_problem: Mapped[str | None] = mapped_column(String(40))
+    # When the label was last sent to a printer from here (services/whatnot/shipping.py):
+    # "Print labels" skips a package that has one. The time only; never the label.
+    label_printed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     show: Mapped[Show | None] = relationship()
 

@@ -469,6 +469,13 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
         lambda d, t: f"Asked Whatnot to make {_plural(d['packages'], 'shipping label')}",
     ),
     "label.printed": ("Opened a shipping label to print", None),
+    "labels.printed": (
+        "Opened a show's shipping labels to print",
+        lambda d, t: (
+            f"Opened {_plural(d.get('printed', 0), 'shipping label')} of a show to print"
+            + (f"; Whatnot did not send {_plural(d['failed'], 'label')}" if d.get("failed") else "")
+        ),
+    ),
     "ai.sale_confirmed": ("Confirmed a sale", None),
     "ai.applied": ("Applied a suggestion", None),
 }

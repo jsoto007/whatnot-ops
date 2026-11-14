@@ -134,7 +134,21 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   await page.getByTestId('shipping-refresh').click()
   await expect(page.getByTestId('ship-lani808').getByTestId('ship-state')).toHaveText('Label ready')
   await shot(page, '4-shipping-labels-ready')
+  // "Print labels": both labels as one PDF in a new tab; each is marked printed, and nothing is left to print.
+  await expect(page.getByTestId('shipping-print-labels')).toHaveText('Print 2 labels')
+  const tab = page.waitForEvent('popup')
+  await page.getByTestId('shipping-print-labels').click()
+  await expect(page.getByTestId('shipping-note')).toHaveText('Opened 2 labels to print.')
+  await (await tab).close()
+  // The tab was closed before anything was printed: the page still has a way back to that PDF.
+  await expect(page.getByTestId('shipping-open-pdf')).toHaveText('Open the last PDF again')
+  await expect(page.getByTestId('shipping-print-state')).toContainText('Every label of this show has been printed (2)')
+  await expect(page.getByTestId('shipping-print-labels')).toHaveCount(0)
+  await expect(page.getByTestId('ship-lani808').getByTestId('ship-printed')).toContainText('Label printed')
+  await shot(page, '4b-shipping-labels-printed')
+  // One specific label can still be printed again from its row.
   const print = page.getByTestId('ship-lani808').getByTestId('ship-print')
+  await expect(print).toHaveText('Print label and slip again')
   const pdf = await page.request.get((await print.getAttribute('href'))!)
   expect(pdf.status()).toBe(200)
   expect(pdf.headers()['content-type']).toContain('application/pdf')
