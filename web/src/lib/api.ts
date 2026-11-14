@@ -827,6 +827,38 @@ export interface WhatnotMoneyData {
 }
 export type WhatnotMoney = { connected: false } | WhatnotMoneyData
 
+/** GET /api/shows/:id/laptop-data (owner): what deleting the laptop's data removes and keeps. */
+export interface LaptopDataPreview {
+  messages: number
+  sales: number
+  /** Sales still standing: each is closed, its stock put back unless already packed. */
+  standing: number
+  /** Already picked, packed or shipped: not counted back (a person's call). */
+  inPackage: number
+  /** Wins another laptop's recording of the same stream also has: their sales move there. */
+  moved: number
+  orders: number
+  reviews: number
+  /** Sales Whatnot's orders made or vouched for: kept. */
+  keptFromWhatnot: number
+  /** Why it cannot be done now, in words; empty when it can. */
+  blockers: string[]
+}
+/** DELETE /api/shows/:id/laptop-data */
+export interface LaptopDataDeleted {
+  /** The show, when what came from Whatnot keeps it; null when it is gone. */
+  showId: number | null
+  date: string
+  messages: number
+  sales: number
+  cancelled: number
+  inPackage: number
+  moved: number
+  orders: number
+  reviews: number
+  kept: boolean
+}
+
 /** What the team says about a buyer: someone to look after, or someone to keep an eye on. */
 export type BuyerFlag = 'vip' | 'watch'
 /** What a buyer bought, from the shop's sales. A "show" is a show date. */

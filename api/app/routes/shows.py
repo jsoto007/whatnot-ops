@@ -18,7 +18,17 @@ from ..models import (
     Sku,
     WhatnotShow,
 )
-from ..services import audit, jobs, picks, pipeline, ratelimit, sale_chat, sale_mode, shelves
+from ..services import (
+    audit,
+    jobs,
+    picks,
+    pipeline,
+    ratelimit,
+    recordings,
+    sale_chat,
+    sale_mode,
+    shelves,
+)
 from ..services.whatnot import WhatnotError, connection
 from ..services.whatnot import orders as whatnot_orders
 from ..services.whatnot import sync as whatnot_sync
@@ -40,6 +50,43 @@ def _counts(show_ids: list[int]) -> dict[int, int]:
 def _show_or_404(show_id: int) -> Show | None:
     show = db.session.get(Show, show_id)
     return show if show and show.organization_id == g.u.organization_id else None
+
+
+@bp.get("/<int:show_id>/laptop-data")
+@require("shows.delete", heavy=True)
+def laptop_data(show_id: int):
+    """What deleting the show's laptop data would remove and keep (owner only)."""
+    show = _show_or_404(show_id)
+    if show is None:
+        return jsonify({"error": "show not found"}), 404
+    out = recordings.preview(show)
+    db.session.rollback()  # a preview never writes
+    return jsonify(out)
+
+
+@bp.delete("/<int:show_id>/laptop-data")
+@require("shows.delete")
+def delete_laptop_data(show_id: int):
+    """Delete what a laptop recorded for the show, never Whatnot's own data (owner only;
+    services/recordings.py). Cannot be undone, so the request must say "delete"."""
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") != "delete":
+        return jsonify({"error": 'Type "delete" to confirm.'}), 400
+    try:
+        result = recordings.delete_laptop_data(g.u.organization_id, show_id, user=g.u)
+    except recordings.RecordingError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), e.status
+    except pipeline.ReviewError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), e.status
+    except OperationalError:
+        # A deadlock with the parser or another delete taking the same buyers' locks:
+        # Postgres rolled this one back, nothing changed.
+        db.session.rollback()
+        return jsonify({"error": "These sales were changing just now. Try again in a minute."}), 409
+    db.session.commit()
+    return jsonify(result)
 
 
 @bp.get("")

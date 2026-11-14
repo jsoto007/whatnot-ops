@@ -95,6 +95,14 @@ def post_batch():
     except BatchInvalid as e:
         db.session.rollback()
         return jsonify({"error": "invalid batch", "details": e.errors}), 400
+    if result.deleted:
+        # The owner deleted this recording: the laptop is told it was received, so its
+        # outbox stops sending it, and nothing is stored but that the laptop was seen.
+        touch(g.device, request.headers.get("X-Extension-Version"))
+        db.session.commit()
+        return jsonify(
+            {"accepted": 0, "duplicates": result.duplicates, "deleted": True, "show": None}
+        )
     schedule_parse(result.show)
     db.session.commit()
     return jsonify(

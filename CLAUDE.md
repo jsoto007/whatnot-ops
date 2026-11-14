@@ -348,6 +348,20 @@ commands.
   any new query that reads sales or orders by buyer name). The flag is shown beside the name on screen,
   never printed; the laptop (`POST /api/ingest/buyers`) gets the flag and counts, no note
   and no money.
+- **Deleting a recording's laptop data** (`services/recordings.py`, owner only,
+  `shows.delete`; `GET`/`DELETE /api/shows/:id/laptop-data`, the show page's "Delete
+  laptop data…"). Removes only what the laptop collected: chat, parsed lines, sales only
+  its chat vouches for (`event_id` set, no `external_order_id`), their orders and Review
+  questions. Never Whatnot's own data: its shows, orders, payments, shipments, ledger,
+  giveaway products, and any sale tied to a Whatnot order (it only loses its line); a show
+  that keeps such data stays as "made". A win another laptop's recording surely also saw
+  (same buyer and lot, a host/player line with no sale) MOVES there with its stock; a
+  looser match or an open copy in Review blocks; a copy whose box here is being picked or
+  packed waits for the packing, a shipped one just closes (never moves: no double pack).
+  Other sales close through `set_sale_status` (stock back unless packed; the "take it out
+  of the package" note stays). Kept sales lose their chat, so an unnamed product is named
+  by hand (Javier's call, 2026-11-14: sales are tracked from Whatnot's API). Refused while chat arrived in the last 10 minutes or the show is being parsed.
+  `deleted_recordings` keeps the key: ingest drops a late upload (200, `deleted: true`).
 - **Numbers.** Dashboard tiles and the Excel sheets both read
   `services/dashboard.py`; add a metric there, never inline in a route or
   the workbook builder. The gifts tile counts Whatnot's giveaway orders for a

@@ -89,10 +89,11 @@ def validate(payload: object) -> dict:
 
 @dataclass(frozen=True)
 class IngestResult:
-    show: Show
+    show: Show | None  # None when the recording was deleted: nothing was stored
     accepted: int
     duplicates: int
     message_count: int
+    deleted: bool = False
 
 
 def _parse_dt(s: str) -> datetime:
@@ -122,14 +123,27 @@ def get_or_create_show(org_id: int, show_key: str, started_at: datetime, url: st
 
 
 def ingest(device: Device, payload: dict) -> IngestResult:
+    from .recordings import was_deleted
+
     batch = validate(payload)
     started_at = _parse_dt(batch["show"]["startedAt"])
+    key = batch["show"]["id"]
+    # The owner deleted this recording's laptop data: a late upload of it (a laptop's
+    # outbox) is dropped, never recorded again. Checked again under the show's row lock,
+    # which a delete holds until it commits.
+    dropped = IngestResult(None, 0, len(batch["rows"]), 0, deleted=True)
+    if was_deleted(device.organization_id, key):
+        return dropped
     show = get_or_create_show(
         device.organization_id,
-        batch["show"]["id"],
+        key,
         started_at,
         text.whatnot_url(batch["show"].get("url")),
     )
+    db.session.execute(select(Show.id).where(Show.id == show.id).with_for_update(key_share=True))
+    if was_deleted(device.organization_id, key):
+        db.session.rollback()  # a show row made just now for it is not kept
+        return dropped
     values = [
         {
             "show_id": show.id,

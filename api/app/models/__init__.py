@@ -4,6 +4,7 @@ from .ai import AiCall
 from .buyers import Buyer, BuyerName
 from .core import (
     ChatMessage,
+    DeletedRecording,
     Device,
     DevicePairing,
     Organization,
@@ -45,6 +46,7 @@ __all__ = [
     "Buyer",
     "BuyerName",
     "ChatMessage",
+    "DeletedRecording",
     "Device",
     "DevicePairing",
     "EventKind",

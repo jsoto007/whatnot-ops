@@ -18,6 +18,8 @@ PERMISSIONS: dict[str, frozenset[Role]] = {
     "whatnot.view": MANAGERS,  # connection health; nothing secret is ever shown
     "whatnot.manage": OWNER,  # connect / disconnect the shop's Whatnot seller account
     "shows.view": ALL,
+    # Delete what a laptop recorded for a show (services/recordings.py); cannot be undone.
+    "shows.delete": OWNER,
     "inventory.view": ALL,
     "inventory.write": MANAGERS,
     "orders.view": ALL,
