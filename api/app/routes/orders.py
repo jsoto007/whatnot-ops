@@ -212,7 +212,10 @@ def show_order_slips(show_id: int):
     show = db.session.get(Show, show_id)
     if show is None or show.organization_id != g.u.organization_id:
         return jsonify({"error": "show not found"}), 404
-    return jsonify(order_slips.build(show))
+    only = request.args.get("only") or None
+    if only is not None and only not in order_slips.FILTERS:
+        return jsonify({"error": "unknown filter"}), 400
+    return jsonify(order_slips.build(show, only=only))
 
 
 @bp.patch("/sales/<int:sale_id>/gifts")

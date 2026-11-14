@@ -73,6 +73,9 @@ export function Orders() {
   const current = VIEWS.find((v) => v.key === view) ?? VIEWS[0]!
   const needle = find.trim().toLowerCase()
   const visible = orders.filter(current.match).filter((o) => !needle || o.buyer.toLowerCase().includes(needle))
+  // "Print ready slips": every order that is ready to pick, by show (the slips are a per-show document).
+  const readyByShow = new Map<number, { showDate: string; n: number }>()
+  for (const o of orders) if (o.status === 'paid') readyByShow.set(o.showId, { showDate: o.showDate, n: (readyByShow.get(o.showId)?.n ?? 0) + 1 })
 
   // Lots nobody has named yet, grouped by show and title: "$1 BEAUTY PULLS #520" and "#521" are one group.
   const groups = new Map<string, Sale[]>()
@@ -130,6 +133,7 @@ export function Orders() {
               </Link>
             </>
           )}
+          <PrintReady byShow={readyByShow} />
         </div>
       </div>
       <div className="toolbar">
@@ -386,14 +390,59 @@ function Actions({ o, onPick, onDecline }: { o: Order; onPick: (sale: Sale) => v
     <>
       <div className="acts">
         {primary}
-        <RowMenu label={`More for ${o.buyer}`}>{more}</RowMenu>
+        <Menu label={`More for ${o.buyer}`}>{more}</Menu>
       </div>
       {error && <div className="form-error small">{error}</div>}
     </>
   )
 }
 
-function RowMenu({ label, children }: { label: string; children: ReactNode }) {
+/** Opens the show's order slips for the orders that are ready to pick, ready to print. The slips
+ * are a per-show document, so with ready orders in several shows the button lists each show. */
+function PrintReady({ byShow }: { byShow: Map<number, { showDate: string; n: number }> }) {
+  const shows = [...byShow.entries()].sort((a, b) => b[1].showDate.localeCompare(a[1].showDate) || b[0] - a[0])
+  const total = shows.reduce((n, [, s]) => n + s.n, 0)
+  const label = total ? `Print ${plural(total, 'ready slip', 'ready slips')}` : 'Print ready slips'
+  const to = (id: number) => `/app/orders/slips/${id}?only=ready`
+  if (total === 0)
+    return (
+      <button type="button" className="btn primary" disabled data-testid="print-ready">
+        <Icon name="print" size={16} />
+        {label}
+      </button>
+    )
+  if (shows.length === 1)
+    return (
+      <Link className="btn primary" to={to(shows[0]![0])} data-testid="print-ready">
+        <Icon name="print" size={16} />
+        {label}
+      </Link>
+    )
+  return (
+    <Menu
+      label="Print ready slips, by show"
+      className="btn primary"
+      testId="print-ready"
+      trigger={
+        <>
+          <Icon name="print" size={16} />
+          {label}
+          <Icon name="chevron" size={16} />
+        </>
+      }
+    >
+      {shows.map(([id, s]) => (
+        <Link key={id} role="menuitem" to={to(id)}>
+          <Icon name="print" size={16} />
+          {fmtLongDate(s.showDate)} · {plural(s.n, 'order', 'orders')}
+        </Link>
+      ))}
+    </Menu>
+  )
+}
+
+/** A button and the menu under it: the row's "more" dots by default, or any `trigger` given. */
+function Menu({ label, children, trigger, className = 'icon-btn sm', testId }: { label: string; children: ReactNode; trigger?: ReactNode; className?: string; testId?: string }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -413,8 +462,8 @@ function RowMenu({ label, children }: { label: string; children: ReactNode }) {
   }, [open])
   return (
     <div className="menu-wrap" ref={ref}>
-      <button type="button" className="icon-btn sm" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        <Icon name="more" size={18} />
+      <button type="button" className={className} aria-label={trigger ? undefined : label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)} data-testid={testId}>
+        {trigger ?? <Icon name="more" size={18} />}
       </button>
       {open && (
         <div className="menu" role="menu" aria-label={label} onClick={() => setOpen(false)}>
