@@ -318,7 +318,10 @@ commands.
   (Whatnot counts its own sales down, and the app learns of a sale only when its order
   is applied, so setting a count puts sold units back). Do not add an inventory write
   without a design checked against the live shop. The daily catalog read waits while a
-  show is on air (it shares the request budget the orders need).
+  show is on air (it shares the request budget the orders need). So do the hourly re-read
+  of unsettled orders (every 6 h while webhooks arrive) and the listing reads for a
+  "CHOOSE ANY…" lot with no SKU (the winner names the product; the daily read mirrors it).
+  A labelled parcel's items are not asked for again (a label closes the bundle).
 - **Selling mode** (`services/sale_mode.py`). A show sells one of two ways: "winners_pick"
   (a lot's title names no product; the winner says which one in chat, by its shelf spot,
   "A5") or "listing" (one product per listing; the listing's link names it). The shop has a
@@ -350,6 +353,17 @@ commands.
   the workbook builder. The gifts tile counts Whatnot's giveaway orders for a
   show linked to Whatnot, else the host/platform chat lines. Reports are built synchronously with openpyxl
   (`services/reports.py`); move them to a job if a shop outgrows that.
+- **Query cost.** A page or job must not cost a statement per row: eager-load what the
+  serializer reads (`selectinload`), and batch-load what a loop reads
+  (`reconcile.load_sales`) instead of `session.get` per row. `tests/test_query_counts.py`
+  and `tests/test_whatnot_efficiency.py` pin the counts (a few rows vs many); add a case
+  for a new list page. Applying Whatnot's orders re-plans the whole show each run on
+  purpose (retries, one win per auction and uncovered sales need every order); keep each
+  run's statements constant instead. In the SPA, an action refreshes the keys it changes
+  (`web/src/lib/invalidate.ts`), never a bare `invalidateQueries()`. A page opened is read
+  again (laptops and Whatnot change data outside the tab: never give queries a staleTime
+  that skips that); coming back to the window re-reads only data older than 15 s, and a
+  4xx is never retried (`main.tsx`).
 - **AI** only proposes. Providers implement `ai/base.py::AiProvider` and are
   chosen by `AI_PROVIDER` (`claude` via the official `anthropic` SDK with
   `output_config.format` structured output, `jev`, `fake` for tests). What may
