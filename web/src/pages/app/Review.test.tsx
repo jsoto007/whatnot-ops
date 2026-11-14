@@ -188,3 +188,15 @@ test('a card the stream showed declined is flagged: leave it to Whatnot, or clos
   expect(other.querySelectorAll('button')).toHaveLength(1)
   expect(other.querySelector('button')).toHaveTextContent('Got it')
 })
+
+test('one lot shown won by two buyers: cancel this sale, or leave it to Whatnot', async () => {
+  const doubted = { id: 60, item: 'Red bundle #41', status: 'paid', sku: { id: 1, code: 'RED', name: '', productName: 'Red bundle' } } as Sale
+  const posts = mount([{ ...item, reason: 'lot_won_twice', summary: 'Red bundle #41 was won by made_up_ann and then by made_up_bo.', sale: doubted }], '/app/review/3')
+  const card = await screen.findByTestId('review-7')
+  expect(card).toHaveTextContent('One lot, two winners')
+  expect(card).not.toHaveTextContent('lot_won_twice')
+  expect(screen.getByRole('button', { name: 'Leave it to Whatnot' })).toBeInTheDocument()
+  fireEvent.click(screen.getByTestId('cancel-duplicate'))
+  await waitFor(() => expect(posts).toHaveLength(1))
+  expect(posts[0]).toEqual({ url: '/api/review/7/resolve', body: { action: 'set_status', status: 'cancelled' } })
+})

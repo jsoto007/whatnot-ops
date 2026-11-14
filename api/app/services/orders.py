@@ -73,28 +73,40 @@ _FORWARD = {
 }
 
 
-def card_in_doubt(order: Order) -> bool:
-    """The stream showed a card declined for one of the order's standing sales and Whatnot's
-    order has not said yet whether it was paid (`pipeline.flag_decline`): the sale still
-    counts as paid, but nothing of the order goes in a box until that is settled, by the
-    order (paid clears the flag, failed closes the sale) or by a person in Review."""
-    from .pipeline import DECLINE_SEEN
+_DOUBT = {
+    "decline_seen": (
+        "Whatnot showed a card declined for an item in this order, and its order has not "
+        "said yet whether it was paid. Wait for it, or settle it in Review."
+    ),
+    "lot_won_twice": (
+        "An item in this order is a lot that two buyers were shown winning. Wait for "
+        "Whatnot's orders to settle it, or settle it in Review."
+    ),
+}
 
+
+def in_doubt(order: Order) -> str | None:
+    """Why nothing of this order goes in a box yet, or None. One of its standing sales has
+    an open question only Whatnot's order (or a person) can answer: the stream showed its
+    card declined (`pipeline.flag_decline`), or showed the lot won by two buyers
+    (`pipeline.ask_which_win`). The sale still counts as paid meanwhile."""
     ids = [s.id for s in order.sales if s.status in STANDING]
     if not ids:
-        return False
-    return (
-        db.session.scalar(
-            select(ReviewItem.id)
-            .where(
-                ReviewItem.sale_id.in_(ids),
-                ReviewItem.status == ReviewStatus.open,
-                ReviewItem.reason == DECLINE_SEEN,
-            )
-            .limit(1)
+        return None
+    return db.session.scalar(
+        select(ReviewItem.reason)
+        .where(
+            ReviewItem.sale_id.in_(ids),
+            ReviewItem.status == ReviewStatus.open,
+            ReviewItem.reason.in_(tuple(_DOUBT)),
         )
-        is not None
+        .order_by(ReviewItem.id)
+        .limit(1)
     )
+
+
+def card_in_doubt(order: Order) -> bool:
+    return in_doubt(order) is not None
 
 
 def verified(order: Order) -> bool:
@@ -161,11 +173,8 @@ def advance(
         raise OrderError(f"cannot go from {order.status.value} to {new_status.value}")
     if not verified(order):
         raise OrderError("every item must be paid before fulfilment (see Review)")
-    if new_status in _FORWARD.get(order.status, ()) and card_in_doubt(order):
-        raise OrderError(
-            "Whatnot showed a card declined for an item in this order, and its order has not "
-            "said yet whether it was paid. Wait for it, or settle it in Review."
-        )
+    if new_status in _FORWARD.get(order.status, ()) and (why := in_doubt(order)) is not None:
+        raise OrderError(_DOUBT[why])
     now = datetime.now(UTC)
     order.status = new_status
     if new_status is OrderStatus.picking:

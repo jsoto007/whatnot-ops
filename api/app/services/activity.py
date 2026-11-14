@@ -43,6 +43,7 @@ WHATNOT_ORDER_ACTION = {
     "decline": "payment declined",
     "recorded": "sales recorded",
     "reopen": "waiting for a product again after a declined card was paid",
+    "gave_way": "cancelled because the auction went to another win",
     "unmatched": "for a person to check",
     "uncovered": "with no order on Whatnot",
 }

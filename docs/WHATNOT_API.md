@@ -88,6 +88,22 @@ placed. Each recording is matched on its own to the Whatnot show that was live w
    Whatnot yet, Whatnot rejects the token, or the orders do not say who bought them), the
    stream's decline closes the sale as before.
 
+   **An auction has one win.** An auction is a numbered lot of the show ("$1 BEAUTY PULLS
+   #520"). Whatnot's paid order for a lot says who has it:
+   - the payment is its buyer's sale for that lot, even when the laptop read another price
+     (the difference is put to a person);
+   - once the show has ended and all its orders are read, any other sale standing for the
+     lot with no order of its own is cancelled and its stock returns: another buyer's (the
+     lot was won again after their card was declined) or a second copy of the same win.
+     If that buyer's own paid order turns up later, the win is recorded again;
+   - a payment for another listing is never read as a declined card's retry;
+   - what was open about the first buyer's declined payment is answered.
+   On the stream, Whatnot's "won the auction" banner never cancels anything: the same
+   buyer on the same lot again is one sale, and a second buyer on it is recorded with a
+   "One lot, two winners" item on each sale Whatnot has not confirmed. Neither order is
+   picked until a person or Whatnot's order settles it. A title with no lot number, the
+   same number more than half an hour apart, and a "buy it now" order are left alone.
+
    **A declined payment is always put to a person in Review**, and the item clears itself
    when the payment goes through:
    - "Card declined: waiting for Whatnot": the stream showed the card declined and the sale

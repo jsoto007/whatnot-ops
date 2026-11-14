@@ -75,6 +75,12 @@ class Row:
     # A person said the listing is none of the shop's products: its title must not name
     # one either (the winner says what they want, as for a "choose any" lot).
     listing_off: bool = False
+    # From Whatnot's own orders: the order is an auction's, Whatnot's id for the listing
+    # that was auctioned, and whether the row took its sale from a failed attempt it was
+    # paired with (services/whatnot/orders.py: one win per auction).
+    auction: bool = False
+    listing: str | None = None
+    hint_from_retry: bool = False
 
 
 @dataclass(frozen=True)
@@ -257,7 +263,7 @@ def plan(
         if row.action == "skip":
             out.rows.append(row)
             continue
-        sale = _match(show, row, sales, taken)
+        sale = _match(show, row, sales, taken, show_ids)
         if sale is None:
             row.action, row.note = "unmatched", "no sale for this buyer and item in the show"
         else:
@@ -313,7 +319,9 @@ def plan(
     return out
 
 
-def _match(show: Show, row: Row, sales: list[Sale], taken: set[int]) -> Sale | None:
+def _match(
+    show: Show, row: Row, sales: list[Sale], taken: set[int], show_ids: list[int] | None = None
+) -> Sale | None:
     buyer = row.buyer.lower()
     sku = pipeline.listed_sku(show.organization_id, row.sku_id) or (
         None if row.listing_off else pipeline.match_sku(show.organization_id, row.item)
@@ -332,6 +340,35 @@ def _match(show: Show, row: Row, sales: list[Sale], taken: set[int]) -> Sale | N
         # (a re-export lists the paid lot again next to the refunded one).
         candidates = [s for s in candidates if not s.external_order_id]
     if row.ref is not None:
+        if (
+            row.auction
+            and row.status in ("paid", "pending")
+            and (lot := pipeline.auction_of(row.item)) is not None
+        ):
+            # An auction has one win: this buyer's sale for this very lot is the payment's,
+            # even when the player read another price (the difference is put to a person
+            # when it is applied). Still within the win's half hour: lot numbers start
+            # again in the next show. The same price first, then a standing sale, then
+            # the oldest. A failed order keeps the stricter match below.
+            same = [
+                s
+                for s in candidates
+                if (show_ids is None or s.show_id in show_ids)
+                and pipeline.auction_of(s.item_text) == lot
+                and pipeline.same_win(
+                    s.item_text, None, pipeline.won_when(s), row.item, None, row.ordered_at
+                )
+                is not None
+            ]
+            if same:
+                return min(
+                    same,
+                    key=lambda s: (
+                        pipeline.paid_price(s) not in (None, row.price_cents),
+                        s.status not in pipeline.CLOSABLE,
+                        s.id,
+                    ),
+                )
         return _same_win_sale(row, candidates, sku)
 
     def priced(found: list[Sale]) -> Sale | None:

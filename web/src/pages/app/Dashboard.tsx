@@ -184,6 +184,7 @@ const REASON_WORDS: Record<string, [string, string]> = {
   payment_declined: ['declined payment', 'declined payments'],
   decline_untied: ['decline to match to a sale', 'declines to match to a sale'],
   decline_seen: ['declined card waiting for Whatnot', 'declined cards waiting for Whatnot'],
+  lot_won_twice: ['lot with two winners', 'lots with two winners'],
   order_declined: ['declined payment with no sale', 'declined payments with no sale'],
   closed_after_picking: ['item to take out of a package', 'items to take out of a package'],
   unmatched_payment: ['payment with no sale', 'payments with no sale'],

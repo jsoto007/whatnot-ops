@@ -30,6 +30,7 @@ const REASON_LABEL: Record<string, string> = {
   payment_declined: 'Payment declined',
   decline_untied: 'Declined payment: which sale?',
   decline_seen: 'Card declined: waiting for Whatnot',
+  lot_won_twice: 'One lot, two winners',
   order_declined: 'Payment declined: nothing recorded',
   closed_after_picking: 'Closed after picking',
 }
@@ -245,7 +246,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
         )}
         {/* A chat line about a win the video player already recorded: cancel the extra sale,
             or record the line if it really is a separate sale. "Ignore" keeps things as they are. */}
-        {item.reason === 'possible_duplicate' && item.sale && (
+        {(item.reason === 'possible_duplicate' || item.reason === 'lot_won_twice') && item.sale && (
           <button className="btn primary" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'set_status', status: 'cancelled' })} data-testid="cancel-duplicate">
             Cancel this sale
           </button>
@@ -290,7 +291,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
           </button>
         )}
         <button className="btn" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'dismiss' })}>
-          {item.reason === 'payment_declined' ? 'Keep declined' : item.reason === 'decline_seen' ? 'Leave it to Whatnot' : item.reason === 'order_declined' ? 'Got it' : 'Ignore'}
+          {item.reason === 'payment_declined' ? 'Keep declined' : item.reason === 'decline_seen' || item.reason === 'lot_won_twice' ? 'Leave it to Whatnot' : item.reason === 'order_declined' ? 'Got it' : 'Ignore'}
         </button>
       </div>
       {error && <p className="form-error">{error}</p>}

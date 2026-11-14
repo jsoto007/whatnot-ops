@@ -310,6 +310,152 @@ def _recordings_of_the_same_show(show: Show) -> list[int]:
     ) or [show.id]
 
 
+def auction_of(title: str | None) -> str | None:
+    """The auction a listing title names within one show, or None. Whatnot numbers every
+    lot it auctions ("$1 BEAUTY PULLS #520", "CHOOSE ANY PRODUCT YOU WANT #6"), and **an
+    auction has one win** (Javier's rule, 2026-11-13): the same buyer on the same lot again
+    is the same win, and a different buyer on it has taken the win. A title with no lot
+    number names no auction: the same listing may be won many times in a show."""
+    if not title or rules.lot_number(title) is None:
+        return None
+    return catalog.norm_alias(title) or None
+
+
+def holders(show: Show, title: str | None, at: datetime | None) -> list[Sale]:
+    """The sales that hold this auction now: standing and not shipped, in every recording
+    of the show, won within `SAME_WIN_WINDOW` of `at`, oldest first. Empty for a title that
+    names no auction.
+
+    The window matters: lot numbers start again in every show, and one recording can run
+    through two shows, so "#6" three hours ago is another auction. A sale whose win time is
+    not known is left out for the same reason."""
+    key = auction_of(title)
+    if key is None or at is None:
+        return []
+    rows = db.session.scalars(
+        select(Sale)
+        .where(
+            Sale.show_id.in_(_recordings_of_the_same_show(show)),
+            Sale.status.in_(CLOSABLE),
+            func.lower(Sale.item_text) == (title or "").lower(),
+        )
+        .order_by(Sale.id)
+    ).all()
+    return [
+        s
+        for s in rows
+        if auction_of(s.item_text) == key
+        and (won := won_when(s)) is not None
+        and abs(won - at) <= SAME_WIN_WINDOW
+    ]
+
+
+TAKEN_OVER = "the auction went to another buyer"
+
+
+def give_way(sale: Sale, *, winner: str, actor: Actor, where: str = "") -> Sale:
+    """Another win of the same auction is this sale's end: a different buyer has the win
+    now, or it is the same buyer's win recorded a second time. Cancelled like any sale
+    (stock released or returned; picked already: a person takes it out). Only Whatnot's
+    own orders decide this (`whatnot/orders._one_win`); the stream only asks."""
+    same = sale.buyer_username.lower() == winner.lower()
+    reason = (
+        f"the same win, recorded twice{where}"
+        if same
+        else f"the auction was won by {winner}{where}"
+    )
+    set_sale_status(sale, SaleStatus.cancelled, reason=reason[:240], actor=actor)
+    settle_lot_question(sale)
+    return sale
+
+
+# The review item for one lot that the banner showed won by two buyers.
+LOT_WON_TWICE = "lot_won_twice"
+# How a sale that gave way says so (`give_way`); Whatnot's later paid order for the buyer
+# then records the win again instead of meeting a cancelled sale.
+GAVE_WAY = ("the auction was won by ", "the same win, recorded twice")
+
+
+def gave_way(sale: Sale) -> bool:
+    return sale.status is SaleStatus.cancelled and (sale.status_reason or "").startswith(GAVE_WAY)
+
+
+def ask_which_win(show: Show, earlier: Sale, later: Sale) -> list[ReviewItem]:
+    """Whatnot's banner showed the same lot won by two buyers. An auction has one win, and
+    the banner alone cannot say which stands: the lot may have been run again after a
+    declined card (the later buyer has it), or the earlier win's banner may have reached
+    the app late. A person is asked, on each of the two sales Whatnot has not confirmed, so
+    neither buyer's order is picked meanwhile (`orders.in_doubt`). Left alone, Whatnot's
+    orders settle it (`whatnot/orders._one_win`), and a paid order for a doubted sale
+    answers its question."""
+    asked = []
+    for doubted, other in ((earlier, later), (later, earlier)):
+        if doubted.external_order_id:
+            continue  # Whatnot has this one's order: it is not the one in doubt
+        asked.append(
+            open_review(
+                show.organization_id,
+                LOT_WON_TWICE,
+                f"{doubted.item_text} was won by {earlier.buyer_username} and then by "
+                f"{later.buyer_username}. An auction has one winner: if "
+                f"{other.buyer_username} has it, cancel {doubted.buyer_username}'s sale. Or "
+                "leave it: Whatnot's orders settle it by themselves when they are applied.",
+                show_id=doubted.show_id,
+                sale_id=doubted.id,
+            )
+        )
+    return asked
+
+
+def settle_lot_question(closed: Sale) -> None:
+    """One of the two sales of a lot that was asked about is closed: the question on the
+    other one ("if the other buyer has it, cancel this sale") is answered."""
+    if auction_of(closed.item_text) is None:
+        return
+    show = db.session.get(Show, closed.show_id)
+    for item in db.session.scalars(
+        select(ReviewItem)
+        .join(Sale, ReviewItem.sale_id == Sale.id)
+        .where(
+            Sale.show_id.in_(_recordings_of_the_same_show(show)),
+            Sale.id != closed.id,
+            func.lower(Sale.item_text) == (closed.item_text or "").lower(),
+            ReviewItem.status == ReviewStatus.open,
+            ReviewItem.reason == LOT_WON_TWICE,
+        )
+    ):
+        item.status = ReviewStatus.resolved
+        item.resolution = {"by": "the other sale of the lot was closed"}
+        item.resolved_at = datetime.now(UTC)
+
+
+def answer_declines_of(show_ids: list[int], title: str | None, *, winner: str, at) -> None:
+    """Whatnot says the auction went to `winner` and was paid: what was open about ANOTHER
+    buyer's declined payment for that lot (won within `SAME_WIN_WINDOW` of `at`) is
+    answered. Their sale stays declined; nobody has to chase it."""
+    key = auction_of(title)
+    if key is None or at is None:
+        return
+    for item, sale in db.session.execute(
+        select(ReviewItem, Sale)
+        .join(Sale, ReviewItem.sale_id == Sale.id)
+        .where(
+            Sale.show_id.in_(show_ids),
+            Sale.status == SaleStatus.payment_failed,
+            func.lower(Sale.buyer_username) != winner.lower(),
+            func.lower(Sale.item_text) == (title or "").lower(),
+            ReviewItem.status == ReviewStatus.open,
+            ReviewItem.reason == "payment_declined",
+        )
+    ).all():
+        won = won_when(sale)
+        if won is None or abs(won - at) > SAME_WIN_WINDOW:
+            continue
+        item.status = ReviewStatus.resolved
+        item.resolution = {"by": TAKEN_OVER}
+        item.resolved_at = datetime.now(UTC)
+
+
 def listed_sku(org_id: int, sku_id: int | None) -> Sku | None:
     """The product a Whatnot listing is linked to, if it is (still) one of this shop's."""
     if sku_id is None:
@@ -1133,9 +1279,21 @@ def process_show(
                 continue
             if claim_order_sale(show, ev) is not None:
                 continue  # Whatnot's order already made this sale; the line is its evidence
+            # One win per auction. Only Whatnot's own "won the auction" banner counts: a
+            # typed line names a lot too loosely.
+            held = holders(show, ev.item_text, m.captured_at) if c.rule == "player_win" else []
+            if any(s.buyer_username.lower() == c.buyer.lower() for s in held):
+                continue  # this buyer's win of the lot is already recorded
             sku = match_sku(show.organization_id, ev.item_text) if ev.item_text else None
             sale = create_sale(show, ev, sku=sku)
             stats.sales += 1
+            if held:
+                # Other buyers hold the lot. The banner cannot say which win stands, so
+                # nothing is cancelled here: a person is asked, and Whatnot's order decides.
+                # The question sits on every sale in doubt, so neither order is picked.
+                for earlier in held:
+                    ask_which_win(show, earlier, sale)
+                stats.reviews += 1
             if from_player:
                 _flag_chat_sale_for_the_same_win(show, sale, m)
         elif c.kind in (EventKind.cancel, EventKind.payment_failed):
@@ -1548,6 +1706,8 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
         set_sale_status(sale, _status(body.get("status")), reason=f"review #{item.id}", actor=actor)
         item.status = ReviewStatus.resolved
         item.resolution = {"action": "set_status", "status": sale.status.value}
+        if item.reason == LOT_WON_TWICE and sale.status not in CLOSABLE:
+            settle_lot_question(sale)
     else:
         raise ReviewError(f"unknown action {action!r}")
     item.resolved_by_id = user.id if user is not None else None
