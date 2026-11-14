@@ -3,6 +3,7 @@
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import case, func, select
+from sqlalchemy.orm import selectinload
 
 from ..db import db
 from ..models import (
@@ -52,106 +53,135 @@ def _rev(status_filter):
 
 def show_tiles(show: Show) -> dict:
     """The sheet's tiles for one show, plus money and queue counts."""
-    row = db.session.execute(
-        select(
-            _qty(STANDING).label("items"),
-            func.count(func.distinct(case((Sale.status.in_(STANDING), Sale.buyer_username)))).label(
-                "buyers"
-            ),
-            _rev(PAID).label("paid"),
-            # Whatnot charges at the win, so only sales recorded before that wait for the
-            # payment file; an unrecognised item (detected) waits in Review, not for money.
-            _rev((SaleStatus.reserved,)).label("pending"),
-            func.coalesce(func.sum(case((Sale.status.in_(LOST), 1), else_=0)), 0).label("lost"),
-            *[
-                func.coalesce(
-                    func.sum(
-                        case(
-                            ((Sale.status.in_(STANDING)) & (Sale.auction_type == t), Sale.quantity),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label(t)
-                for t in TYPES
-            ],
-        ).where(Sale.show_id == show.id)
-    ).one()
+    return tiles_for([show])[0]
+
+
+def tiles_for(shows: list[Show]) -> list[dict]:
+    """`show_tiles` for many shows in a fixed number of queries (grouped by show), in the
+    order given."""
+    ids = [s.id for s in shows]
+    if not ids:
+        return []
+    sale_rows = {
+        r.show_id: r
+        for r in db.session.execute(
+            select(
+                Sale.show_id,
+                _qty(STANDING).label("items"),
+                func.count(
+                    func.distinct(case((Sale.status.in_(STANDING), Sale.buyer_username)))
+                ).label("buyers"),
+                _rev(PAID).label("paid"),
+                # Whatnot charges at the win, so only sales recorded before that wait for the
+                # payment file; an unrecognised item (detected) waits in Review, not for money.
+                _rev((SaleStatus.reserved,)).label("pending"),
+                func.coalesce(func.sum(case((Sale.status.in_(LOST), 1), else_=0)), 0).label("lost"),
+                *[
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    (Sale.status.in_(STANDING)) & (Sale.auction_type == t),
+                                    Sale.quantity,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label(t)
+                    for t in TYPES
+                ],
+            )
+            .where(Sale.show_id.in_(ids))
+            .group_by(Sale.show_id)
+        )
+    }
     # Gifts and no-winner auctions are lines, not sales; only host/platform lines count,
     # or a viewer typing "won the giveaway!" would move the tile.
-    events = dict(
-        db.session.execute(
-            select(ParsedEvent.kind, func.count())
-            .where(ParsedEvent.show_id == show.id, ParsedEvent.confidence >= 0.8)
-            .group_by(ParsedEvent.kind)
-        ).all()
-    )
+    events: dict[int, dict] = {i: {} for i in ids}
+    for show_id, kind, n in db.session.execute(
+        select(ParsedEvent.show_id, ParsedEvent.kind, func.count())
+        .where(ParsedEvent.show_id.in_(ids), ParsedEvent.confidence >= 0.8)
+        .group_by(ParsedEvent.show_id, ParsedEvent.kind)
+    ):
+        events[show_id][kind] = n
     # The sheet's "No-Picks": buyers who won and then picked nothing (the sale names no
     # item), not auctions that ended without a winner (that is `noWinner`).
-    no_picks = (
-        db.session.scalar(
-            select(func.count())
-            .select_from(Sale)
+    no_picks = dict(
+        db.session.execute(
+            select(Sale.show_id, func.count())
             .where(
-                Sale.show_id == show.id,
+                Sale.show_id.in_(ids),
                 Sale.status.in_(STANDING),
                 Sale.sku_id.is_(None),
                 Sale.item_text == "",
             )
-        )
-        or 0
-    )
-    orders = dict(
-        db.session.execute(
-            select(Order.status, func.count())
-            .where(Order.show_id == show.id)
-            .group_by(Order.status)
+            .group_by(Sale.show_id)
         ).all()
     )
-    messages = (
-        db.session.scalar(
-            select(func.count()).select_from(ChatMessage).where(ChatMessage.show_id == show.id)
-        )
-        or 0
+    orders: dict[int, dict] = {i: {} for i in ids}
+    for show_id, status, n in db.session.execute(
+        select(Order.show_id, Order.status, func.count())
+        .where(Order.show_id.in_(ids))
+        .group_by(Order.show_id, Order.status)
+    ):
+        orders[show_id][status] = n
+    messages = dict(
+        db.session.execute(
+            select(ChatMessage.show_id, func.count())
+            .where(ChatMessage.show_id.in_(ids))
+            .group_by(ChatMessage.show_id)
+        ).all()
     )
-    open_reviews = (
-        db.session.scalar(
-            select(func.count())
-            .select_from(ReviewItem)
-            .where(ReviewItem.show_id == show.id, ReviewItem.status == ReviewStatus.open)
-        )
-        or 0
+    open_reviews = dict(
+        db.session.execute(
+            select(ReviewItem.show_id, func.count())
+            .where(ReviewItem.show_id.in_(ids), ReviewItem.status == ReviewStatus.open)
+            .group_by(ReviewItem.show_id)
+        ).all()
     )
-    return {
-        "showId": show.id,
-        "date": show.show_date.isoformat(),
-        "startedAt": show.started_at.isoformat(),
-        "updatedAt": show.updated_at.isoformat(),
-        "live": (datetime.now(UTC) - show.updated_at) < timedelta(minutes=10),
-        "messages": messages,
-        "itemsSold": int(row.items),
-        "buyers": int(row.buyers),
-        "red": int(row.red),
-        "bundles": int(row.bundle),
-        "ultra": int(row.ultra),
-        "mega": int(row.mega),
-        "quickHit": int(row.quick_hit),
-        "gifts": _whatnot_giveaways(show) or int(events.get(EventKind.gift, 0)),
-        "noPicks": int(no_picks),
-        "noWinner": int(events.get(EventKind.no_pick, 0)),
-        "cancelled": int(row.lost),
-        "revenuePaidCents": int(row.paid),
-        "revenuePendingCents": int(row.pending),
-        "orders": {k.value: int(v) for k, v in orders.items()},
-        "toFulfil": int(
-            sum(
-                v
-                for k, v in orders.items()
-                if k in (OrderStatus.paid, OrderStatus.picking, OrderStatus.packed)
-            )
-        ),
-        "openReviews": int(open_reviews),
-    }
+    giveaways = _whatnot_giveaways_for(shows)
+    out = []
+    for show in shows:
+        row = sale_rows.get(show.id)
+
+        def n(name: str, row=row) -> int:
+            return int(getattr(row, name)) if row is not None else 0
+
+        ev, od = events[show.id], orders[show.id]
+        out.append(
+            {
+                "showId": show.id,
+                "date": show.show_date.isoformat(),
+                "startedAt": show.started_at.isoformat(),
+                "updatedAt": show.updated_at.isoformat(),
+                "live": (datetime.now(UTC) - show.updated_at) < timedelta(minutes=10),
+                "messages": int(messages.get(show.id, 0)),
+                "itemsSold": n("items"),
+                "buyers": n("buyers"),
+                "red": n("red"),
+                "bundles": n("bundle"),
+                "ultra": n("ultra"),
+                "mega": n("mega"),
+                "quickHit": n("quick_hit"),
+                "gifts": giveaways.get(show.id, 0) or int(ev.get(EventKind.gift, 0)),
+                "noPicks": int(no_picks.get(show.id, 0)),
+                "noWinner": int(ev.get(EventKind.no_pick, 0)),
+                "cancelled": n("lost"),
+                "revenuePaidCents": n("paid"),
+                "revenuePendingCents": n("pending"),
+                "orders": {k.value: int(v) for k, v in od.items()},
+                "toFulfil": int(
+                    sum(
+                        v
+                        for k, v in od.items()
+                        if k in (OrderStatus.paid, OrderStatus.picking, OrderStatus.packed)
+                    )
+                ),
+                "openReviews": int(open_reviews.get(show.id, 0)),
+            }
+        )
+    return out
 
 
 # Why a winner has nothing to pack, in the order the team cares about.
@@ -164,19 +194,20 @@ WALKAWAY = {
 }
 
 
-def _whatnot_giveaways(show: Show) -> int:
-    """Giveaways Whatnot's own orders list for the show (0 until they are read). The chat names
-    a giveaway winner only when the host or Whatnot types it; on 2026-11-13 nobody did (0 here
-    against Whatnot's 8). Like the order slips, Whatnot's count replaces the chat's when it
-    has one."""
+def _whatnot_giveaways_for(shows: list[Show]) -> dict[int, int]:
+    """show id → giveaways Whatnot's own orders list for it (missing: 0 until they are read).
+    The chat names a giveaway winner only when the host or Whatnot types it; on 2026-11-13
+    nobody did (0 here against Whatnot's 8). Like the order slips, Whatnot's count replaces
+    the chat's when it has one."""
     from ..models import WhatnotOrder, WhatnotShow
     from .whatnot.orders import GIVEAWAY
 
-    if not show.whatnot_show_id:
-        return 0
-    return int(
-        db.session.scalar(
-            select(func.count())
+    linked = {s.id: s.whatnot_show_id for s in shows if s.whatnot_show_id}
+    if not linked:
+        return {}
+    per_ws = dict(
+        db.session.execute(
+            select(WhatnotShow.id, func.count())
             .select_from(WhatnotOrder)
             .join(
                 WhatnotShow,
@@ -184,13 +215,14 @@ def _whatnot_giveaways(show: Show) -> int:
                 & (WhatnotShow.whatnot_id == WhatnotOrder.whatnot_show_id),
             )
             .where(
-                WhatnotShow.id == show.whatnot_show_id,
+                WhatnotShow.id.in_(set(linked.values())),
                 WhatnotOrder.transaction_type == GIVEAWAY,
                 WhatnotOrder.status.not_in(("cancelled", "failed")),
             )
-        )
-        or 0
+            .group_by(WhatnotShow.id)
+        ).all()
     )
+    return {sid: int(per_ws.get(ws, 0)) for sid, ws in linked.items()}
 
 
 def winners_without_purchase(show: Show) -> list[dict]:
@@ -208,7 +240,15 @@ def winners_without_purchase(show: Show) -> list[dict]:
         )
     )
     rows: list[dict] = []
-    sales = db.session.scalars(select(Sale).where(Sale.show_id == show.id).order_by(Sale.id)).all()
+    sales = db.session.scalars(
+        select(Sale)
+        .where(Sale.show_id == show.id)
+        .options(
+            selectinload(Sale.sku).selectinload(Sku.product),
+            selectinload(Sale.event).selectinload(ParsedEvent.message),
+        )
+        .order_by(Sale.id)
+    ).all()
     for s in sales:
         if s.status in LOST:
             outcome = s.status.value
@@ -239,6 +279,7 @@ def winners_without_purchase(show: Show) -> list[dict]:
             ParsedEvent.confidence < 0.8,
             ParsedEvent.id.not_in(confirmed),
         )
+        .options(selectinload(ParsedEvent.message))
         .order_by(ParsedEvent.id)
     ).all()
     # A chat line about a win, for a buyer the video player already recorded winning, is the
@@ -422,7 +463,7 @@ def shows_table(
     if until:
         q = q.where(Show.show_date <= until)
     shows = db.session.scalars(q.order_by(Show.started_at.desc()).limit(limit)).all()
-    return [show_tiles(s) for s in shows]
+    return tiles_for(list(shows))
 
 
 def totals(rows: list[dict]) -> dict:
@@ -574,6 +615,7 @@ def _low_stock(org_id: int) -> list[dict]:
             Sku.active.is_(True),
             Sku.on_hand - Sku.reserved <= Sku.low_stock_at,
         )
+        .options(selectinload(Sku.product))
         .order_by(Sku.on_hand - Sku.reserved, Sku.code)
         .limit(20)
     ).all()

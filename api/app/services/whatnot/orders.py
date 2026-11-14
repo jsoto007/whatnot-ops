@@ -104,6 +104,12 @@ def decides(show: Show) -> bool:
     return nameless is None
 
 
+def _chunks(ids: list[int], size: int = 1000):
+    """`ids` in slices small enough for one `IN (…)` each."""
+    for i in range(0, len(ids), size):
+        yield ids[i : i + size]
+
+
 def _orders(ws: WhatnotShow) -> list[WhatnotOrder]:
     return db.session.scalars(
         select(WhatnotOrder)
@@ -537,18 +543,30 @@ def apply(show: Show, *, user=None) -> dict:
         on_unmatched=record,
         flag_uncovered=_complete(ws),
     )
-    # Remember which sale each order item is, and when it was ordered.
-    for row in plan.rows:
-        if row.ref is None or row.sale_id is None:
-            continue
-        item = db.session.get(WhatnotOrderItem, row.ref)
+    # Remember which sale each order item is, and when it was ordered. The items and sales
+    # are read in one query each, not one per row.
+    tied = [row for row in plan.rows if row.ref is not None and row.sale_id is not None]
+    items = (
+        {
+            i.id: i
+            for i in db.session.scalars(
+                select(WhatnotOrderItem).where(WhatnotOrderItem.id.in_({r.ref for r in tied}))
+            )
+        }
+        if tied
+        else {}
+    )
+    sales = reconcile.load_sales(r.sale_id for r in tied)
+    for row in tied:
+        item = items.get(row.ref)
         if item is not None and item.sale_id != row.sale_id:
             item.sale_id = row.sale_id
-        sale = db.session.get(Sale, row.sale_id)
+        sale = sales.get(row.sale_id)
         if sale is not None:
             _note_order_time(sale, row)
             if sale.external_order_id is None and row.action != "unmatched":
                 sale.external_order_id = row.external_id
+    del items, sales  # the steps below read what they need themselves
     _flag_declines(primary, plan, show_ids)
     gave_way = _one_win(primary, plan, show_ids, _complete(ws))
     # A sale that gave way is no longer "a sale with no order": it is settled.
@@ -577,15 +595,22 @@ def _one_win(show: Show, plan: Plan, show_ids: list[int], complete: bool) -> set
     with no number names no one auction, and lot numbers start again in the next show a
     recording runs into. Returns the sales that gave way."""
     has_order = {r.sale_id for r in plan.rows if r.sale_id and r.status in ("paid", "pending")}
+    candidates = [
+        row
+        for row in plan.rows
+        if row.auction
+        and row.status == "paid"
+        and row.sale_id
+        and row.action not in ("skip", "unmatched")
+        and pipeline.auction_of(row.item) is not None
+    ]
+    sales = reconcile.load_sales(row.sale_id for row in candidates)
     winners = []
-    for row in plan.rows:
-        if not row.auction or row.status != "paid" or not row.sale_id:
-            continue
-        if row.action in ("skip", "unmatched") or pipeline.auction_of(row.item) is None:
-            continue
-        sale = db.session.get(Sale, row.sale_id)
+    for row in candidates:
+        sale = sales.get(row.sale_id)
         if sale is not None and sale.status in STANDING:
             winners.append((row, sale))
+    del sales
     if not winners:
         return set()
     gone: set[int] = set()
@@ -599,8 +624,50 @@ def _one_win(show: Show, plan: Plan, show_ids: list[int], complete: bool) -> set
         if complete
         else []
     )
+    # The pool by title: only a sale with the very same title (`same_listing` 0) can be
+    # another win of the lot, so each winner looks at those alone, in the same order.
+    by_title: dict[str, list[Sale]] = {}
+    for other in pool:
+        if other.external_order_id:
+            continue
+        key = norm_alias(other.item_text or "")
+        if key:
+            by_title.setdefault(key, []).append(other)
+    # Open "declined, no sale here" items of these shows, read once (none are made below),
+    # by title: only the very same title (`same_listing` 0) can be the winner's auction.
+    declined_by_title: dict[str, list[ReviewItem]] = {}
+    for item in db.session.scalars(
+        select(ReviewItem)
+        .where(
+            ReviewItem.organization_id == show.organization_id,
+            ReviewItem.show_id.in_(show_ids),
+            ReviewItem.reason == ORDER_DECLINED,
+            ReviewItem.status == ReviewStatus.open,
+        )
+        .order_by(ReviewItem.id)
+    ):
+        key = norm_alias(str((item.proposal or {}).get("item") or ""))
+        if key:
+            declined_by_title.setdefault(key, []).append(item)
+    # Whether any other buyer's declined payment is still open here: when none is (the usual
+    # case), there is nothing for `answer_declines_of` to answer.
+    any_declined = (
+        db.session.scalar(
+            select(ReviewItem.id)
+            .join(Sale, ReviewItem.sale_id == Sale.id)
+            .where(
+                Sale.show_id.in_(show_ids),
+                Sale.status == SaleStatus.payment_failed,
+                ReviewItem.status == ReviewStatus.open,
+                ReviewItem.reason == "payment_declined",
+            )
+            .limit(1)
+        )
+        is not None
+    )
     for row, sale in winners:
-        for other in pool:
+        title = norm_alias(row.item or "")
+        for other in by_title.get(title, ()):
             if other.id == sale.id or other.id in has_order or other.id in gone:
                 continue
             if other.external_order_id or pipeline.same_listing(other.item_text, row.item) != 0:
@@ -613,15 +680,11 @@ def _one_win(show: Show, plan: Plan, show_ids: list[int], complete: bool) -> set
                 other, winner=row.buyer, actor=pipeline.WHATNOT_ACTOR, where=" on Whatnot"
             )
             gone.add(other.id)
-        pipeline.answer_declines_of(show_ids, row.item, winner=row.buyer, at=row.ordered_at)
-        for item in db.session.scalars(
-            select(ReviewItem).where(
-                ReviewItem.organization_id == show.organization_id,
-                ReviewItem.show_id.in_(show_ids),
-                ReviewItem.reason == ORDER_DECLINED,
-                ReviewItem.status == ReviewStatus.open,
-            )
-        ):
+        if any_declined:
+            pipeline.answer_declines_of(show_ids, row.item, winner=row.buyer, at=row.ordered_at)
+        for item in declined_by_title.get(title, ()):
+            if item.status != ReviewStatus.open:
+                continue  # answered for an earlier winner of this run
             said = item.proposal or {}
             then = said.get("orderedAt")
             if (
@@ -648,8 +711,10 @@ def _flag_declines(show: Show, plan: Plan, show_ids: list[int]) -> None:
     - a failed order with no sale here (`_flag_unrecorded`);
     - a second win of the same listing that the paid order did not cover (`_flag_twin`)."""
     by_itself = decides(show)
+    sales = reconcile.load_sales(row.sale_id for row in plan.rows)
+    answered: list[int] = []  # standing sales Whatnot says are paid
     for row in plan.rows:
-        sale = db.session.get(Sale, row.sale_id) if row.sale_id else None
+        sale = sales.get(row.sale_id) if row.sale_id else None
         if sale is None:
             continue
         if row.action == "decline" and sale.status is SaleStatus.payment_failed:
@@ -659,16 +724,20 @@ def _flag_declines(show: Show, plan: Plan, show_ids: list[int]) -> None:
             and row.action in ("unchanged", "mark_paid", REOPEN)
             and sale.status in STANDING
         ):
-            for item in db.session.scalars(
-                select(ReviewItem).where(
-                    ReviewItem.sale_id == sale.id,
-                    ReviewItem.status == ReviewStatus.open,
-                    ReviewItem.reason.in_(ANSWERED_BY_PAYMENT),
-                )
-            ):
-                item.status = ReviewStatus.resolved
-                item.resolution = {"by": "paid on Whatnot"}
-                item.resolved_at = datetime.now(UTC)
+            answered.append(sale.id)
+    # Their open doubts about the payment, in one query for all of them.
+    for chunk in _chunks(answered):
+        for item in db.session.scalars(
+            select(ReviewItem).where(
+                ReviewItem.sale_id.in_(chunk),
+                ReviewItem.status == ReviewStatus.open,
+                ReviewItem.reason.in_(ANSWERED_BY_PAYMENT),
+            )
+        ):
+            item.status = ReviewStatus.resolved
+            item.resolution = {"by": "paid on Whatnot"}
+            item.resolved_at = datetime.now(UTC)
+    del sales
     _flag_unrecorded(show, plan, show_ids)
     _flag_twin(show, plan)
 

@@ -7,6 +7,7 @@ import { api, apiGet, type PickFound, type Product, type ReviewItem, type Sku } 
 import { fmtLongDate, plural } from '../../lib/format'
 import { pickWords, reviewSourceLabel } from '../../lib/labels'
 import { groupByShow, reasonKey, type ShowGroup } from '../../lib/reviewGroups'
+import { invalidateSales } from '../../lib/invalidate'
 
 /** A SKU as the picker lists it: with its product's name (the chat names come along from /api/products). */
 type ReviewSku = Sku & { productName: string }
@@ -61,7 +62,7 @@ export function Review() {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['review'], queryFn: () => apiGet<{ items: ReviewItem[] }>('/api/review') })
   const products = useQuery({ queryKey: ['products'], queryFn: () => apiGet<{ products: Product[] }>('/api/products') })
-  const refresh = () => qc.invalidateQueries()
+  const refresh = () => invalidateSales(qc)
   if (q.isPending) return <p className="muted">Loading…</p>
   if (q.isError) return <p className="form-error">Could not load the review queue.</p>
   const groups = groupByShow(q.data.items)

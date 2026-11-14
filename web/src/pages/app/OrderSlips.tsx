@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { invalidateSales } from '../../lib/invalidate'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { api, apiGet, money, type BuyerSlip, type OrderSlips as Doc, type SlipRow } from '../../lib/api'
@@ -87,7 +88,7 @@ export function OrderSlips() {
         <>
           <Cover doc={doc} />
           {doc.slips.map((b) => (
-            <Slip key={b.username} b={b} date={sheetDate(doc.showDate)} showId={showId} canEdit={can('orders.fulfill')} />
+            <Slip key={b.username} b={b} date={sheetDate(doc.showDate)} canEdit={can('orders.fulfill')} />
           ))}
         </>
       )}
@@ -191,7 +192,7 @@ function Cover({ doc }: { doc: Doc }) {
   )
 }
 
-function Slip({ b, date, showId, canEdit }: { b: BuyerSlip; date: string; showId: string; canEdit: boolean }) {
+function Slip({ b, date, canEdit }: { b: BuyerSlip; date: string; canEdit: boolean }) {
   return (
     <div className="card slip slips-page" data-testid={`slip-${b.username}`}>
       <h3 className="slips-buyer">{slipTitle(b)}</h3>
@@ -220,7 +221,7 @@ function Slip({ b, date, showId, canEdit }: { b: BuyerSlip; date: string; showId
         </thead>
         <tbody>
           {b.rows.map((r, i) => (
-            <Row key={i} r={r} date={date} buyer={b.username} showId={showId} canEdit={canEdit} />
+            <Row key={i} r={r} date={date} buyer={b.username} canEdit={canEdit} />
           ))}
         </tbody>
       </table>
@@ -242,11 +243,12 @@ function saidText(r: SlipRow): string {
   return [first, `… ${r.saidMore} more …`, ...rest].join(' · ')
 }
 
-function Row({ r, date, buyer, showId, canEdit }: { r: SlipRow; date: string; buyer: string; showId: string; canEdit: boolean }) {
+function Row({ r, date, buyer, canEdit }: { r: SlipRow; date: string; buyer: string; canEdit: boolean }) {
   const qc = useQueryClient()
   const gifts = useMutation({
     mutationFn: (giftCount: number) => api('PATCH', `/api/orders/sales/${r.saleId}/gifts`, { giftCount }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['order-slips', showId] }),
+    // The gift count also shows on the order, the pick list and the buyer's page.
+    onSuccess: () => invalidateSales(qc),
   })
   const editable = canEdit && r.kind === 'sale' && r.saleId != null && !r.continued
   const label = r.giftCount ? `Gift ${r.giftCount}` : ''

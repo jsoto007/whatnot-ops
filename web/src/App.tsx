@@ -1,30 +1,49 @@
+import { lazy, Suspense, type ComponentType } from 'react'
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes } from 'react-router'
 import { AuthProvider } from './auth/AuthProvider'
 import { useAuth } from './auth/useAuth'
 import { RedirectIfAuthed, RequireAuth, RequirePermission } from './auth/guards'
 import { Footer } from './components/Footer'
-import { AcceptInvite } from './pages/AcceptInvite'
-import { Privacy, Terms } from './pages/Legal'
-import { LicenceTerms } from './pages/LicenceTerms'
 import { Login } from './pages/Login'
-import { Forgot, Reset } from './pages/Password'
 import { Signup } from './pages/Signup'
-import { BuyerPage, Buyers } from './pages/app/Buyers'
 import { Dashboard } from './pages/app/Dashboard'
-import { Inventory } from './pages/app/Inventory'
 import { AppLayout } from './pages/app/Layout'
-import { Giveaways } from './pages/app/Giveaways'
-import { OrderDetail, Orders, PickList } from './pages/app/Orders'
-import { OrderSlips } from './pages/app/OrderSlips'
-import { Products } from './pages/app/Products'
-import { Reports } from './pages/app/Reports'
-import { Settings } from './pages/app/Settings'
-import { Shipping } from './pages/app/Shipping'
-import { Review } from './pages/app/Review'
-import { ShowDetail } from './pages/app/ShowDetail'
 import { Shows } from './pages/app/Shows'
-import { Team } from './pages/app/Team'
-import { WhatnotListings } from './pages/app/WhatnotListings'
+
+/** A page loaded on first visit, with a small fallback while its code arrives (keeps the sidebar and header in place). */
+function lazyPage<K extends string>(load: () => Promise<Record<K, ComponentType>>, name: K) {
+  const Page = lazy<ComponentType>(async () => ({ default: (await load())[name] }))
+  return function LazyPage() {
+    return (
+      <Suspense fallback={<p className="muted">Loading…</p>}>
+        <Page />
+      </Suspense>
+    )
+  }
+}
+
+const AcceptInvite = lazyPage(() => import('./pages/AcceptInvite'), 'AcceptInvite')
+const Terms = lazyPage(() => import('./pages/Legal'), 'Terms')
+const Privacy = lazyPage(() => import('./pages/Legal'), 'Privacy')
+const LicenceTerms = lazyPage(() => import('./pages/LicenceTerms'), 'LicenceTerms')
+const Forgot = lazyPage(() => import('./pages/Password'), 'Forgot')
+const Reset = lazyPage(() => import('./pages/Password'), 'Reset')
+const Buyers = lazyPage(() => import('./pages/app/Buyers'), 'Buyers')
+const BuyerPage = lazyPage(() => import('./pages/app/Buyers'), 'BuyerPage')
+const Inventory = lazyPage(() => import('./pages/app/Inventory'), 'Inventory')
+const Giveaways = lazyPage(() => import('./pages/app/Giveaways'), 'Giveaways')
+const Orders = lazyPage(() => import('./pages/app/Orders'), 'Orders')
+const OrderDetail = lazyPage(() => import('./pages/app/Orders'), 'OrderDetail')
+const PickList = lazyPage(() => import('./pages/app/Orders'), 'PickList')
+const OrderSlips = lazyPage(() => import('./pages/app/OrderSlips'), 'OrderSlips')
+const Products = lazyPage(() => import('./pages/app/Products'), 'Products')
+const Reports = lazyPage(() => import('./pages/app/Reports'), 'Reports')
+const Settings = lazyPage(() => import('./pages/app/Settings'), 'Settings')
+const Shipping = lazyPage(() => import('./pages/app/Shipping'), 'Shipping')
+const Review = lazyPage(() => import('./pages/app/Review'), 'Review')
+const ShowDetail = lazyPage(() => import('./pages/app/ShowDetail'), 'ShowDetail')
+const Team = lazyPage(() => import('./pages/app/Team'), 'Team')
+const WhatnotListings = lazyPage(() => import('./pages/app/WhatnotListings'), 'WhatnotListings')
 
 function PublicShell({ children }: { children: React.ReactNode }) {
   return (

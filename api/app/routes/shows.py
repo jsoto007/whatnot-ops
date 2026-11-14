@@ -1,5 +1,5 @@
 from flask import Blueprint, g, jsonify, request
-from sqlalchemy import func, select
+from sqlalchemy import func, literal_column, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import selectinload
 
@@ -15,6 +15,7 @@ from ..models import (
     ReviewStatus,
     Sale,
     Show,
+    Sku,
     WhatnotShow,
 )
 from ..services import audit, jobs, picks, pipeline, ratelimit, sale_chat, sale_mode, shelves
@@ -78,7 +79,11 @@ def _stats(show: Show) -> dict:
     )
     job = db.session.scalar(
         select(Job)
-        .where(Job.kind == "parse_show", Job.payload["show_id"].as_integer() == show.id)
+        # Written as ix_jobs_kind_show's own expression, so the index serves it.
+        .where(
+            Job.kind == "parse_show",
+            Job.payload.op("->>")(literal_column("'show_id'")) == str(show.id),
+        )
         .order_by(Job.id.desc())
         .limit(1)  # a long show leaves one job per upload batch
     )
@@ -298,7 +303,7 @@ def sales(show_id: int):
         select(Sale)
         .where(Sale.show_id == show.id)
         .options(
-            selectinload(Sale.sku),
+            selectinload(Sale.sku).selectinload(Sku.product),
             selectinload(Sale.event).selectinload(ParsedEvent.message),
             selectinload(Sale.show),
         )

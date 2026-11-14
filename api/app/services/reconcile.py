@@ -259,11 +259,16 @@ def plan(
     ).all()
     taken: set[int] = set()
     out = Plan()
+    # Each buyer's sales, in the same order: a row only ever matches its own buyer's sales,
+    # so this keeps the match linear in rows + sales instead of rows × sales.
+    by_buyer: dict[str, list[Sale]] = {}
+    for s in sales:
+        by_buyer.setdefault(s.buyer_username.lower(), []).append(s)
     for row in rows:
         if row.action == "skip":
             out.rows.append(row)
             continue
-        sale = _match(show, row, sales, taken, show_ids)
+        sale = _match(show, row, by_buyer.get(row.buyer.lower(), []), taken, show_ids)
         if sale is None:
             row.action, row.note = "unmatched", "no sale for this buyer and item in the show"
         else:
@@ -323,11 +328,23 @@ def _match(
     show: Show, row: Row, sales: list[Sale], taken: set[int], show_ids: list[int] | None = None
 ) -> Sale | None:
     buyer = row.buyer.lower()
-    sku = pipeline.listed_sku(show.organization_id, row.sku_id) or (
-        None if row.listing_off else pipeline.match_sku(show.organization_id, row.item)
-    )
-    key = catalog.norm_alias(row.item)
     candidates = [s for s in sales if s.id not in taken and s.buyer_username.lower() == buyer]
+    if not candidates:
+        return None  # every way below needs one of the buyer's sales
+    found: list = []
+
+    def sku_of():
+        """The row's product, looked up only when a match needs it: a row tied to its sale
+        before (the hint) or by its order id never does, which is every row of an order
+        that was applied already."""
+        if not found:
+            found.append(
+                pipeline.listed_sku(show.organization_id, row.sku_id)
+                or (None if row.listing_off else pipeline.match_sku(show.organization_id, row.item))
+            )
+        return found[0]
+
+    key = catalog.norm_alias(row.item)
     if row.sale_hint is not None:
         for s in candidates:
             if s.id == row.sale_hint:
@@ -369,7 +386,7 @@ def _match(
                         s.id,
                     ),
                 )
-        return _same_win_sale(row, candidates, sku)
+        return _same_win_sale(row, candidates, sku_of())
 
     def priced(found: list[Sale]) -> Sale | None:
         # One buyer can win several lots of one listing at different prices: the price
@@ -391,6 +408,7 @@ def _match(
     exact = priced([s for s in candidates if key and catalog.norm_alias(s.item_text) == key])
     if exact is not None:
         return exact
+    sku = sku_of()
     by_sku = priced([s for s in candidates if sku is not None and s.sku_id == sku.id])
     if by_sku is not None:
         return by_sku
@@ -459,10 +477,21 @@ def apply(
     may settle a paid row no sale matched (Whatnot's own orders record the sale) and
     returns True when it did; otherwise the row goes to Review. `flag_uncovered` is False
     while the record cannot be complete yet (a show still live)."""
+    # The sales this loop reads, in one query rather than one per row. Held only for the
+    # loop: a state change still re-reads its sale under a lock (`set_sale_status`).
+    sales = load_sales(
+        row.sale_id
+        for row in p.rows
+        if row.sale_id
+        and (
+            (row.action == "unchanged" and row.status == "paid")
+            or row.action in ("mark_paid", "cancel", "decline")
+        )
+    )
     for row in p.rows:
         if row.action == "unchanged" and row.status == "paid":
             # Already paid (Whatnot charges at the win): the file only confirms it.
-            sale = db.session.get(Sale, row.sale_id)
+            sale = sales.get(row.sale_id)
             if _player_price_differs(sale, row):
                 _review_price(show, sale, row, words)  # not confirmed until a person checks it
             elif sale.status_reason == pipeline.AUTOPAY_REASON:
@@ -471,7 +500,7 @@ def apply(
                 sale.external_order_id = sale.external_order_id or row.external_id
         if row.action not in ("mark_paid", "cancel", "decline"):
             continue
-        sale = db.session.get(Sale, row.sale_id)
+        sale = sales.get(row.sale_id)
         if row.action == "mark_paid":
             if sale.status is SaleStatus.detected:
                 # Paid but never reserved (unknown item): it still counts as sold.
@@ -499,6 +528,7 @@ def apply(
                 reason=words.void(import_id, row.status),
                 actor=actor,
             )
+    del sales  # what `on_unmatched` locks and reads below, it reads fresh
     seen: dict[tuple[str, str], int] = {}
     for row in p.rows:
         if row.action == "unmatched":
@@ -507,8 +537,9 @@ def apply(
             k = (row.buyer.lower(), row.item.lower())
             seen[k] = seen.get(k, 0) + 1
             _review_unmatched(show, row, import_id, occurrence=seen[k], words=words)
+    uncovered = load_sales(p.uncovered if flag_uncovered else ())
     for sale_id in p.uncovered if flag_uncovered else ():
-        sale = db.session.get(Sale, sale_id)
+        sale = uncovered.get(sale_id)
         sale.flagged = True
         pipeline.open_review(
             show.organization_id,
@@ -545,14 +576,31 @@ def _orders_of(show: Show, sale_ids: set[int] | None = None):
     of the same Whatnot show."""
     from ..models import Order
 
-    orders = set(db.session.scalars(select(Order).where(Order.show_id == show.id)).all())
+    # Each order's sales come with it: `orders.refresh` reads them for every order.
+    orders = set(
+        db.session.scalars(
+            select(Order).where(Order.show_id == show.id).options(selectinload(Order.sales))
+        ).all()
+    )
     if sale_ids:
         orders |= set(
             db.session.scalars(
-                select(Order).join(Sale, Sale.order_id == Order.id).where(Sale.id.in_(sale_ids))
+                select(Order)
+                .join(Sale, Sale.order_id == Order.id)
+                .where(Sale.id.in_(sale_ids))
+                .options(selectinload(Order.sales))
             ).all()
         )
     return sorted(orders, key=lambda o: o.id)
+
+
+def load_sales(ids) -> dict[int, Sale]:
+    """Sales by id in one query (the ones already in the session as they are, like
+    `session.get`). The caller keeps the dict while it reads them."""
+    wanted = {i for i in ids if i}
+    if not wanted:
+        return {}
+    return {s.id: s for s in db.session.scalars(select(Sale).where(Sale.id.in_(wanted)))}
 
 
 def _review_unmatched(

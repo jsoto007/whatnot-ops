@@ -37,7 +37,15 @@ const WIN_POLL_MS = 500
 /** Declines outside the player (the Sold tab) are looked for on the timer, at most this often. */
 const PAGE_SCAN_MS = 1000
 /** Stock moves once an upload is parsed (a few seconds), so a slower poll is enough. */
-const STOCK_POLL_MS = 8000
+const STOCK_POLL_MS = 20_000
+/** The stock is also read right after an upload is acknowledged, but not more often than this. */
+const STOCK_AFTER_UPLOAD_MS = 3000
+/**
+ * The page-wide decline walk costs 5-30 ms on a big page. It runs only when something outside
+ * the chat and our panel changed, while a decline is holding, or at least this often (a net for
+ * a change the observer cannot see, such as a re-attached chat box).
+ */
+const PAGE_BACKSTOP_MS = 15_000
 /** How often a recording checks the tab is still on the show's page. */
 const PAGE_POLL_MS = 1000
 /**
@@ -96,6 +104,11 @@ export class Controller {
   private needs: ShowNeeds | null = null
   private declines: DeclineWatcher | null = null
   private lastPageScan = 0
+  /** Something outside the chat box and the panel changed since the last page-wide decline scan. */
+  private pageDirty = true
+  private pageObserver: MutationObserver | null = null
+  private lastStockAt = 0
+  private lastSentSeen: number | undefined
   private winTimer: ReturnType<typeof setInterval> | null = null
   /** When the last chat line arrived, and whether the panel says the chat went quiet. */
   private lastChatAt = 0
@@ -400,6 +413,8 @@ export class Controller {
     this.declines = new DeclineWatcher(this.startedAt!)
     this.declines.remember(this.log)
     this.lastPageScan = 0
+    this.pageDirty = true
+    this.watchPage()
     this.winTimer = setInterval(() => this.checkPlayer(true), WIN_POLL_MS)
     this.checkPlayer(true)
     this.stockTimer = setInterval(() => void this.checkStock(), STOCK_POLL_MS)
@@ -419,6 +434,8 @@ export class Controller {
     this.buyerAsk++ // an answer still on its way is not shown
     this.panel.setBuyer('')
     this.declines = null
+    this.pageObserver?.disconnect()
+    this.pageObserver = null
     this.stopStock()
     this.renderWins() // what the web app said about this show no longer applies
     this.playerObserver?.disconnect()
@@ -473,10 +490,38 @@ export class Controller {
   private declineScan(timer: boolean): { page: boolean; ignore: (n: Node) => boolean } {
     const rec = this.recorder
     const now = Date.now()
-    const page = timer && !!rec?.attached && now - this.lastPageScan >= PAGE_SCAN_MS
-    if (page) this.lastPageScan = now
+    const due = this.pageDirty || !!this.declines?.pageHolding || now - this.lastPageScan >= PAGE_BACKSTOP_MS
+    const page = timer && !!rec?.attached && now - this.lastPageScan >= PAGE_SCAN_MS && due
+    if (page) {
+      this.lastPageScan = now
+      this.pageDirty = false
+    }
     const selectors = [rec?.currentSelector ?? '', ...(this.spot?.selectors ?? [])]
     return { page, ignore: outside((n) => this.panel.contains(n), rec?.box ?? null, selectors) }
+  }
+
+  /**
+   * Flags a change anywhere outside our panel and the chat box (the Sold tab is not the player),
+   * so the page-wide decline walk can be skipped while nothing there moves. Does no work beyond
+   * a containment test per record.
+   */
+  private watchPage(): void {
+    this.pageObserver?.disconnect()
+    this.pageObserver = new MutationObserver((records) => {
+      if (this.pageDirty) return
+      const box = this.recorder?.box ?? null
+      // The player is read on each of its own changes (watchPlayer), and its auction clock
+      // ticks every second: it must not keep the page-wide walk running.
+      const player = this.observedPlayer
+      for (const r of records) {
+        const t = r.target
+        if (this.panel.contains(t) || (box && (t === box || box.contains(t)))) continue
+        if (player && (t === player || player.contains(t))) continue
+        this.pageDirty = true
+        return
+      }
+    })
+    this.pageObserver.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden'] })
   }
 
   /** Check on every change to the player too: Chrome slows timers in a hidden or muted tab, not observers. */
@@ -491,6 +536,7 @@ export class Controller {
 
   /** Warn when an item reaches 3, 2 or 1 left, or sells out (see stock/alerts.ts). */
   private async checkStock(): Promise<void> {
+    this.lastStockAt = Date.now()
     let reply: StockReply | null
     try {
       reply = await send<StockReply | null>({ cmd: 'getStock', showId: this.startedAt ?? undefined })
@@ -634,6 +680,12 @@ export class Controller {
     try {
       const u = await send<UploadStatus>({ cmd: 'getUploadStatus' })
       this.upload = u
+      // An acknowledged upload moves the stock a few seconds later: look then, not on the next slow poll.
+      if (u.lastSentAt !== this.lastSentSeen) {
+        const first = this.lastSentSeen === undefined
+        this.lastSentSeen = u.lastSentAt
+        if (!first && this.stockTimer && Date.now() - this.lastStockAt >= STOCK_AFTER_UPLOAD_MS) setTimeout(() => void this.checkStock(), STOCK_AFTER_UPLOAD_MS)
+      }
       if (this.log.length) this.panel.setSync(`saved ${this.synced}` + uploadNote(u))
       this.renderDot()
     } catch {

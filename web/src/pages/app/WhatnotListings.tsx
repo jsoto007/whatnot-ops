@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
@@ -26,13 +26,18 @@ export function WhatnotListings() {
   // When "Read from Whatnot now" was pressed: the read runs in the background, so the
   // page looks again every few seconds until it shows a read newer than the press.
   const [askedAt, setAskedAt] = useState<number | null>(null)
+  // First read still pending: look every 5 s for a minute, then every 15 s, and give up after 5 minutes.
+  const waitingSince = useRef(Date.now())
   const q = useQuery({
     queryKey: ['whatnot-catalog'],
     queryFn: () => apiGet<WhatnotCatalog>('/api/whatnot/catalog'),
     refetchInterval: (query) => {
       const d = query.state.data
       if (!d?.connected || d.notAllowed) return false
-      if (!d.readAt) return 5_000
+      if (!d.readAt) {
+        const waited = Date.now() - waitingSince.current
+        return waited < 60_000 ? 5_000 : waited < 300_000 ? 15_000 : false
+      }
       return askedAt !== null && Date.parse(d.readAt) < askedAt && Date.now() - askedAt < 90_000 ? 3_000 : false
     },
   })

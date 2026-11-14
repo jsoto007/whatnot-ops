@@ -11,7 +11,9 @@ export function Products() {
   // Inventory lists the same products: a product added here and looked for there a moment
   // later (before the save has answered) must still turn up once it has.
   const refresh = async () => {
-    await Promise.all([qc.invalidateQueries({ queryKey: ['products'] }), qc.invalidateQueries({ queryKey: ['inventory'] })])
+    await Promise.all(
+      [['products'], ['inventory'], ['whatnot-catalog'], ['review']].map((queryKey) => qc.invalidateQueries({ queryKey })),
+    )
   }
   const [name, setName] = useState('')
   const [code, setCode] = useState('')

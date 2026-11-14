@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, or_, select, text
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, selectinload
 
 from ..db import db
 from ..models import (
@@ -148,13 +148,22 @@ def match_sku(org_id: int, item_text: str) -> Sku | None:
     key = catalog.norm_alias(item_text)
     if not key:
         return None
-    best: tuple[int, Sku] | None = None
     from ..models import ProductAlias
 
-    for a in db.session.scalars(select(ProductAlias).where(ProductAlias.organization_id == org_id)):
-        if f" {a.alias} " in f" {key} " and (best is None or len(a.alias) > best[0]):
-            best = (len(a.alias), a.sku)
-    return best[1] if best else None
+    # The longest alias contained in the text, word-bounded: decided in the database so a
+    # miss does not load every alias of the shop. Ties: the alias first in alphabetical
+    # order, as the old scan met them through the (shop, alias) index.
+    padded = f" {key} "
+    best = db.session.scalar(
+        select(ProductAlias)
+        .where(
+            ProductAlias.organization_id == org_id,
+            func.strpos(padded, func.concat(" ", ProductAlias.alias, " ")) > 0,
+        )
+        .order_by(func.length(ProductAlias.alias).desc(), ProductAlias.alias)
+        .limit(1)
+    )
+    return best.sku if best is not None else None
 
 
 # ---------- applying events ----------
@@ -1201,7 +1210,13 @@ def process_show(
             details=c.details or None,
         )
         db.session.add(ev)
-        db.session.flush()
+        if c.kind in (EventKind.sale, EventKind.cancel, EventKind.payment_failed) or (
+            c.rule.startswith("player_")
+        ):
+            # These branches read ev.id (or look the line up). Plain chatter, listings, gifts
+            # and the like never do: their INSERTs wait for the next flush (autoflush at the
+            # next query, or the count below) and go out in one batch, in the same order.
+            db.session.flush()
         stats.parsed += 1
         if c.rule == "player_unreadable":
             open_review(
@@ -1786,6 +1801,7 @@ def similar_open_items(item: ReviewItem) -> list[ReviewItem]:
             ReviewItem.reason == "unmatched_item",
             ReviewItem.id != item.id,
         )
+        .options(selectinload(ReviewItem.sale))
         .order_by(ReviewItem.id)
     ).all()
     return [
