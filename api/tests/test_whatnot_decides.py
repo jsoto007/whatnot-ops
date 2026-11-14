@@ -634,6 +634,22 @@ def test_an_order_with_a_card_in_doubt_is_not_picked_until_it_is_settled(app, sh
         assert buyers_order.status is OrderStatus.picking
 
 
+def test_a_slip_with_a_card_in_doubt_is_not_among_the_ready_slips(app, shop):
+    followed(app, shop)
+    shop["say"](app, [win("ann_made_up", "Red bundle"), declined("ann_made_up", "Red bundle")])
+    run(app, shop["show"])
+    with app.app_context():
+        show = db.session.get(Show, shop["show"])
+        doc = order_slips.build(show, only="ready")
+        assert (doc["ready"], doc["leftOut"], doc["slips"]) == (0, 1, [])
+    order(shop, "ann_made_up", "Red bundle")  # paid after all
+    read(app, shop)
+    apply(app, shop)
+    with app.app_context():
+        show = db.session.get(Show, shop["show"])
+        assert order_slips.build(show, only="ready")["ready"] == 1
+
+
 def test_a_flag_a_person_answered_or_the_order_cleared_does_not_come_back(app, shop):
     followed(app, shop)
     shop["say"](app, [win("ann_made_up", "Red bundle"), declined("ann_made_up", "Red bundle")])
@@ -647,11 +663,11 @@ def test_a_flag_a_person_answered_or_the_order_cleared_does_not_come_back(app, s
     assert states(app) == [("ann_made_up", "paid")] and reasons(app) == []
 
 
-def test_two_wins_of_one_listing_one_declined_one_paid_is_put_to_a_person_at_once(app, shop):
+def test_two_wins_of_one_listing_the_first_declined_the_second_paid_is_settled(app, shop):
     """One buyer, the same listing twice at the same price. The first win's card is declined
-    and never retried; the second is paid. The orders read the payment as the first win's
-    retry (they cannot tell), which would leave both wins paid and nobody told until the
-    show is over. The second win is flagged as soon as the paid order is applied."""
+    and never retried; the second is paid. The orders alone read the payment as the first
+    win's retry. The buyer's second win is standing with no order of its own, so the
+    payment is that win's, and the first stays declined and flagged."""
     followed(app, shop)
     shop["fake"].shows[shop["wshow"]].update(status="live", ended_at=None)
     read(app, shop)
@@ -666,12 +682,29 @@ def test_two_wins_of_one_listing_one_declined_one_paid_is_put_to_a_person_at_onc
     order(shop, "ann_made_up", "Red bundle", created=datetime.now(UTC) + timedelta(minutes=3))
     read(app, shop)
     apply(app, shop)
+    assert states(app) == [("ann_made_up", "payment_failed"), ("ann_made_up", "paid")]
+    assert reasons(app) == ["payment_declined"]  # the first win's, still for a person
+    assert level(app, shop["red"]) == (2, 0)  # one unit out for the one payment
+
+
+def test_two_wins_of_one_listing_read_together_are_put_to_a_person_at_once(app, shop):
+    """The same two wins, but the failed and the paid order arrive in one read. Nothing
+    says which win the failed order was for, so the payment goes to the first and the win
+    left with no order is flagged while the show is still live, not only when it is over."""
+    followed(app, shop)
+    shop["fake"].shows[shop["wshow"]].update(status="live", ended_at=None)
+    read(app, shop)
+    shop["say"](app, [win("ann_made_up", "Red bundle"), win("ann_made_up", "Red bundle")])
+    run(app, shop["show"])
+    first = order(shop, "ann_made_up", "Red bundle", created=datetime.now(UTC))
+    shop["fake"].set_order_status(first["id"], "failed")
+    order(shop, "ann_made_up", "Red bundle", created=datetime.now(UTC) + timedelta(minutes=3))
+    read(app, shop)
+    apply(app, shop)
     assert states(app) == [("ann_made_up", "paid"), ("ann_made_up", "paid")]
-    assert reasons(app) == ["no_payment_record"]  # told now, though the show is still live
+    assert reasons(app) == ["no_payment_record"]
     with app.app_context():
-        flag = item_of("no_payment_record")
-        second = db.session.scalars(select(Sale).order_by(Sale.id)).all()[1]
-        assert flag.sale_id == second.id and "one of them was not paid" in flag.summary
+        assert "one of them was not paid" in item_of("no_payment_record").summary
     # Had the second win really been paid too, its own order answers the item.
     order(shop, "ann_made_up", "Red bundle", created=datetime.now(UTC) + timedelta(minutes=4))
     read(app, shop)

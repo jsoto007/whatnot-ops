@@ -151,6 +151,7 @@ const WHATNOT_APPLIED: Record<string, string> = {
   decline: 'payment declined',
   recorded: 'newly recorded',
   reopen: 'waiting for a product again',
+  gave_way: 'cancelled, the auction went to another win',
   unmatched: 'sent to Review',
   uncovered: 'with no order on Whatnot, sent to Review',
 }

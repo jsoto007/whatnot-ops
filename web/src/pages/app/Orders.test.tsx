@@ -82,7 +82,7 @@ const orders: Order[] = [
     buyer: 'amyshopsalot',
     status: 'paid',
     verified: true,
-    sales: [sale({ buyer: 'amyshopsalot', orderId: 4, sku: RED, item: '$1 BEAUTY PULLS #522', lot: 522, status: 'paid', paidAt: '2026-11-08T03:14:00Z', wonAt: '2026-11-08T03:14:00Z', quantity: 2 })],
+    sales: [sale({ buyer: 'amyshopsalot', orderId: 4, sku: RED, item: '$1 BEAUTY PULLS #522', lot: 522, status: 'paid', paidAt: '2026-11-08T03:14:00Z', wonAt: '2026-11-08T03:14:00Z', quantity: 2, review: { id: 17, reason: 'lot_won_twice' } })],
   }),
   order({
     id: 5,
@@ -172,6 +172,8 @@ test('every row names its state and the one verb that moves it on', async () => 
   // the stream showed this buyer's card declined; the sale stands until Whatnot's order says
   expect(screen.getByTestId('decline-seen-kels.finds')).toHaveTextContent('card declined on the stream, waiting for Whatnot')
   expect(screen.queryByTestId('decline-seen-amyshopsalot')).toBeNull()
+  // a lot the banner showed won by two buyers: said on the row, settled in Review
+  expect(screen.getByTestId('lot-won-twice-amyshopsalot')).toHaveTextContent('a lot here has two winners, see Review')
   expect(within(screen.getByTestId('order-scrollstoppers')).getByRole('button', { name: 'Resolve decline' })).toBeInTheDocument()
   // the oldest win comes first within a state; ready orders come before stuck ones
   const rows = screen.getAllByTestId(/^order-/).map((r) => r.getAttribute('data-testid'))

@@ -56,6 +56,7 @@ _REVIEW_RANK = {
     "insufficient_stock": 1,
     "payment_declined": 2,
     "decline_seen": 3,  # the stream showed the card declined; Whatnot's order has not said yet
+    "lot_won_twice": 4,  # the stream showed the lot won by two buyers
 }
 
 

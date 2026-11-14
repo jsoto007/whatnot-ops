@@ -39,6 +39,8 @@ from ..models import (
     Order,
     OrderStatus,
     ParsedEvent,
+    ReviewItem,
+    ReviewStatus,
     Sale,
     SaleStatus,
     Show,
@@ -144,10 +146,13 @@ _GIVEAWAY = re.compile(r"give\s*-?\s*away|gift", re.I)
 def _ready(b: dict) -> bool:
     """A slip that can be printed and picked as it is: the buyer's order is Ready to pick,
     every row has its product, and every sale on it is one Whatnot lists (when its lots were
-    read). A gift row never holds a slip back."""
+    read). A gift row never holds a slip back. A slip in doubt is not ready: the stream
+    showed a card declined, or a lot won by two buyers, and Whatnot's order has not said yet
+    (`orders.advance` refuses to pick that order for the same reason)."""
     return (
         b["orderStatus"] == OrderStatus.paid.value
         and not b["needsReview"]
+        and not b.get("cardInDoubt")
         and all(r["onWhatnot"] for r in b["rows"] if r["kind"] == "sale")
     )
 
@@ -297,8 +302,23 @@ def build(show: Show, *, only: str | None = None) -> dict:
         )
 
     seen = whatnot["buyers"] if whatnot else {}
+    from .pipeline import DECLINE_SEEN, LOT_WON_TWICE
+
+    in_doubt = set(
+        db.session.scalars(
+            select(Sale.order_id)
+            .join(ReviewItem, ReviewItem.sale_id == Sale.id)
+            .where(
+                Sale.show_id == show.id,
+                Sale.status.in_(STANDING),
+                ReviewItem.status == ReviewStatus.open,
+                ReviewItem.reason.in_((DECLINE_SEEN, LOT_WON_TWICE)),
+            )
+        )
+    )
     slips = []
     for key, b in by_buyer.items():
+        b["cardInDoubt"] = b["orderId"] in in_doubt
         b["items"] = len(b["rows"])
         b["gifts"] = sum(r["giftCount"] for r in b["rows"])
         w = seen.get(key)

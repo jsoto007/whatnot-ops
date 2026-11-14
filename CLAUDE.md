@@ -156,6 +156,22 @@ commands.
   paid on Whatnot goes back to waiting for its product (`pipeline.await_product`, the
   one allowed step back: no stock was ever held, and never once the buyer's order has
   shipped); with a product it is paid again through `_repay`.
+- **One win per auction** (Javier's rule, 2026-11-13). An auction is a numbered lot of
+  one show ("$1 BEAUTY PULLS #520": `pipeline.auction_of`; a title with no lot number
+  names none and may be won many times), and only within half an hour: lot numbers start
+  again in the next show a recording runs into. **The stream never cancels a sale for
+  it** (an adversarial pass proved four ways a banner alone cancels a paying buyer). On
+  Whatnot's own "won the auction" banner, never a typed line: the same buyer on the same
+  lot again is the same win (no second sale); a different buyer is recorded too and each
+  unconfirmed sale gets a `lot_won_twice` item (`pipeline.ask_which_win`), which keeps
+  both orders out of picking and off the ready slips (`orders.in_doubt`). **Whatnot's paid
+  auction order decides** (`whatnot/orders._one_win`): the payment is its buyer's sale
+  for that lot whatever price the laptop read; once every order of the show has been
+  read after it ended, any other sale standing for the lot with no order of its own
+  gives way (`pipeline.give_way`: cancelled, stock back); the first buyer's open decline
+  is answered; a buyer whose sale gave way and whose own paid order turns up later has
+  the win recorded again; a payment for another listing id is never a declined card's
+  retry. "Buy it now" orders are left alone.
 - **Order slips** (`services/order_slips.py`, `/app/orders/slips/:showId`) are
   the per-show packing document staff used to build from Whatnot's shipments
   tab: a cover with totals, then one printed page per buyer. Auction Number

@@ -55,6 +55,7 @@ PAYMENT = {
     "failed": "failed",
 }
 GIVEAWAY = "giveaway"
+AUCTION = "auction"
 IMPORT_ID = "whatnot"
 
 
@@ -142,6 +143,8 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
                 ref=item.id,
                 sale_hint=item.sale_id,
                 ordered_at=order.ordered_at,
+                auction=order.transaction_type == AUCTION,
+                listing=item.product_id,
             )
             row.sku_id, row.listing_off = sku_for(item)
             if not row.buyer:
@@ -183,13 +186,18 @@ def _skip_retried(rows: list[Row]) -> None:
             # The payment nearest after it: with two wins of one listing by one buyer, the
             # declined attempt belongs to the first payment that follows, not the latest.
             for paid in reversed(paid_later.get(buyer, ())):
+                # Two listings are two auctions: a payment for one is never the retry of a
+                # card declined on the other, however alike their titles and prices.
+                if row.listing and paid.listing and row.listing != paid.listing:
+                    continue
                 # Both times known, so a retry is always within `same_win`'s half hour.
                 if paid.ordered_at is not None and pipeline.same_win(
                     row.item, row.price_cents, row.ordered_at,
                     paid.item, paid.price_cents, paid.ordered_at,
                 ) is not None:  # fmt: skip
                     # The win's sale may already be tied to the failed order: the payment is its.
-                    paid.sale_hint = paid.sale_hint or row.sale_hint
+                    if paid.sale_hint is None and row.sale_hint is not None:
+                        paid.sale_hint, paid.hint_from_retry = row.sale_hint, True
                     # The win happened when the first order was placed, not when a retry paid.
                     paid.first_ordered_at = min(
                         paid.first_ordered_at or row.ordered_at, row.ordered_at
@@ -221,7 +229,12 @@ ORDER_DECLINED = "order_declined"
 # Items that doubt whether a standing sale was paid: the stream showed its card declined
 # (`pipeline.flag_decline`), the AI read as much in chat, or no order was found for it. A
 # paid order for the sale answers them.
-ANSWERED_BY_PAYMENT = (pipeline.DECLINE_SEEN, "payment_failed", "no_payment_record")
+ANSWERED_BY_PAYMENT = (
+    pipeline.DECLINE_SEEN,
+    pipeline.LOT_WON_TWICE,
+    "payment_failed",
+    "no_payment_record",
+)
 
 HERE = {
     SaleStatus.cancelled: "cancelled here",
@@ -236,12 +249,48 @@ THERE = {
 }
 
 
+def _own_win_first(rows: list[Row], show_ids: list[int]) -> None:
+    """A paid order that was paired with an earlier failed one would go to that failed
+    order's sale and pay it again. That is right for a retried card. It is wrong when the
+    buyer has ANOTHER win of the listing still standing with no order of its own: the
+    payment is that win's, and the failed order's sale stays declined (one buyer, the same
+    listing twice, the first card declined and never retried). The pairing cannot see
+    sales; this can."""
+    retried = [r for r in rows if r.hint_from_retry and r.sale_hint is not None]
+    if not retried:
+        return
+    buyers = {r.buyer.lower() for r in retried}
+    standing = db.session.scalars(
+        select(Sale)
+        .where(
+            Sale.show_id.in_(show_ids),
+            Sale.status.in_(STANDING),
+            Sale.external_order_id.is_(None),
+            func.lower(Sale.buyer_username).in_(buyers),
+        )
+        .options(selectinload(Sale.event).selectinload(ParsedEvent.message))
+    ).all()
+    for row in retried:
+        for sale in standing:
+            if (
+                sale.id != row.sale_hint
+                and sale.buyer_username.lower() == row.buyer.lower()
+                and pipeline.same_win(
+                    sale.item_text, pipeline.paid_price(sale), pipeline.won_when(sale),
+                    row.item, row.price_cents, row.ordered_at,
+                ) is not None
+            ):  # fmt: skip
+                row.sale_hint, row.hint_from_retry = None, False
+                break
+
+
 def _plan(show: Show, ws: WhatnotShow) -> tuple[Plan, dict, list[Show]]:
     recordings = sync.recordings_of(ws) or [show]
     rows, info = rows_for(ws)
     # A sale already tied to one of these order items may live in a show that is not a
     # recording of this Whatnot show (one laptop recording through two shows): it is still
     # that order's sale, and Whatnot's word on the payment still applies to it.
+    _own_win_first(rows, [s.id for s in recordings])
     hinted = {r.sale_hint for r in rows if r.sale_hint}
     plan = reconcile.plan(recordings[0], rows, shows=recordings, extra_sale_ids=hinted)
     sales = {
@@ -270,6 +319,17 @@ def _plan(show: Show, ws: WhatnotShow) -> tuple[Plan, dict, list[Show]]:
             # held for it, so it simply waits for its product again. With a product, the
             # engine marks it paid again itself.
             row.action, row.note = REOPEN, "declined, then paid: it waits for its product again"
+        elif (
+            row.action == "unmatched"
+            and sale is not None
+            and row.status == "paid"
+            and pipeline.gave_way(sale)
+        ):
+            # The buyer's sale gave way to another win of the lot, and now Whatnot has a
+            # paid order of the buyer's own for it (it arrived late, or the listing sold
+            # twice): the cancelled sale cannot come back, so the win is recorded again.
+            row.sale_id, row.sale_hint = None, None
+            row.note = "its first sale gave way to another win; recorded again"
         elif row.action == "unmatched" and sale is not None:
             # The two records disagree about a sale already closed or shipped here: a
             # person decides. Said in words (the engine's own note is written for a file).
@@ -490,10 +550,92 @@ def apply(show: Show, *, user=None) -> dict:
             if sale.external_order_id is None and row.action != "unmatched":
                 sale.external_order_id = row.external_id
     _flag_declines(primary, plan, show_ids)
+    gave_way = _one_win(primary, plan, show_ids, _complete(ws))
+    # A sale that gave way is no longer "a sale with no order": it is settled.
+    plan.uncovered = [i for i in plan.uncovered if i not in gave_way]
     summary = plan.summary
+    if gave_way:
+        summary["gave_way"] = len(gave_way)
     if not _complete(ws):
         summary.pop("uncovered", None)
     return {"summary": summary, "created": created, "info": info, "plan": plan}
+
+
+def _one_win(show: Show, plan: Plan, show_ids: list[int], complete: bool) -> set[int]:
+    """An auction has one win (`pipeline.auction_of`), and Whatnot's paid order for the lot
+    says who has it.
+
+    - What was open about ANOTHER buyer's declined payment for that lot is answered.
+    - Once every order of the show has been read after it ended (`complete`), every other
+      sale still standing for the lot with no order of its own gives way: another buyer's
+      (the lot was run again after their card was declined), or a second copy of the same
+      win. Before that a missing order may simply not have arrived, and a sale is never
+      cancelled on a guess; it is the stream that asks a person meanwhile.
+
+    Only auction orders that are paid, only titles that carry a lot number, and only sales
+    won within half an hour of the order: a "buy it now" listing sells many times, a title
+    with no number names no one auction, and lot numbers start again in the next show a
+    recording runs into. Returns the sales that gave way."""
+    has_order = {r.sale_id for r in plan.rows if r.sale_id and r.status in ("paid", "pending")}
+    winners = []
+    for row in plan.rows:
+        if not row.auction or row.status != "paid" or not row.sale_id:
+            continue
+        if row.action in ("skip", "unmatched") or pipeline.auction_of(row.item) is None:
+            continue
+        sale = db.session.get(Sale, row.sale_id)
+        if sale is not None and sale.status in STANDING:
+            winners.append((row, sale))
+    if not winners:
+        return set()
+    gone: set[int] = set()
+    pool = (
+        db.session.scalars(
+            select(Sale)
+            .where(Sale.show_id.in_(show_ids), Sale.status.in_(pipeline.CLOSABLE))
+            .options(selectinload(Sale.event).selectinload(ParsedEvent.message))
+            .order_by(Sale.id)
+        ).all()
+        if complete
+        else []
+    )
+    for row, sale in winners:
+        for other in pool:
+            if other.id == sale.id or other.id in has_order or other.id in gone:
+                continue
+            if other.external_order_id or pipeline.same_listing(other.item_text, row.item) != 0:
+                continue
+            if pipeline.same_win(
+                other.item_text, None, pipeline.won_when(other), row.item, None, row.ordered_at
+            ) is None or pipeline.won_when(other) is None or row.ordered_at is None:  # fmt: skip
+                continue  # not known to be the same auction (another show's lot number)
+            pipeline.give_way(
+                other, winner=row.buyer, actor=pipeline.WHATNOT_ACTOR, where=" on Whatnot"
+            )
+            gone.add(other.id)
+        pipeline.answer_declines_of(show_ids, row.item, winner=row.buyer, at=row.ordered_at)
+        for item in db.session.scalars(
+            select(ReviewItem).where(
+                ReviewItem.organization_id == show.organization_id,
+                ReviewItem.show_id.in_(show_ids),
+                ReviewItem.reason == ORDER_DECLINED,
+                ReviewItem.status == ReviewStatus.open,
+            )
+        ):
+            said = item.proposal or {}
+            then = said.get("orderedAt")
+            if (
+                str(said.get("buyer") or "").lower() != row.buyer.lower()
+                and pipeline.same_listing(said.get("item"), row.item) == 0
+                # The same auction, not the same lot number an hour on (or in the next show).
+                and then
+                and row.ordered_at is not None
+                and abs(datetime.fromisoformat(then) - row.ordered_at) <= pipeline.SAME_WIN_WINDOW
+            ):
+                item.status = ReviewStatus.resolved
+                item.resolution = {"by": pipeline.TAKEN_OVER}
+                item.resolved_at = datetime.now(UTC)
+    return gone
 
 
 def _flag_declines(show: Show, plan: Plan, show_ids: list[int]) -> None:
@@ -622,6 +764,7 @@ def _flag_unrecorded(show: Show, plan: Plan, show_ids: list[int]) -> None:
                 "buyer": row.buyer,
                 "item": row.item,
                 "priceCents": row.price_cents,
+                "orderedAt": row.ordered_at.isoformat() if row.ordered_at else None,
             },
             source="reconcile",
             dedupe=False,  # keyed by the order item, checked above
