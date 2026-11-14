@@ -178,3 +178,110 @@ def test_an_app_sale_with_a_huge_quantity_prints_a_bounded_slip(app, world):
         doc = order_slips.build(db.session.get(Show, world["show"]))
     [slip] = [b for b in doc["slips"] if b["username"] == "big_buyer"]
     assert len(slip["rows"]) == order_slips.MAX_UNIT_ROWS and slip["needsReview"]
+
+
+def test_only_ready_keeps_the_buyers_whose_order_is_ready_to_pick(client, app, world):
+    """The Orders page's "Print ready slips": a slip for every order that is Ready to pick
+    (every item paid and named, picking not started); the others are counted, not printed."""
+    world["say"](
+        app,
+        [
+            win("jess88", "Quick Hit 2", "14.89"),  # the title names no product: Needs review
+            win("lani808", "Red bundle", "25.00"),  # matched and charged at the win: ready
+            ("", "kat.c won the giveaway!"),  # a gift alone is no order
+        ],
+    )
+    run(app, world["show"])
+    with app.app_context():
+        show = db.session.get(Show, world["show"])
+        everyone = order_slips.build(show)
+        ready = order_slips.build(show, only="ready")
+        with pytest.raises(ValueError):
+            order_slips.build(show, only="shipped")
+    assert [(b["username"], b["orderStatus"]) for b in everyone["slips"]] == [
+        ("jess88", "open"),
+        ("kat.c", None),
+        ("lani808", "paid"),
+    ]  # one item each, so A-Z
+    assert everyone["only"] is None and everyone["leftOut"] == 0
+    assert [b["username"] for b in ready["slips"]] == ["lani808"]
+    assert ready["only"] == "ready" and ready["leftOut"] == 2
+    assert ready["totals"] == {"buyers": 1, "items": 1, "gifts": 0}
+    assert ready["summary"] == [{"username": "lani808", "items": 1, "gifts": 0}]
+
+    signed_in(app, client, world["org"])
+    url = f"/api/orders/shows/{world['show']}/order-slips"
+    r = client.get(url + "?only=ready")
+    assert r.status_code == 200 and r.get_json()["totals"]["buyers"] == 1
+    assert client.get(url + "?only=shipped").status_code == 400
+    assert client.get(url + "?only=").get_json()["only"] is None
+
+
+def test_only_ready_holds_back_a_slip_that_still_needs_a_person(app, world):
+    """Ready means the products are confirmed. With Whatnot's lots read, a slip is held back
+    when one of its lots has no product (a win the app never recorded), or when it has a sale
+    Whatnot does not list. Buyers are made up."""
+    from app.models import WhatnotLot, WhatnotShipment
+
+    world["say"](
+        app,
+        [
+            win("buyer_a", "Red bundle #1", "25.00"),
+            win("buyer_b", "Red bundle #2", "25.00"),
+            win("buyer_c", "Red bundle #3", "25.00"),
+        ],
+    )
+    run(app, world["show"])
+    with app.app_context():
+
+        def parcel(buyer, key):
+            row = WhatnotShipment(
+                organization_id=world["org"],
+                row_key=key * 64,
+                recipient=buyer,
+                show_id=world["show"],
+                status="Ready to Ship",
+            )
+            db.session.add(row)
+            db.session.flush()
+            return row.id
+
+        def lot(parcel_id, buyer, order_id, title, number, cents):
+            db.session.add(
+                WhatnotLot(
+                    organization_id=world["org"],
+                    show_id=world["show"],
+                    shipment_id=parcel_id,
+                    whatnot_order_id=order_id,
+                    recipient=buyer,
+                    title=title,
+                    lot_number=number,
+                    price_cents=cents,
+                )
+            )
+
+        a, b = parcel("buyer_a", "a"), parcel("buyer_b", "b")
+        lot(a, "buyer_a", "1001", "Red bundle #1", 1, 2500)
+        lot(b, "buyer_b", "1002", "Red bundle #2", 2, 2500)
+        # A win of buyer_b's that the app never recorded: nobody has said which product.
+        lot(b, "buyer_b", "1003", "Quick Hit 9", 9, 700)
+        # buyer_c's sale is in the app, but Whatnot lists no lot for it.
+        db.session.commit()
+
+        show = db.session.get(Show, world["show"])
+        everyone = order_slips.build(show)
+        ready = order_slips.build(show, only="ready")
+    by_buyer = {b["username"]: b for b in everyone["slips"]}
+    # All three orders are paid: the order's state alone would call all three ready.
+    assert {u: b["orderStatus"] for u, b in by_buyer.items()} == {
+        "buyer_a": "paid",
+        "buyer_b": "paid",
+        "buyer_c": "paid",
+    }
+    assert [r["product"] for r in by_buyer["buyer_b"]["rows"]] == ["Red bundle", "No Pick"]
+    assert [r["onWhatnot"] for r in by_buyer["buyer_c"]["rows"]] == [False]
+    assert [b["username"] for b in ready["slips"]] == ["buyer_a"]
+    assert ready["leftOut"] == 2
+    # The count the "Ready to pick" switch shows is the same whichever document is open.
+    assert (everyone["ready"], ready["ready"]) == (1, 1)
+    assert ready["totals"] == {"buyers": 1, "items": 1, "gifts": 0}
