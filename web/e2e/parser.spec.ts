@@ -116,6 +116,10 @@ test('captured chat becomes sales, reserves stock, and the review queue resolves
   await pick.fill('red')
   await page.getByRole('option', { name: /RED/ }).click()
   await expect(pick).toHaveValue(/\(RED\)/)
+  // A new shop sells as "winners pick in chat": the product chosen here is one winner's pick,
+  // so remembering the name is the person's choice, not the default.
+  await expect(page.getByRole('checkbox', { name: /remember this name/ })).not.toBeChecked()
+  await page.getByRole('checkbox', { name: /remember this name/ }).check()
   await page.getByRole('button', { name: 'Use this SKU' }).click()
   await expect(page.locator('.review')).toHaveCount(1)
   // The split winner line: the rules would not trust it, a person vouches for it and it becomes

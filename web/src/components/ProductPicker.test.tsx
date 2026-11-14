@@ -56,6 +56,14 @@ test('a sale from an older page load, with nothing said either way, is offered a
   expect(screen.getByRole('checkbox', { name: /Remember this name/ })).toBeChecked()
 })
 
+test('in a winner’s-pick show the box is offered but not ticked', async () => {
+  const posts = mount({ ...sale('Mystery Pull Bag', true), saleMode: 'winners_pick' })
+  expect(screen.getByRole('checkbox', { name: /Remember this name/ })).not.toBeChecked()
+  await useGlow()
+  await waitFor(() => expect(posts).toHaveLength(1))
+  expect(posts[0]).toEqual({ action: 'assign_sku', skuId: 7, remember: false, applyToSimilar: false })
+})
+
 test('a title that names one lot of one show is not offered, and nothing is remembered', async () => {
   const posts = mount(sale('$1 BEAUTY PULLS #520', false))
   expect(screen.queryByRole('checkbox', { name: /Remember this name/ })).toBeNull()

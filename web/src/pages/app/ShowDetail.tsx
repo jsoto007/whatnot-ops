@@ -2,9 +2,9 @@ import { Fragment, useMemo, useState } from 'react'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
-import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleStatus, type Shelf, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway, type WhatnotRecap as WhatnotRecapData } from '../../lib/api'
+import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleMode, type SaleStatus, type Shelf, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway, type WhatnotRecap as WhatnotRecapData } from '../../lib/api'
 import { fmtLongDate, fmtShopClock, fmtShopTime } from '../../lib/format'
-import { lotLabel, saleStatusLabel } from '../../lib/labels'
+import { SALE_MODE_LABEL, lotLabel, saleModeHelp, saleModeLabel, saleStatusLabel } from '../../lib/labels'
 import { useDebounced } from '../../lib/useDebounced'
 import { Kpis, Tally, TopLists } from './Dashboard'
 import { Reconcile } from './Reconcile'
@@ -21,7 +21,7 @@ export function ShowDetail() {
   const { can, me } = useAuth()
   const qc = useQueryClient()
   const [params, setParams] = useSearchParams()
-  const tab = (TABS as readonly string[]).includes(params.get('tab') ?? '') ? (params.get('tab') as Tab) : 'sales'
+  const asked = (TABS as readonly string[]).includes(params.get('tab') ?? '') ? (params.get('tab') as Tab) : 'sales'
   const setTab = (t: Tab) => {
     const next = new URLSearchParams(params)
     next.set('tab', t)
@@ -35,6 +35,9 @@ export function ShowDetail() {
 
   const t = dash.data?.tiles
   const s = show.data?.show
+  // Shelf spots are how a winner picks in chat: a show that sells one product per listing has none.
+  const tabs = TABS.filter((k) => k !== 'shelves' || s?.saleMode !== 'listing')
+  const tab = tabs.includes(asked) ? asked : 'sales'
   const list = sales.data?.sales ?? []
   const walkaways = dash.data?.winnersWithoutPurchase ?? []
   const counts = useMemo(() => countBy(list), [list])
@@ -64,6 +67,7 @@ export function ShowDetail() {
               {me?.organization.hostUsername ? ` · host ${me.organization.hostUsername}` : ''}
             </div>
           )}
+          {s?.saleMode && <ShowSaleMode show={s} usual={me?.organization.saleMode} canEdit={can('review.act')} />}
         </div>
         <span className="row-actions">
           {can('orders.view') && (
@@ -102,7 +106,7 @@ export function ShowDetail() {
       {t && s && <NextSteps t={t} counts={counts} walkaways={walkaways.length} showId={id} canReconcile={can('orders.reconcile')} canReview={can('review.act')} onTab={setTab} />}
 
       <div className="tabs" role="tablist">
-        {TABS.map((k) => (
+        {tabs.map((k) => (
           <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>
             {TAB_LABEL[k]}
             {k === 'sales' && list.length ? <span className="tab-count">{list.length}</span> : null}
@@ -200,6 +204,47 @@ function ShelvesTab({ showId, canEdit }: { showId: string; canEdit: boolean }) {
 }
 
 type Counts = Record<SaleStatus, { n: number; qty: number; cents: number }>
+/**
+ * How this show sells. It follows the shop's usual way (Settings) until someone chooses
+ * otherwise here; every recording of the same Whatnot show gets the same answer.
+ */
+function ShowSaleMode({ show, usual, canEdit }: { show: Show; usual?: SaleMode; canEdit: boolean }) {
+  const qc = useQueryClient()
+  const set = useMutation({
+    mutationFn: (mode: SaleMode | null) => api<{ show: Show }>('POST', `/api/shows/${show.id}/mode`, { mode }),
+    onSuccess: () => qc.invalidateQueries(),
+  })
+  const value = show.saleModeSet ? show.saleMode : 'usual'
+  return (
+    <div className="sub show-mode" data-testid="show-mode">
+      {canEdit ? (
+        <>
+          <label htmlFor="show-mode">Sold as</label>
+          <select id="show-mode" className="show-select" value={value} disabled={set.isPending} onChange={(e) => set.mutate(e.target.value === 'usual' ? null : (e.target.value as SaleMode))}>
+            <option value="usual">The shop’s usual way{usual ? `: ${saleModeLabel(usual)}` : ''}</option>
+            {(Object.keys(SALE_MODE_LABEL) as SaleMode[]).map((m) => (
+              <option key={m} value={m}>
+                {SALE_MODE_LABEL[m]}
+              </option>
+            ))}
+          </select>
+        </>
+      ) : (
+        <span>
+          Sold as: {saleModeLabel(show.saleMode)}
+          {show.saleModeSet ? '' : ' (the shop’s usual way)'}
+        </span>
+      )}
+      <span className="muted small">{saleModeHelp(show.saleMode)}</span>
+      {set.isError && (
+        <span className="form-error small" role="alert">
+          {(set.error as Error).message}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function countBy(sales: Sale[]): Counts {
   const c = {} as Counts
   for (const s of sales) {

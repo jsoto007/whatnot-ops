@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../../auth/useAuth'
 import { Field, Form } from '../../components/Form'
-import { api, apiGet, type AiStatus, type AuditEntry, type Organization } from '../../lib/api'
+import { api, apiGet, type AiStatus, type AuditEntry, type Organization, type SaleMode } from '../../lib/api'
+import { SALE_MODE_LABEL, saleModeHelp } from '../../lib/labels'
 import { Laptops } from './settings/Laptops'
 import { WhatnotConnection } from './settings/WhatnotConnection'
 
@@ -13,6 +14,7 @@ export function Settings() {
       <h2>Settings</h2>
       <p className="muted">{me?.organization.name}</p>
       {can('settings.manage') && <HostUsername />}
+      {can('settings.manage') && <HowYouSell />}
 
       {can('whatnot.view') && <WhatnotConnection manage={can('whatnot.manage')} />}
 
@@ -41,6 +43,39 @@ function HostUsername() {
       </Field>
       <span className="muted small">Chat lines from this account count as confirmations ("sold to…", "cancelled…").</span>
     </Form>
+  )
+}
+
+const SALE_MODES = Object.keys(SALE_MODE_LABEL) as SaleMode[]
+
+/** The shop's usual way of selling. A new show starts this way; each show can be changed on its own page. */
+export function HowYouSell() {
+  const { me, setMe } = useAuth()
+  const [mode, setMode] = useState<SaleMode>(me?.organization.saleMode ?? 'winners_pick')
+  return (
+    <>
+      <h3>How you sell</h3>
+      <Form
+        className="stack-form"
+        submitLabel="Save how you sell"
+        onSubmit={async () => {
+          const r = await api<{ organization: Organization }>('PATCH', '/api/team/organization', { saleMode: mode })
+          if (me) setMe({ ...me, organization: r.organization })
+        }}
+      >
+        <div role="radiogroup" aria-label="How you usually sell" data-testid="sale-mode">
+          {SALE_MODES.map((m) => (
+            <label className="field check choice" key={m}>
+              <input type="radio" name="sale-mode" value={m} checked={mode === m} onChange={() => setMode(m)} />
+              <span>
+                <b>{SALE_MODE_LABEL[m]}</b> <span className="muted">{saleModeHelp(m)}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <span className="muted small">New shows start this way. A show that is sold differently can be changed on its own page.</span>
+      </Form>
+    </>
   )
 }
 

@@ -275,8 +275,24 @@ def _org_updated(d: dict, _target: str) -> str:
         parts.append(
             f"set the host's Whatnot username to @{new}" if new else "cleared the host's username"
         )
+    if "saleMode" in d:
+        parts.append(f"set how the shop usually sells to {_q(sale_mode_words(d['saleMode'][1]))}")
     text = "; ".join(parts)
     return text[:1].upper() + text[1:]
+
+
+SALE_MODES = {"winners_pick": "winners pick in chat", "listing": "one product per listing"}
+
+
+def sale_mode_words(mode) -> str:
+    return SALE_MODES.get(mode, "another way")
+
+
+def _show_mode(d: dict, _target: str) -> str:
+    words = sale_mode_words(d.get("mode"))
+    if not d.get("own"):
+        return f"Set a show back to the shop's usual way of selling ({words})"
+    return f"Set how a show sells to {_q(words)}"
 
 
 def _report(d: dict, _target: str) -> str:
@@ -341,6 +357,7 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "inventory.imported": ("Imported the stock sheet", _imported),
     "show.parsed": ("Re-read a show's chat", _parsed),
     "show.ai_audit_requested": ("Asked the AI to check a show", None),
+    "show.mode": ("Changed how a show sells", _show_mode),
     "show.shelves": (
         "Laid out the shelves for a show",
         lambda d, t: f"Laid out {d.get('spots', 0)} shelf spots for a show",

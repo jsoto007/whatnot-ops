@@ -6,7 +6,7 @@ from ..auth import require
 from ..config import is_dev
 from ..db import db
 from ..models import Invite, Role, User
-from ..services import accounts, mail, ratelimit, text
+from ..services import accounts, mail, ratelimit, sale_mode, text
 from ..services.accounts import AccountError
 from ..services.permissions import invitable_roles
 
@@ -80,7 +80,9 @@ def update_user(user_id: int):
 @bp.patch("/organization")
 @require("settings.manage")
 def update_organization():
-    d = request.get_json(silent=True) or {}
+    d = request.get_json(silent=True)
+    if not isinstance(d, dict):
+        d = {}
     org = g.u.organization
     changes: dict = {}
     if "name" in d and (new_name := text.typed(d["name"], 120)):
@@ -90,6 +92,14 @@ def update_organization():
         value = (d["hostUsername"] or "").strip().lstrip("@")[:80] or None
         changes["hostUsername"] = [org.host_username, value]
         org.host_username = value
+    if "saleMode" in d:
+        try:
+            before, now = sale_mode.set_shop(org, d["saleMode"])
+        except sale_mode.ModeError as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), e.status
+        if before != now:
+            changes["saleMode"] = [before, now]
     if changes:
         from ..services import audit
 

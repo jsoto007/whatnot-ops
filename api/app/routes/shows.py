@@ -17,7 +17,7 @@ from ..models import (
     Show,
     WhatnotShow,
 )
-from ..services import audit, jobs, pipeline, ratelimit, sale_chat, shelves
+from ..services import audit, jobs, pipeline, ratelimit, sale_chat, sale_mode, shelves
 from ..services.whatnot import WhatnotError, connection
 from ..services.whatnot import orders as whatnot_orders
 from ..services.whatnot import sync as whatnot_sync
@@ -52,7 +52,10 @@ def list_shows():
         .limit(200)
     ).all()
     counts = _counts([s.id for s in shows])
-    return jsonify({"shows": [serializers.show(s, counts.get(s.id, 0)) for s in shows]})
+    modes = sale_mode.of_shows(list(shows))
+    return jsonify(
+        {"shows": [serializers.show(s, counts.get(s.id, 0), modes[s.id]) for s in shows]}
+    )
 
 
 def _stats(show: Show) -> dict:
@@ -189,6 +192,34 @@ def save_shelves(show_id: int):
     )
     db.session.commit()
     return jsonify({"shelves": layout})
+
+
+@bp.post("/<int:show_id>/mode")
+@require("review.act")
+def set_mode(show_id: int):
+    """How this show sells: `mode` is "winners_pick" or "listing", or null to follow the
+    shop's usual way again. Every recording of the same Whatnot show gets the same answer."""
+    show = _show_or_404(show_id)
+    if show is None:
+        return jsonify({"error": "show not found"}), 404
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or "mode" not in body:
+        return jsonify({"error": "Say how this show is sold."}), 400
+    try:
+        before, now = sale_mode.set_show(show, body["mode"])
+    except sale_mode.ModeError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), e.status
+    audit.record(
+        g.u.organization_id,
+        "show.mode",
+        user=g.u,
+        target_type="show",
+        target_id=show.id,
+        details={"mode": now, "was": before, "own": body["mode"] is not None},
+    )
+    db.session.commit()
+    return jsonify({"show": serializers.show(show, _counts([show.id]).get(show.id, 0))})
 
 
 @bp.get("/<int:show_id>/events")

@@ -1,8 +1,8 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { AuthContext, type AuthState } from '../../auth/context'
-import type { ChatMessage, Sale } from '../../lib/api'
+import type { ChatMessage, Sale, SaleMode, Show } from '../../lib/api'
 import { CHAT_SEARCH_MS, ShowDetail } from './ShowDetail'
 
 const auth: AuthState = {
@@ -238,4 +238,81 @@ test('the shelves form waits for the saved layout: a failed read offers no save 
   )
   expect(await screen.findByText('Something went wrong.')).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Save shelves' })).toBeNull()
+})
+
+/** The show page for a show that says how it sells; the server remembers each choice. */
+function mountShow(show: Partial<Show>, opts: { can?: (p: string) => boolean; usual?: SaleMode; path?: string } = {}) {
+  const usual = opts.usual ?? 'winners_pick'
+  const posts: unknown[] = []
+  let current = { id: 3, key: 'k', date: '2026-11-12', startedAt: '2026-11-13T05:29:00Z', updatedAt: '2026-11-13T06:29:00Z', sourceUrl: null, messageCount: 9, title: null, recorded: true, ...show }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/auth/csrf') return new Response(JSON.stringify({ token: 't' }), { status: 200 })
+      if (url === '/api/shows/3/mode' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { mode: SaleMode | null }
+        posts.push(body)
+        current = { ...current, saleMode: body.mode ?? usual, saleModeSet: body.mode !== null }
+        return new Response(JSON.stringify({ show: current }), { status: 200 })
+      }
+      if (url === '/api/shows/3') return new Response(JSON.stringify({ show: current, stats: {} }), { status: 200 })
+      if (url.endsWith('/shelves')) return new Response(JSON.stringify({ shelves: [] }), { status: 200 })
+      if (url.endsWith('/sales')) return new Response(JSON.stringify({ sales: [] }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }),
+  )
+  const who: AuthState = { ...auth, me: { ...auth.me!, organization: { ...auth.me!.organization, saleMode: usual } }, can: opts.can ?? (() => true) }
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={qc}>
+      <AuthContext.Provider value={who}>
+        <MemoryRouter initialEntries={[opts.path ?? '/app/shows/3']}>
+          <Routes>
+            <Route path="/app/shows/:id" element={<ShowDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+  return posts
+}
+
+test('a manager chooses how one show sells, and can send it back to the shop’s usual way', async () => {
+  const posts = mountShow({ saleMode: 'winners_pick', saleModeSet: false })
+  const select = await screen.findByRole('combobox', { name: 'Sold as' })
+  expect(select).toHaveValue('usual')
+  expect(within(select).getByRole('option', { name: 'The shop’s usual way: Winners pick in chat' })).toBeInTheDocument()
+  expect(screen.getByTestId('show-mode')).toHaveTextContent('The winner types a shelf spot in chat, like A5')
+  expect(screen.getByRole('tab', { name: 'Shelves' })).toBeInTheDocument()
+
+  fireEvent.change(select, { target: { value: 'listing' } })
+  await waitFor(() => expect(posts).toEqual([{ mode: 'listing' }]))
+  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Sold as' })).toHaveValue('listing'))
+  expect(screen.getByTestId('show-mode')).toHaveTextContent('Each listing is one product.')
+  // Shelf spots are how a winner picks in chat: this show has none.
+  expect(screen.queryByRole('tab', { name: 'Shelves' })).toBeNull()
+
+  fireEvent.change(screen.getByRole('combobox', { name: 'Sold as' }), { target: { value: 'usual' } })
+  await waitFor(() => expect(posts).toEqual([{ mode: 'listing' }, { mode: null }]))
+  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Sold as' })).toHaveValue('usual'))
+  expect(screen.getByRole('tab', { name: 'Shelves' })).toBeInTheDocument()
+})
+
+test('someone who cannot change it reads how the show sells', async () => {
+  mountShow({ saleMode: 'listing', saleModeSet: true }, { can: (p) => p === 'shows.view' })
+  expect(await screen.findByTestId('show-mode')).toHaveTextContent('Sold as: One product per listing')
+  expect(screen.getByTestId('show-mode')).not.toHaveTextContent('usual way')
+  expect(screen.queryByRole('combobox', { name: 'Sold as' })).toBeNull()
+})
+
+test('a show that follows the shop says so', async () => {
+  mountShow({ saleMode: 'listing', saleModeSet: false }, { can: (p) => p === 'shows.view', usual: 'listing' })
+  expect(await screen.findByTestId('show-mode')).toHaveTextContent('Sold as: One product per listing (the shop’s usual way)')
+})
+
+test('a link to the Shelves tab of a one-product show lands on Sales', async () => {
+  mountShow({ saleMode: 'listing', saleModeSet: true }, { path: '/app/shows/3?tab=shelves' })
+  await screen.findByTestId('show-mode')
+  expect(screen.queryByTestId('shelves')).toBeNull()
+  expect(screen.getByRole('tab', { name: 'Sales' })).toHaveAttribute('aria-selected', 'true')
 })

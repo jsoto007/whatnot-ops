@@ -8,7 +8,16 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import Order, OrderStatus, ParsedEvent, ReviewItem, ReviewStatus, Sale, Show, Sku
-from ..services import audit, buyers, dashboard, order_slips, orders, ratelimit, reconcile
+from ..services import (
+    audit,
+    buyers,
+    dashboard,
+    order_slips,
+    orders,
+    ratelimit,
+    reconcile,
+    sale_mode,
+)
 from ..services.buyers import BuyerError
 from ..services.inventory import Actor, InventoryError
 from ..services.orders import OrderError
@@ -93,6 +102,8 @@ def list_orders():
     rows = rows[:ORDER_LIST_LIMIT]
     with_sales = status != "all"
     reviews = _open_reviews(rows) if with_sales else {}
+    if with_sales:
+        sale_mode.prime({o.show_id for o in rows})  # each sale says how its show sells
     return jsonify(
         {
             "orders": [serializers.order(o, with_sales=with_sales, reviews=reviews) for o in rows],

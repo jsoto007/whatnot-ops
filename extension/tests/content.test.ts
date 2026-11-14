@@ -153,6 +153,32 @@ describe('Find buyer', () => {
 })
 
 describe('wins line', () => {
+  it('on the seller page, says what the laptop is for once the web app takes winners from Whatnot', async () => {
+    stubChrome()
+    const { Controller } = await import('../src/content/controller')
+    const c = new Controller()
+    type Needs = { saleMode: 'winners_pick' | 'listing'; winnersFromWhatnot: boolean } | null
+    const priv = c as unknown as { wins: object | null; setNeeds(n: Needs): void; stopStock(): void; renderWins(): void }
+    const line = () => (c.panel.el('wins').hidden ? '' : c.panel.el('wins').textContent)
+    history.replaceState(null, '', '/dashboard/live/show-1')
+    priv.wins = {}
+    priv.renderWins()
+    expect(line()).toContain('Winners are not shown on the seller page')
+    // Orders are only compared, not applied: the laptop still has to read the winners.
+    priv.setNeeds({ saleMode: 'winners_pick', winnersFromWhatnot: false })
+    expect(line()).toContain('Winners are not shown on the seller page')
+    priv.setNeeds({ saleMode: 'winners_pick', winnersFromWhatnot: true })
+    expect(line()).toBe('Winners come from Whatnot. This laptop records the chat, where winners pick their product.')
+    priv.setNeeds({ saleMode: 'listing', winnersFromWhatnot: true })
+    expect(line()).toBe('Winners and products come from Whatnot for this show. No recording is needed.')
+    // Recording stopped: nothing is assumed about the next show.
+    priv.stopStock()
+    priv.renderWins()
+    expect(line()).toContain('Winners are not shown on the seller page')
+    history.replaceState(null, '', '/live/show-1')
+    c.destroy()
+  })
+
   it("says the seller's live page shows no winners, until a win is read", async () => {
     stubChrome()
     const { Controller } = await import('../src/content/controller')

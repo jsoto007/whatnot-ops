@@ -143,6 +143,23 @@ test('a title that names a product is still offered, ticked', async () => {
   expect(screen.getByRole('checkbox', { name: /remember this name/ })).toBeChecked()
 })
 
+test('in a winner’s-pick show the box is offered but not ticked: the product is that winner’s pick', async () => {
+  const named = { id: 42, item: 'Mystery Pull Bag', itemTitle: 'Mystery Pull Bag', lot: null, rememberName: true, saleMode: 'winners_pick' } as Sale
+  const posts = mount([{ ...item, sale: named }], '/app/review/3')
+  const box = await screen.findByRole('combobox', { name: 'SKU for review 7' })
+  const remember = screen.getByRole('checkbox', { name: /remember this name/ })
+  expect(remember).not.toBeChecked()
+  // A person may still say this lot is always that product.
+  fireEvent.click(remember)
+  fireEvent.focus(box)
+  fireEvent.change(box, { target: { value: 'chari' } })
+  await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(1))
+  fireEvent.click(screen.getByRole('option'))
+  fireEvent.click(screen.getByRole('button', { name: 'Use this SKU' }))
+  await waitFor(() => expect(posts).toHaveLength(1))
+  expect(posts[0]!.body).toEqual({ action: 'assign_sku', skuId: 4, remember: true })
+})
+
 test('a winner who typed a shelf spot gets that product suggested, not remembered as a name', async () => {
   const posts = mount([{ ...item, shelf: { spot: 'B4', skuId: 4, name: 'Holo slab Charizard' } }], '/app/review/3')
   expect(await screen.findByTestId('shelf-pick')).toHaveTextContent('Typed B4 in chat: Holo slab Charizard')
