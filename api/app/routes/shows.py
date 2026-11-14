@@ -99,7 +99,12 @@ def get_show(show_id: int):
     if show is None:
         return jsonify({"error": "show not found"}), 404
     return jsonify(
-        {"show": serializers.show(show, _counts([show.id]).get(show.id, 0)), "stats": _stats(show)}
+        {
+            "show": serializers.show(show, _counts([show.id]).get(show.id, 0)),
+            "stats": _stats(show),
+            # Laptops whose clock is out for this show: winners' picks are then not suggested.
+            "clockProblems": sale_chat.clock_problems(show),
+        }
     )
 
 

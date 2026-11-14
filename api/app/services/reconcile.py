@@ -64,6 +64,9 @@ class Row:
     ref: int | None = None
     sale_hint: int | None = None
     ordered_at: datetime | None = None
+    # For a card declined at the win and paid on a retry: when the first, failed order was
+    # placed. That is when the lot was won; `ordered_at` is when the payment went through.
+    first_ordered_at: datetime | None = None
     # The product the listing itself names (a Whatnot listing linked to a product here).
     # None lets the listing's text decide, as for a payment file.
     sku_id: int | None = None

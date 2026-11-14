@@ -3,7 +3,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleMode, type SaleStatus, type Shelf, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway, type WhatnotRecap as WhatnotRecapData } from '../../lib/api'
-import { fmtLongDate, fmtShopClock, fmtShopTime } from '../../lib/format'
+import { fmtLongDate, fmtShopClock, fmtShopTime, plural } from '../../lib/format'
 import { SALE_MODE_LABEL, lotLabel, saleModeHelp, saleModeLabel, saleStatusLabel } from '../../lib/labels'
 import { useDebounced } from '../../lib/useDebounced'
 import { Kpis, Tally, TopLists } from './Dashboard'
@@ -27,7 +27,7 @@ export function ShowDetail() {
     next.set('tab', t)
     setParams(next, { replace: true })
   }
-  const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats }>(`/api/shows/${id}`) })
+  const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats; clockProblems?: ClockProblem[] }>(`/api/shows/${id}`) })
   const dash = useQuery({ queryKey: ['show-dashboard', id], queryFn: () => apiGet<{ tiles: ShowTiles; topBuyers: TopBuyer[]; topSkus: TopSku[]; winnersWithoutPurchase: WalkAway[]; whatnot?: WhatnotRecapData | null }>(`/api/dashboard/shows/${id}`) })
   const sales = useQuery({ queryKey: ['sales', id], queryFn: () => apiGet<{ sales: Sale[] }>(`/api/shows/${id}/sales`) })
   const parse = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/parse`), onSuccess: () => qc.invalidateQueries() })
@@ -100,6 +100,7 @@ export function ShowDetail() {
         </span>
       </div>
 
+      {!!show.data?.clockProblems?.length && <ClockWarning problems={show.data.clockProblems} />}
       {t && <Kpis t={t} label="This show" />}
       {list.length > 0 && <SaleStatusBar counts={counts} />}
       {t && <Tally t={t} />}
@@ -241,6 +242,32 @@ function ShowSaleMode({ show, usual, canEdit }: { show: Show; usual?: SaleMode; 
           {(set.error as Error).message}
         </span>
       )}
+    </div>
+  )
+}
+
+/** A laptop whose clock is out stamps chat a minute from when it was typed. `seconds`: how far ahead it runs (negative: behind), null when it is not one steady figure. */
+interface ClockProblem {
+  laptop: string | null
+  seconds: number | null
+}
+
+/**
+ * Winners' picks are matched to wins by time. With a laptop whose clock is out, a pick would be
+ * handed to the wrong win, so the app suggests none for this show and says what to put right.
+ */
+function ClockWarning({ problems }: { problems: ClockProblem[] }) {
+  return (
+    <div className="card small warn-card" role="status" data-testid="clock-warning">
+      <b>Winners’ picks are not suggested for this show.</b>
+      {problems.map((p, i) => (
+        <div key={i}>
+          {p.seconds === null
+            ? `The clock on ${p.laptop ?? 'a laptop'} was not steady during the show: it was changed, or its uploads came in bursts.`
+            : `The clock on ${p.laptop ?? 'a laptop'} is about ${plural(Math.abs(p.seconds), 'second', 'seconds')} ${p.seconds > 0 ? 'fast' : 'slow'}.`}
+        </div>
+      ))}
+      <div className="muted">A pick is matched to its win by time. Set that laptop to set its date and time automatically, then record the next show; the chat itself is all here.</div>
     </div>
   )
 }
@@ -422,7 +449,7 @@ function SaleChat({ sale, lines }: { sale: Sale; lines: SaleChatLine[] }) {
       </p>
       <div className="chat small">
         {lines.map((c) => (
-          <div className={'chat-line' + (c.role === 'buyer' ? ' hit' : '')} key={c.seq}>
+          <div className={'chat-line' + (c.role === 'buyer' ? ' hit' : '')} key={`${c.capturedAt}-${c.seq}`}>
             <span className="t">{fmtShopTime(c.capturedAt)}</span>
             <span className="u">
               {c.username || 'platform'} <span className="muted small">· {ROLE_LABEL[c.role]}</span>

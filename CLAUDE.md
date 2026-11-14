@@ -203,6 +203,24 @@ commands.
   lines are stored once by Whatnot's transaction id; the "net" is the sum of Whatnot's
   own signed lines in the shop's currency, and the app never derives one from the fee
   columns.
+- **What the winner said** (`services/sale_chat.py`, `services/shelves.py`). A sale made
+  from Whatnot's order is placed in time by when Whatnot FIRST recorded an order for the win
+  (`Sale.ordered_at`; for a card declined and then paid that is the declined attempt, set by
+  `whatnot/orders._note_order_time`, and it only ever moves earlier). Chat is read from the
+  win on (`picks_from`): a win read from the video player from its own line; a sale with no
+  win line from the order's time less `ORDER_LAG` (3 s, a guess until the real gap is
+  measured; kept short because a wide margin hands the buyer's previous win's pick to this
+  one). One show on Whatnot is one chat however many recordings it was made in: every
+  recording's lines are read, a line two laptops recorded counts once, a buyer's wins in all
+  of them decide together which win a line goes to, and the shelf layout is the show's (saved
+  to every recording; all use the oldest one's). **A laptop's clock is judged, never
+  corrected** (`clocks`: in step, out, or cannot be told, from typed vs received times of
+  minutes uploaded live). A "correction" from upload delays goes wrong by minutes when the
+  Wi-Fi drops. A show with a laptop whose clock is out, or with two laptops not both known to
+  be in step, gets no suggested picks (`unsafe`) and the show page says why
+  (`clock_problems`). Anything that assigns a product from chat must go through `unsafe`. Do
+  not read chat or a layout by `show_id` alone: use `sale_chat.around` / `shelves.read` /
+  `suggest`.
 - **Whatnot listings** (`services/whatnot/catalog.py`, `/app/inventory/whatnot`). The
   shop's Whatnot inventory is mirrored (`whatnot_variants`) and each listing linked to a
   SKU: by an exact code match, or by a person ("off" = none of ours, never re-linked).

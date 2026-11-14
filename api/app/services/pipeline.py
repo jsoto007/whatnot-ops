@@ -363,6 +363,7 @@ def create_sale_from_order(
     settled: bool,
     sku_id: int | None = None,
     by_text: bool = True,
+    won_at: datetime | None = None,
 ) -> Sale:
     """A sale the app learnt of from Whatnot's own order record, not from a chat line or
     the video player (nobody was recording, or the win was missed). Whatnot vouches that
@@ -389,7 +390,9 @@ def create_sale_from_order(
         auction_type=rules.auction_type(item_text or ""),
         status=SaleStatus.detected,
         external_order_id=external_order_id,
-        ordered_at=ordered_at,
+        # When the lot was won: for a card declined and then paid, the declined attempt's
+        # time (`won_at`), not when the retry went through (`ordered_at`, kept for paid_at).
+        ordered_at=won_at or ordered_at,
     )
     db.session.add(sale)
     db.session.flush()
