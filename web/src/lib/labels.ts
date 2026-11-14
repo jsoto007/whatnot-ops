@@ -252,3 +252,38 @@ export const buyerFlagLabel = (f: string | null | undefined): string => (f ? (BU
 
 /** How a listing came to be linked. */
 export const listingLinkLabel = (l: string | null): string => (l === 'code' ? 'matched by its code' : l === 'person' ? 'linked by the team' : l === 'off' ? 'not one of ours' : 'not linked yet')
+
+/** What the pick worker found for a win, in words (services/picks.py). */
+const PICK_HELD: Record<string, string> = {
+  off: 'Assigning picks by themselves is switched off, so confirm it here.',
+  unconfirmed: 'Not assigned by itself: Whatnot has not confirmed this win as paid.',
+  clock: "Not assigned by itself: the laptop's clock could not be checked for this show.",
+  doubt: 'Not assigned by itself: this sale has an open question.',
+  near: "Not assigned by itself: it was typed within half a minute before this winner's next win, so it may be for that one.",
+  unclear: 'Not assigned by itself: this winner typed more spots than can be matched to their wins.',
+}
+export function pickWords(pick: { state: string; spot?: string; spots?: string[]; name?: string; held?: string[] }): string {
+  switch (pick.state) {
+    case 'product':
+      return [`Typed ${pick.spot} in chat: ${pick.name}.`, ...(pick.held ?? []).map((h) => PICK_HELD[h] ?? '')].filter(Boolean).join(' ')
+    case 'unknown_code':
+      return `Typed ${pick.spot}. No product is on ${pick.spot} for this show.`
+    case 'several':
+      return `Typed ${(pick.spots ?? []).join(' and ')}: more than one spot, so none was chosen.`
+    case 'unread':
+      return "This show's picks could not be read: a laptop's clock was out. Read the chat."
+    case 'no_layout':
+      return 'This show has no shelf layout, so no pick could be read.'
+    default:
+      return 'Did not pick: no shelf spot from this winner before the show ended.'
+  }
+}
+
+/** What an order's unnamed items are waiting for. In a winner's-pick show that is the winner:
+ * "waiting for pick" until the show is over, "did not pick" once the worker has looked. */
+export function unknownWords(unk: { saleMode?: string | null; review?: { pick?: string | null } | null }[]): string {
+  const n = unk.length
+  if (unk.every((s) => s.review?.pick === 'none')) return n === 1 ? 'did not pick' : `${n} did not pick`
+  if (unk.every((s) => s.saleMode === 'winners_pick' && !s.review?.pick)) return n === 1 ? 'waiting for pick' : `${n} waiting for pick`
+  return n === 1 ? 'item not recognised' : `${n} items not recognised`
+}

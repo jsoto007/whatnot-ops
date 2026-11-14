@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { AuthContext, type AuthState } from '../../auth/context'
 import type { Order, Product, Sale, Show, Sku } from '../../lib/api'
+import { unknownWords } from '../../lib/labels'
 import { Orders } from './Orders'
 
 const auth = (permissions: string[]): AuthState => ({
@@ -362,4 +363,16 @@ test('the parcel filters belong to the Shipped tab only', async () => {
   expect(screen.queryByTestId('parcel-filters')).toBeNull()
   // A filter left in the address from the Shipped tab narrows nothing here.
   expect(screen.getAllByTestId(/^order-/)).toHaveLength(5)
+})
+
+test("in a winner's-pick show an unnamed item waits for the winner, then reads did not pick", () => {
+  const waiting = sale({ buyer: 'made_up_ann', orderId: 8, saleMode: 'winners_pick', review: { id: 18, reason: 'unmatched_item' } })
+  const noPick = sale({ buyer: 'made_up_ann', orderId: 8, saleMode: 'winners_pick', review: { id: 19, reason: 'unmatched_item', pick: 'none' } })
+  const other = sale({ buyer: 'made_up_ann', orderId: 8, review: { id: 20, reason: 'unmatched_item' } })
+  expect(unknownWords([waiting])).toBe('waiting for pick')
+  expect(unknownWords([waiting, waiting])).toBe('2 waiting for pick')
+  expect(unknownWords([noPick])).toBe('did not pick')
+  expect(unknownWords([noPick, noPick])).toBe('2 did not pick')
+  expect(unknownWords([other])).toBe('item not recognised')
+  expect(unknownWords([waiting, noPick, other])).toBe('3 items not recognised')
 })

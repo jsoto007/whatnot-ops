@@ -8,7 +8,7 @@ import { Icon } from '../../components/Icon'
 import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
 import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleStatus, type Show } from '../../lib/api'
 import { SHOP_TZ, fmtDate, fmtLongDate, fmtWhen, plural } from '../../lib/format'
-import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, orderStatusLabel, packageStatusLabel, parcelStateLabel, saleStatusLabel } from '../../lib/labels'
+import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, orderStatusLabel, packageStatusLabel, parcelStateLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
 
 const NEXT = ORDER_NEXT_STEP
 
@@ -324,7 +324,7 @@ function Status({ o }: { o: Order }) {
   return (
     <>
       <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
-      {o.status === 'open' && <div className="small sub unknown">{unk.length ? (unk.length === 1 ? 'item not recognised' : `${unk.length} items not recognised`) : 'older sale, waiting for the payment file'}</div>}
+      {o.status === 'open' && <div className="small sub unknown">{unk.length ? unknownWords(unk) : 'older sale, waiting for the payment file'}</div>}
       {o.status === 'paid' && won > 0 && <div className="small faint sub">won {time(new Date(won).toISOString())}</div>}
       {(o.sales ?? []).some((s) => s.review?.reason === 'lot_won_twice') && (
         <div className="small sub unknown" data-testid={`lot-won-twice-${o.buyer}`}>

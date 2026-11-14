@@ -705,6 +705,9 @@ def sync_job(payload: dict) -> None:
         # (or did not arrive): this show's parcels read in full after it ended, so its
         # Shipping page is ready without anyone pressing "Read again".
         shipping.schedule(org_id, whatnot_show_id)
+        from .. import picks
+
+        picks.schedule(_show_row(org_id, whatnot_show_id))
     if shipping.due(org_id):
         shipping.schedule(org_id)
     for whatnot_show_id in results.results_due(org_id):

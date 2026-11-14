@@ -100,6 +100,12 @@ def update_organization():
             return jsonify({"error": str(e)}), e.status
         if before != now:
             changes["saleMode"] = [before, now]
+    if "autoPick" in d:
+        if not isinstance(d["autoPick"], bool):
+            return jsonify({"error": "Say yes or no."}), 400
+        if org.auto_pick != d["autoPick"]:
+            changes["autoPick"] = [org.auto_pick, d["autoPick"]]
+            org.auto_pick = d["autoPick"]
     if changes:
         from ..services import audit
 

@@ -311,7 +311,9 @@ def _roles(m: ChatMessage, named: _Named, buyers: dict, host: str) -> list[tuple
     is_host = bool(host) and user == host
     role = "platform" if not user else "host" if is_host else "other"
     about = dict.fromkeys(named(m.raw_text or "", bare=not user or is_host), role)
-    if user in buyers:
+    # Only a plain ASCII name can be the buyer's own: "K" (the Kelvin sign) lowers to "k",
+    # and such a look-alike must not speak for the winner.
+    if user in buyers and (m.username or "").isascii():
         about[user] = "buyer"
     return [(b, about[b]) for b in buyers if b in about] if len(about) > 1 else list(about.items())
 

@@ -12,6 +12,8 @@ def organization(o: Organization) -> dict:
         "hostUsername": o.host_username,
         # How the shop usually sells; a show can differ (services/sale_mode.py).
         "saleMode": o.sale_mode,
+        # Whether a winner's pick names the product by itself after the show (services/picks.py).
+        "autoPick": o.auto_pick,
     }
 
 
@@ -223,7 +225,16 @@ def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
         if s.event
         else ("whatnot" if s.external_order_id and s.ordered_at else None),
         "wonAt": won.isoformat() if won else None,
-        "review": {"id": review.id, "reason": review.reason} if review is not None else None,
+        "review": (
+            {
+                "id": review.id,
+                "reason": review.reason,
+                # What the pick worker found once the show was over (services/picks.py).
+                "pick": ((review.proposal or {}).get("pick") or {}).get("state"),
+            }
+            if review is not None
+            else None
+        ),
         "createdAt": s.created_at.isoformat(),
     }
     if chat is not None:
