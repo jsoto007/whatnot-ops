@@ -1,10 +1,11 @@
 from datetime import UTC, datetime
 
 from flask import Blueprint, g, jsonify, request
+from sqlalchemy import select
 
 from ..db import db
 from ..models import Show
-from ..services import buyers, ratelimit, shipments, showdate, stock, text
+from ..services import buyers, ratelimit, sale_mode, shipments, showdate, stock, text
 from ..services.devices import device_for_key, touch
 from ..services.ingest import BatchInvalid, ingest, message_count
 from ..services.pipeline import schedule_parse
@@ -141,8 +142,30 @@ def running_low():
         {
             "alertAt": stock.RUNNING_LOW,
             "items": stock.running_low(g.device.organization_id, show_key=show_key),
+            **_show_needs(show_key),
         }
     )
+
+
+def _show_needs(show_key: str | None) -> dict:
+    """What the show needs from the laptop, for the panel's own words: how it sells, and
+    whether winners reach the app from Whatnot (then the laptop only records the chat, and
+    the seller's own page is as good as any). Nothing for a show the app has not seen."""
+    if show_key is None:
+        return {}
+    show = db.session.scalar(
+        select(Show).where(
+            Show.organization_id == g.device.organization_id, Show.show_key == show_key
+        )
+    )
+    if show is None:
+        return {}
+    return {
+        "show": {
+            "saleMode": sale_mode.of_show(show)[0],
+            "winnersFromWhatnot": sale_mode.winners_from_whatnot(show.organization_id),
+        }
+    }
 
 
 @bp.post("/ingest/buyers")

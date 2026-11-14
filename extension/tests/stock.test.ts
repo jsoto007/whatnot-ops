@@ -86,6 +86,20 @@ describe('fetchStock', () => {
     expect(urls).toEqual(['https://shop.example/api/ingest/stock?show=2026-10-24T23%3A00%3A00.000Z'])
   })
 
+  it('passes on what the show needs from the laptop, and drops anything malformed', async () => {
+    const reply = (show: unknown) => (async () => new Response(JSON.stringify({ alertAt: 3, items: [], show }), { status: 200 })) as typeof fetch
+    const key = '2026-10-24T23:00:00.000Z'
+    expect(await fetchStock(settings, key, reply({ saleMode: 'listing', winnersFromWhatnot: true, extra: 1 }))).toEqual({
+      alertAt: 3,
+      items: [],
+      show: { saleMode: 'listing', winnersFromWhatnot: true },
+    })
+    // An older web app says nothing; a mode this build does not know is not guessed at.
+    for (const bad of [undefined, null, 'listing', { saleMode: 'auto', winnersFromWhatnot: true }, { saleMode: 'listing', winnersFromWhatnot: 'yes' }]) {
+      expect(await fetchStock(settings, key, reply(bad))).toEqual({ alertAt: 3, items: [] })
+    }
+  })
+
   it('is null when not connected or the server says no', async () => {
     const no = (async () => new Response('', { status: 401 })) as typeof fetch
     expect(await fetchStock({ ...settings, apiKey: '' }, undefined, no)).toBeNull()

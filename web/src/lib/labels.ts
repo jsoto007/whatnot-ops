@@ -1,4 +1,4 @@
-import type { OrderStatus, Role, Sale, SaleStatus } from './api'
+import type { OrderStatus, Role, Sale, SaleMode, SaleStatus } from './api'
 
 /**
  * The words the shop reads for the server's codes. A page never prints a raw
@@ -22,6 +22,18 @@ export const ROLE_LABEL: Record<Role, string> = {
   viewer: 'Viewer',
 }
 export const roleLabel = (r: string | undefined | null): string => ROLE_LABEL[r as Role] ?? 'Team member'
+
+/** How a show sells (api/app/services/sale_mode.py). */
+export const SALE_MODE_LABEL: Record<SaleMode, string> = {
+  winners_pick: 'Winners pick in chat',
+  listing: 'One product per listing',
+}
+export const saleModeLabel = (m: string | undefined | null): string => SALE_MODE_LABEL[m as SaleMode] ?? 'Another way'
+const SALE_MODE_HELP: Record<SaleMode, string> = {
+  winners_pick: 'The winner types a shelf spot in chat, like A5, to say which product they want.',
+  listing: 'Each listing is one product. The product comes from the listing, not from the chat.',
+}
+export const saleModeHelp = (m: string | undefined | null): string => SALE_MODE_HELP[m as SaleMode] ?? ''
 
 export const SALE_STATUS_LABEL: Record<SaleStatus, string> = {
   detected: 'needs a decision',

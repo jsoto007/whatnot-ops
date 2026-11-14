@@ -3,7 +3,7 @@
   "private": true,
   "license": "UNLICENSED",
   "author": "SotoDev",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",

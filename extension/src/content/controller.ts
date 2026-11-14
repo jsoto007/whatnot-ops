@@ -18,7 +18,7 @@ import { collectAll } from '../shipments/collect'
 import { onShipmentsPage } from '../shipments/read'
 import type { ShipmentsReply } from '../shipments/upload'
 import { type StockSeen, stockAlerts } from '../stock/alerts'
-import type { StockReply } from '../stock/fetch'
+import type { ShowNeeds, StockReply } from '../stock/fetch'
 import { type BuyersReply, buyerLine } from '../buyers/known'
 import { Panel, readLayout } from './panel'
 import { dotState, uploadNote, winNotice } from './status'
@@ -46,6 +46,10 @@ const PAGE_POLL_MS = 1000
  */
 const SELLER_LIVE = /^\/dashboard\/live\//
 const NO_WINS_HERE = 'Winners are not shown on the seller page. Record from the show opened in a buyer account.'
+/** Once the web app takes winners from Whatnot's own orders, the seller page is fine: only the chat is needed. */
+const WINS_FROM_WHATNOT = 'Winners come from Whatnot. This laptop records the chat, where winners pick their product.'
+const NOT_NEEDED = 'Winners and products come from Whatnot for this show. No recording is needed.'
+const sellerPageLine = (needs: ShowNeeds | null): string => (!needs?.winnersFromWhatnot ? NO_WINS_HERE : needs.saleMode === 'listing' ? NOT_NEEDED : WINS_FROM_WHATNOT)
 /**
  * No chat line for this long while the chat is on screen: Whatnot's chat may be scrolled up, and
  * then it adds few or no new lines (the 2026-11-13 show: about 3 minutes lost on one laptop).
@@ -88,6 +92,8 @@ export class Controller {
   private startedAt: string | null = null
   private recorder: Recorder | null = null
   private wins: WinWatcher | null = null
+  /** What the web app says this show needs from the laptop; null until it answers (stock/fetch.ts). */
+  private needs: ShowNeeds | null = null
   private declines: DeclineWatcher | null = null
   private lastPageScan = 0
   private winTimer: ReturnType<typeof setInterval> | null = null
@@ -414,6 +420,7 @@ export class Controller {
     this.panel.setBuyer('')
     this.declines = null
     this.stopStock()
+    this.renderWins() // what the web app said about this show no longer applies
     this.playerObserver?.disconnect()
     this.playerObserver = null
     this.observedPlayer = null
@@ -491,6 +498,7 @@ export class Controller {
       return // background asleep or reloaded; the next poll tries again
     }
     if (!reply || !this.stockTimer) return // not connected, offline, or stopped meanwhile
+    this.setNeeds(reply.show ?? null)
     const { alerts, seen } = stockAlerts(this.stockSeen, reply.items, reply.alertAt)
     this.stockSeen = seen
     this.panel.setLowStock(reply.items)
@@ -519,9 +527,17 @@ export class Controller {
     if (asked === this.buyerAsk) this.panel.setBuyer(`${win.winner}: ${line}`)
   }
 
+  /** The wins line says what the laptop is for: it follows what the web app says about the show. */
+  private setNeeds(needs: ShowNeeds | null): void {
+    const changed = this.needs?.winnersFromWhatnot !== needs?.winnersFromWhatnot || this.needs?.saleMode !== needs?.saleMode
+    this.needs = needs
+    if (changed) this.renderWins()
+  }
+
   private stopStock(): void {
     if (this.stockTimer) clearInterval(this.stockTimer)
     this.stockTimer = null
+    this.needs = null
     this.stockSeen = null
     this.panel.setLowStock([])
     this.panel.clearStockAlert()
@@ -536,7 +552,7 @@ export class Controller {
       last
         ? `wins ${wins.length}` + (declined ? ` · declined ${declined}` : '') + ` · last: ${last.body}`
         : this.wins && SELLER_LIVE.test(location.pathname)
-          ? NO_WINS_HERE
+          ? sellerPageLine(this.needs)
           : '',
     )
   }

@@ -95,6 +95,14 @@ code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background
 .form-error { color: var(--red-ink); font-size: 14px; font-weight: 500; margin: var(--space-2) 0; }
 .inline-form { display: flex; gap: var(--space-3); align-items: end; flex-wrap: wrap; margin: var(--space-3) 0; }
 .inline-form .field { margin: 0; }
+/* A short form whose choices sit one under another (Settings: How you sell). */
+.stack-form { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); margin: var(--space-3) 0; }
+.stack-form .field.check { margin: 0; align-items: flex-start; }
+/* A radio is not a text box: none of the field's box (height, padding, full width). */
+.stack-form .field.check input { width: auto; min-height: 0; padding: 0; margin: 3px 0 0; flex: none; }
+.stack-form .field.check > span { font-weight: 500; font-size: 14px; color: var(--text); line-height: 1.4; }
+/* How this show sells, under the show's title. */
+.show-mode { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .row-actions { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
 
 /* ---------- app shell ---------- */

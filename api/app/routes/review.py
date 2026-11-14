@@ -6,7 +6,7 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import ChatMessage, ReviewItem, ReviewStatus, Sale, Show
-from ..services import audit, pipeline, shelves
+from ..services import audit, pipeline, sale_mode, shelves
 from ..services.catalog import CatalogError
 from ..services.inventory import InventoryError
 from ..services.pipeline import ReviewError
@@ -68,6 +68,7 @@ def list_review():
         i.sale for i in items if i.reason == "unmatched_item" and i.sale and not i.sale.sku_id
     ]
     spots = shelves.suggest(waiting) if waiting else {}
+    sale_mode.prime({i.show_id for i in items if i.sale is not None})
     return jsonify(
         {"items": [serializers.review_item(i, _context(i), spots.get(i.sale_id)) for i in items]}
     )

@@ -1,11 +1,18 @@
 from .models import AuditLog, Device, Invite, Organization, Show, User
-from .services import activity, licence, rules
+from .services import activity, licence, rules, sale_mode
 from .services.admin import is_protected
 from .services.permissions import allowed, permissions_for
 
 
 def organization(o: Organization) -> dict:
-    return {"id": o.id, "name": o.name, "slug": o.slug, "hostUsername": o.host_username}
+    return {
+        "id": o.id,
+        "name": o.name,
+        "slug": o.slug,
+        "hostUsername": o.host_username,
+        # How the shop usually sells; a show can differ (services/sale_mode.py).
+        "saleMode": o.sale_mode,
+    }
 
 
 def user(u: User) -> dict:
@@ -70,7 +77,10 @@ def audit_entry(a: AuditLog, target: str = "") -> dict:
     }
 
 
-def show(s: Show, message_count: int) -> dict:
+def show(s: Show, message_count: int, mode: tuple[str, bool] | None = None) -> dict:
+    """`mode`: (how the show sells, whether that was chosen for this show), when the caller
+    looked it up for several shows at once (sale_mode.of_shows)."""
+    sale_mode_, chosen = mode or sale_mode.of_show(s)
     return {
         "id": s.id,
         "key": s.show_key,
@@ -83,6 +93,9 @@ def show(s: Show, message_count: int) -> dict:
         # laptop recorded it at all (False: the app made the show from Whatnot's own record).
         "title": s.whatnot_show.title if s.whatnot_show is not None else None,
         "recorded": s.whatnot_link != "made",
+        # "winners_pick" or "listing"; `saleModeSet` False: it follows the shop's usual way.
+        "saleMode": sale_mode_,
+        "saleModeSet": chosen,
     }
 
 
@@ -191,6 +204,9 @@ def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
         "lot": rules.lot_number(s.item_text or ""),
         # False when the title names one lot of one show: "remember this name" is not offered.
         "rememberName": bool(s.item_text) and not rules.names_a_lot(s.item_text),
+        # How the sale's show sells. In a winner's-pick show the product a person chooses
+        # is that winner's pick, so the screens do not tick "remember this name" by default.
+        "saleMode": sale_mode.of_show_id(s.show_id),
         "quantity": s.quantity,
         "priceCents": s.price_cents,
         "auctionType": s.auction_type,

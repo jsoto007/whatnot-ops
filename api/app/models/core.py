@@ -23,12 +23,23 @@ def utcnow() -> datetime:
 
 class Organization(db.Model):
     __tablename__ = "organizations"
+    __table_args__ = (
+        CheckConstraint(
+            "sale_mode IN ('winners_pick', 'listing')", name="ck_organizations_sale_mode"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     slug: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     # The seller's Whatnot handle: chat lines from this user count as host confirmations.
     host_username: Mapped[str | None] = mapped_column(String(80))
+    # How this shop usually sells (services/sale_mode.py): "winners_pick" (the winner names
+    # the product in chat) or "listing" (the listing is the product). What a new show starts
+    # in; a show can differ (ShowSaleMode).
+    sale_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="winners_pick", server_default="winners_pick"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
@@ -139,6 +150,22 @@ class ShowShelf(db.Model):
     )
     code: Mapped[str] = mapped_column(String(4), primary_key=True)
     sku_id: Mapped[int] = mapped_column(ForeignKey("skus.id"), nullable=False)
+
+
+class ShowSaleMode(db.Model):
+    """A show that sells differently from the shop's usual way (services/sale_mode.py). A
+    table of its own for the reason ShowShelf is one: changing it never touches the show's
+    `updated_at` (read as the time chat last arrived)."""
+
+    __tablename__ = "show_sale_modes"
+    __table_args__ = (
+        CheckConstraint("mode IN ('winners_pick', 'listing')", name="ck_show_sale_modes_mode"),
+    )
+
+    show_id: Mapped[int] = mapped_column(
+        ForeignKey("shows.id", ondelete="CASCADE"), primary_key=True
+    )
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
 class ChatMessage(db.Model):

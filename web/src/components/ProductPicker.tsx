@@ -50,7 +50,9 @@ export function ProductPicker({ target, onClose, onDone }: { target: PickerTarge
   const [skuId, setSkuId] = useState('')
   // A title that names one lot of one show ("… #520") is never learned: the box is not offered.
   const canRemember = sale.rememberName !== false
-  const [remember, setRemember] = useState(canRemember)
+  // In a winner's-pick show the product chosen here is that winner's pick, not the lot's name:
+  // remembering it is the person's choice, never the default.
+  const [remember, setRemember] = useState(canRemember && sale.saleMode !== 'winners_pick')
   const [applyAll, setApplyAll] = useState(!!target.applyToSimilar && similar.length > 0)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)

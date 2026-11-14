@@ -163,7 +163,9 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
   const [skuId, setSkuId] = useState(item.shelf ? String(item.shelf.skuId) : '')
   // A title that names one lot of one show ("… #520") is never learned: the box is not offered.
   const canRemember = item.sale?.rememberName !== false
-  const [remember, setRemember] = useState(!item.shelf && canRemember)
+  // In a winner's-pick show the product chosen here is that winner's pick, not the lot's name:
+  // remembering it is the person's choice, never the default.
+  const [remember, setRemember] = useState(!item.shelf && canRemember && item.sale?.saleMode !== 'winners_pick')
   const [error, setError] = useState<string | null>(null)
   const resolve = useMutation({
     mutationFn: (body: Record<string, unknown>) => api('POST', `/api/review/${item.id}/resolve`, body),

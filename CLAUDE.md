@@ -208,6 +208,18 @@ commands.
   is applied, so setting a count puts sold units back). Do not add an inventory write
   without a design checked against the live shop. The daily catalog read waits while a
   show is on air (it shares the request budget the orders need).
+- **Selling mode** (`services/sale_mode.py`). A show sells one of two ways: "winners_pick"
+  (a lot's title names no product; the winner says which one in chat, by its shelf spot,
+  "A5") or "listing" (one product per listing; the listing's link names it). The shop has a
+  usual way (`Organization.sale_mode`, the owner, Settings) and a show can differ
+  (`ShowSaleMode`, managers, the show page); a choice is written to every recording of the
+  same Whatnot show, and a recording that appears later follows the others. A listing linked
+  to a product names its sale in either mode: the mode says what a win with no product waits
+  for. Read a show's mode only through `sale_mode.of_show` / `of_shows`; the screens word it
+  through `labels.ts`. The laptop learns it from `GET /api/ingest/stock` (`show`), with
+  whether winners reach the app from Whatnot's own orders. A listing title that names one lot
+  of one show ("… #520", "CHOOSE ANY…") is never learned as a product's name from a sale
+  (`rules.names_a_lot`): lot numbers start again in every show.
 - **Buyers** (`services/buyers.py`, `/app/buyers`). A profile row holds only who a buyer
   is (Whatnot's user id, every username they used) and what the team says (a note, a
   `vip` / `watch` flag, audited). What they bought is never stored: it comes from the

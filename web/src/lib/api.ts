@@ -75,11 +75,15 @@ export interface User {
   createdAt: string
   lastLoginAt: string | null
 }
+/** How winners get their product: they pick in chat, or the listing is the product. */
+export type SaleMode = 'winners_pick' | 'listing'
 export interface Organization {
   id: number
   name: string
   slug: string
   hostUsername: string | null
+  /** How the shop usually sells. A new show starts this way; a show can differ. */
+  saleMode?: SaleMode
 }
 /** The licence in force and whether to ask this person to accept it (only the shop's owner). */
 export interface LicenceStatus {
@@ -133,6 +137,9 @@ export interface Show {
   title?: string | null
   /** false: no laptop recorded it; the app made the show from Whatnot's own record. */
   recorded?: boolean
+  /** How this show sells, and whether that was chosen for it (false: the shop's usual way). */
+  saleMode?: SaleMode
+  saleModeSet?: boolean
 }
 export interface ChatMessage {
   id: number
@@ -258,6 +265,9 @@ export interface Sale {
   /** False when the title names one lot of one show ("… #520", "CHOOSE ANY…"): the server
    * never learns it as a product's name, so "remember this name" is not offered. */
   rememberName?: boolean
+  /** How the sale's show sells. In a winner's-pick show the product a person chooses is that
+   * winner's pick, so "remember this name" starts unticked. */
+  saleMode?: SaleMode
   quantity: number
   priceCents: number | null
   auctionType: string
