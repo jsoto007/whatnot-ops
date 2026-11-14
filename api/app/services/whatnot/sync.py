@@ -67,6 +67,12 @@ MAX_ORDER_PAGES = 60  # 3,000 orders in one catch-up; a show has a few hundred
 MAX_OPEN_REFRESH = 150  # orders re-read one by one per timer run
 SHOWS_EVERY = timedelta(minutes=15)
 OPEN_ORDERS_EVERY = timedelta(minutes=60)
+# With webhooks arriving (one within this long), the open-order re-read is a safety net
+# and runs this often instead.
+OPEN_ORDERS_HOOKED = timedelta(hours=6)
+# A show "live" or "stopped" on Whatnot for longer than this is not on air any more for the
+# open-order re-read (a show left "stopped" must not hold it back for days).
+ON_AIR_AT_MOST = timedelta(hours=12)
 LIVE_POLL_QUIET = timedelta(minutes=10)  # no webhook for this long during a live show
 # A show nobody recorded gets its own entry in Shows once it has been live this long (a
 # laptop that starts recording a little late has had its chance to appear).
@@ -452,8 +458,17 @@ def sync_order(org_id: int, client: WhatnotClient, whatnot_id: str) -> WhatnotOr
 def sync_show_orders(org_id: int, client: WhatnotClient, ws: WhatnotShow) -> dict:
     """Read every order placed since the show began (newest first, until older than it).
     Orders of other shows met on the way are stored too."""
-    start = ws.begins_at
-    floor = (start - SHOW_LEAD) if start else datetime.now(UTC) - timedelta(days=2)
+    return sync_orders_of(org_id, client, [ws])
+
+
+def sync_orders_of(org_id: int, client: WhatnotClient, shows: list[WhatnotShow]) -> dict:
+    """`sync_show_orders` for several shows in ONE newest-first read, down to the oldest
+    show's start: reading them one by one would page through the newer shows' orders again
+    for each older one."""
+    if not shows:
+        return {"seen": 0, "new": 0}
+    fallback = datetime.now(UTC) - timedelta(days=2)
+    floor = min((ws.begins_at - SHOW_LEAD) if ws.begins_at else fallback for ws in shows)
     began = datetime.now(UTC)
     seen = new = 0
     for i, data in enumerate(client.orders()):
@@ -461,22 +476,32 @@ def sync_show_orders(org_id: int, client: WhatnotClient, ws: WhatnotShow) -> dic
         if made is not None and made < floor:
             break
         if i >= MAX_ORDER_PAGES * 50:
-            log.warning("whatnot order catch-up for show %s stopped at its cap", ws.id)
+            log.warning(
+                "whatnot order catch-up for show %s stopped at its cap",
+                ", ".join(str(ws.id) for ws in shows),
+            )
             break
         _, was_new = store_order(org_id, client, data)
         seen += 1
         new += was_new
     db.session.flush()
-    first = db.session.scalar(
-        select(func.min(WhatnotOrder.ordered_at)).where(
-            WhatnotOrder.organization_id == org_id, WhatnotOrder.whatnot_show_id == ws.whatnot_id
-        )
+    firsts = dict(
+        db.session.execute(
+            select(WhatnotOrder.whatnot_show_id, func.min(WhatnotOrder.ordered_at))
+            .where(
+                WhatnotOrder.organization_id == org_id,
+                WhatnotOrder.whatnot_show_id.in_([ws.whatnot_id for ws in shows]),
+            )
+            .group_by(WhatnotOrder.whatnot_show_id)
+        ).all()
     )
-    if first is not None and (ws.started_at is None or first < ws.started_at):
-        ws.started_at = first
-    # When the read BEGAN: an order placed while it ran may have been missed, so only a
-    # read begun after the show ended counts as its final one.
-    ws.orders_synced_at = began
+    for ws in shows:
+        first = firsts.get(ws.whatnot_id)
+        if first is not None and (ws.started_at is None or first < ws.started_at):
+            ws.started_at = first
+        # When the read BEGAN: an order placed while it ran may have been missed, so only a
+        # read begun after the show ended counts as its final one.
+        ws.orders_synced_at = began
     return {"seen": seen, "new": new}
 
 
@@ -695,13 +720,23 @@ def sync_job(payload: dict) -> None:
     changed: set[str | None] = set()
     over: list[str] = []  # shows that ended lately and whose orders this pass read in full
     now = datetime.now(UTC)
-    for ws in (live if quiet else []) + unread:
-        _run(org_id, "orders", lambda ws=ws: sync_show_orders(org_id, client, ws))
-        changed.add(ws.whatnot_id)
-        if ws.status == "ended" and ws.ended_at and ws.ended_at >= now - PARCELS_AFTER:
-            over.append(ws.whatnot_id)
+    to_read = (live if quiet else []) + unread
+    if to_read:
+        # One read for all of them (`sync_orders_of`), not one newest-first read per show.
+        _run(org_id, "orders", lambda: sync_orders_of(org_id, client, to_read))
+        for ws in to_read:
+            changed.add(ws.whatnot_id)
+            if ws.status == "ended" and ws.ended_at and ws.ended_at >= now - PARCELS_AFTER:
+                over.append(ws.whatnot_id)
         db.session.commit()
-    if _due(org_id, "open_orders", OPEN_ORDERS_EVERY):
+    # Old orders Whatnot had not settled. Not while a show is on air: the show's orders
+    # need the request budget, and these can wait an hour. While webhooks are arriving
+    # they bring each change, so this safety net runs every few hours instead of hourly.
+    on_air = any((ws.started_at or ws.begins_at or now) >= now - ON_AIR_AT_MOST for ws in live)
+    hooked = conn.last_event_at is not None and now - conn.last_event_at <= OPEN_ORDERS_HOOKED
+    if not on_air and _due(
+        org_id, "open_orders", OPEN_ORDERS_HOOKED if hooked else OPEN_ORDERS_EVERY
+    ):
         before = _open_by_show(org_id)
         _run(org_id, "open_orders", lambda: {"orders": refresh_open_orders(org_id, client)})
         db.session.commit()

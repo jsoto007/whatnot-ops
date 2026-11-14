@@ -198,6 +198,10 @@ def store_shipment(
     whatnot_id, status = _str(data.get("id"), 20), _str(data.get("status"), 40)
     if whatnot_id is None or status is None:
         return None
+    # Its order items first, before the shipment row is locked: an order not seen yet is a
+    # call to Whatnot, and nobody else should wait on the row meanwhile. Storing an order is
+    # right whatever this answer turns out to be (older or not).
+    held = _mirror_items(org_id, client, items) if items is not None else []
     row = db.session.scalar(
         select(WhatnotShipment)
         .where(WhatnotShipment.organization_id == org_id, WhatnotShipment.whatnot_id == whatnot_id)
@@ -207,7 +211,6 @@ def store_shipment(
     if row is not None and None not in (updated, row.whatnot_updated_at):
         if updated < row.whatnot_updated_at:
             return row
-    held = _mirror_items(org_id, client, items) if items is not None else []
     recipient = data.get("recipient") if isinstance(data.get("recipient"), dict) else {}
     name = _str(recipient.get("username"), 80) or next(
         (o.buyer_username for o, _ in held if o.buyer_username), None
@@ -288,12 +291,15 @@ def _store_lots(org_id: int, row: WhatnotShipment, held) -> None:
     )
     nth: dict[int, int] = defaultdict(int)
     shows: dict[int | None, int] = defaultdict(int)
+    local: dict[str | None, int | None] = {}  # Whatnot show → its recording, asked once
     for order, item in sorted(held, key=lambda p: (p[0].id, p[1].id)):
         item.whatnot_shipment_id = row.whatnot_id
         nth[order.id] += 1
         if order.status not in SHIPPABLE:
             continue  # cancelled or failed: nothing to pack (sync drops its lots)
-        show_id = _local_show_id(org_id, order.whatnot_show_id)
+        if order.whatnot_show_id not in local:
+            local[order.whatnot_show_id] = _local_show_id(org_id, order.whatnot_show_id)
+        show_id = local[order.whatnot_show_id]
         shows[show_id] += 1
         key = order.whatnot_id if nth[order.id] == 1 else f"{order.whatnot_id}-{nth[order.id]}"
         if len(key) > 20:
@@ -357,7 +363,11 @@ def sync_recent_shipments(org_id: int, client: WhatnotClient, since: datetime) -
             continue
         seen += 1
         known = db.session.execute(
-            select(WhatnotShipment.whatnot_updated_at, WhatnotShipment.item_count).where(
+            select(
+                WhatnotShipment.whatnot_updated_at,
+                WhatnotShipment.item_count,
+                WhatnotShipment.api_status,
+            ).where(
                 WhatnotShipment.organization_id == org_id, WhatnotShipment.whatnot_id == whatnot_id
             )
         ).first()
@@ -365,7 +375,19 @@ def sync_recent_shipments(org_id: int, client: WhatnotClient, since: datetime) -
         fresh = known is not None and known[1] is not None and known[0] == updated
         if fresh and updated is not None:
             continue  # nothing about it has changed since we read it
-        store_shipment(org_id, client, data, items=client.shipment_items(whatnot_id))
+        # A label closes the parcel (Whatnot bundles nothing more into it), so once its
+        # items were read with a label made, a later change is the label or the carrier's
+        # progress: the status is stored, the items are not asked for again.
+        # Anything else (cancelled, replaced, back to open) reads them again.
+        closed = (
+            known is not None
+            and known[1]  # items were read (an empty read is asked again)
+            and known[2] in (LABELLED,) + WITH_CARRIER
+            and data.get("status") in (LABELLED,) + WITH_CARRIER
+            and not data.get("replacement_shipment_id")
+        )
+        items = None if closed else client.shipment_items(whatnot_id)
+        store_shipment(org_id, client, data, items=items)
         changed += 1
     db.session.flush()
     return {"seen": seen, "changed": changed}

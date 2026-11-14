@@ -39,7 +39,7 @@ from ...models import (
     WhatnotShow,
     WhatnotVariant,
 )
-from .. import audit, jobs, text
+from .. import audit, jobs, rules, text
 from . import connection, webhooks
 from .client import Forbidden, NotFound, WhatnotClient, WhatnotError, client_for, price_cents
 
@@ -166,6 +166,24 @@ def sync_product(org_id: int, client: WhatnotClient, product_id: str) -> int:
     return n
 
 
+def _sold_as_winners_pick(org_id: int, whatnot_show_ids: list[str]) -> list[str]:
+    """Which of these Whatnot shows sell as winners pick (`sale_mode`): by their recordings'
+    choice, else the shop's usual way for a show no laptop has recorded yet."""
+    from ...models import Organization, Show, WhatnotShow
+    from .. import sale_mode
+
+    rows = db.session.execute(
+        select(Show, WhatnotShow.whatnot_id)
+        .join(WhatnotShow, Show.whatnot_show_id == WhatnotShow.id)
+        .where(WhatnotShow.organization_id == org_id, WhatnotShow.whatnot_id.in_(whatnot_show_ids))
+    ).all()
+    modes = sale_mode.of_shows([show for show, _ in rows])
+    by_show = {whatnot_id: modes[show.id][0] for show, whatnot_id in rows}
+    usual = db.session.scalar(select(Organization.sale_mode).where(Organization.id == org_id))
+    usual = usual or sale_mode.WINNERS_PICK
+    return [i for i in whatnot_show_ids if by_show.get(i, usual) == sale_mode.WINNERS_PICK]
+
+
 def learn_listings(
     org_id: int, client: WhatnotClient, whatnot_show_ids, *, limit: int = LEARN_AT_ONCE
 ) -> int:
@@ -183,8 +201,18 @@ def learn_listings(
         WhatnotVariant.organization_id == org_id,
         WhatnotVariant.whatnot_id == WhatnotOrderItem.variant_id,
     )
+    picking = _sold_as_winners_pick(org_id, ids)
     unknown = db.session.execute(
-        select(WhatnotOrderItem.product_id, func.max(WhatnotOrder.ordered_at).label("latest"))
+        select(
+            WhatnotOrderItem.product_id,
+            func.max(WhatnotOrder.ordered_at).label("latest"),
+            # Only lots with no SKU, of shows sold as winners pick (see below).
+            func.bool_and(
+                WhatnotOrderItem.sku_code.is_(None)
+                & WhatnotOrder.whatnot_show_id.in_(picking or [""])
+            ).label("pick_lot"),
+            func.max(WhatnotOrderItem.title).label("title"),
+        )
         .join(WhatnotOrder, WhatnotOrder.id == WhatnotOrderItem.order_id)
         .where(
             WhatnotOrder.organization_id == org_id,
@@ -195,10 +223,21 @@ def learn_listings(
         )
         .group_by(WhatnotOrderItem.product_id)
         .order_by(func.max(WhatnotOrder.ordered_at).desc().nulls_last())
-        .limit(max(1, limit))
+        # Room for the lots left out below; the newest orders come first either way.
+        .limit(max(1, limit) * 20)
     ).all()
+    # In a show sold as winners pick, a "choose any product" lot with no SKU is a listing of
+    # its own for one auction that never names a product (the winner says which in chat, and
+    # linking it is not offered): reading it would cost two calls of the show's request
+    # budget for a title the order already carries. The daily catalog read still mirrors it.
+    # Sold one product per listing, the same title is a product's listing: read as always.
+    wanted = [
+        product_id
+        for product_id, _, pick_lot, title in unknown
+        if not (pick_lot and rules.is_choice_title(title or ""))
+    ][: max(1, limit)]
     stored = 0
-    for product_id, _ in unknown:
+    for product_id in wanted:
         try:
             # A SAVEPOINT each: one listing that cannot be stored never undoes the others.
             with db.session.begin_nested():
