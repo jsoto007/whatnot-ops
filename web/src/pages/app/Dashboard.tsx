@@ -1,9 +1,11 @@
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import { Link } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
+import { BuyerFlagChip } from '../../components/BuyerFlag'
 import { Icon, type IconName } from '../../components/Icon'
-import { apiGet, money, type Attention, type Overview, type ShowTiles, type TopBuyer, type TopSku } from '../../lib/api'
-import { fmtDate } from '../../lib/format'
+import { apiGet, money, type Attention, type Overview, type ShowTiles, type TopBuyer, type TopSku, type WhatnotMoney, type WhatnotMoneyData, type WhatnotShowMoney, type WhatnotTopBuyer } from '../../lib/api'
+import { fmtDate, fmtWhen, SHOP_TZ } from '../../lib/format'
 
 const shortMoney = (cents: number) => (cents % 100 === 0 ? `$${(cents / 100).toLocaleString()}` : money(cents))
 const weekdayDate = (iso: string) => new Date(iso + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
@@ -161,6 +163,159 @@ function Products({ skus }: { skus: TopSku[] }) {
       ) : (
         <p className="muted small">No sales yet.</p>
       )}
+    </section>
+  )
+}
+
+/** Top buyers as Whatnot has them: by what they paid in the period, one row per account. */
+function WhatnotTopBuyers({ buyers, days }: { buyers: WhatnotTopBuyer[]; days: number }) {
+  const top = Math.max(1, ...buyers.map((b) => b.paidCents))
+  return (
+    <section className="dcard list-card" aria-labelledby="buyers-title" data-testid="top-buyers">
+      <div className="dcard-head">
+        <h2 id="buyers-title">Top buyers</h2>
+        <span className="muted small">by spend · last {days} days</span>
+      </div>
+      {buyers.length ? (
+        <ol className="rank">
+          {buyers.slice(0, 6).map((b, i) => (
+            <li key={`${i}-${b.buyer}`}>
+              <span className="avatar-chip" aria-hidden>
+                {initials(b.buyer)}
+              </span>
+              <div className="rank-main">
+                <div className="rank-name">
+                  {b.buyer ? (
+                    <>
+                      <Link to={`/app/buyers/${encodeURIComponent(b.buyer)}`} className="show-link">
+                        {b.buyer}
+                      </Link>{' '}
+                      <BuyerFlagChip name={b.buyer} />
+                    </>
+                  ) : (
+                    <span className="muted">Name not given by Whatnot</span>
+                  )}
+                </div>
+                <div className="meter" aria-hidden>
+                  <span style={{ width: `${Math.round((100 * b.paidCents) / top)}%` }} />
+                </div>
+              </div>
+              <div className="rank-num">
+                <div>{money(b.paidCents)}</div>
+                <div className="muted small">
+                  {plural(b.orders, 'order', 'orders')} · {plural(b.shows, 'show', 'shows')}
+                  {b.failedOrders ? <span className="danger-ink"> · {b.failedOrders} failed</span> : null}
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="muted small">No paid orders on Whatnot in the last {days} days.</p>
+      )}
+    </section>
+  )
+}
+
+const PERIODS = [7, 30, 90] as const
+
+function PeriodPicker({ days, onChange }: { days: number; onChange: (d: number) => void }) {
+  return (
+    <div className="period" role="group" aria-label="Period">
+      {PERIODS.map((d) => (
+        <button key={d} type="button" className={'chip-btn' + (days === d ? ' on' : '')} aria-pressed={days === d} onClick={() => onChange(d)}>
+          {d} days
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** Where Whatnot's ledger stands, in words, when it has no net to show (or how fresh it is). */
+function ledgerNote(m: WhatnotMoneyData): string {
+  if (m.ledgerStatus.notAllowed) return 'The Whatnot connection may not read reports'
+  // The ledger is dated by its own lines (a refund lands when it is made), not by order.
+  if (m.ledger) return `Whatnot’s ledger lines of these ${m.days} days${m.ledger.through ? `, through ${new Date(m.ledger.through).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: SHOP_TZ })}` : ''}`
+  if (m.ledgerStatus.building) return 'Whatnot is still building the report'
+  return 'Not read from Whatnot yet'
+}
+
+/** The dashboard's money as Whatnot states it: sales by payment, net, fees, buyers. */
+function WhatnotMoneyCard({ m, chosen, onDays, stale }: { m: WhatnotMoneyData; chosen: number; onDays: (d: number) => void; stale: boolean }) {
+  // Labelled with the period of the numbers on screen (`m.days`): while another period
+  // loads, the card is dimmed and still says which days it shows.
+  const s = m.sales
+  const days = m.days
+  const sold = s.paidCents + s.pendingCents + s.failedCents
+  const pct = (c: number) => `${sold ? (100 * c) / sold : 0}%`
+  return (
+    <section className={'dcard money' + (stale ? ' stale' : '')} aria-labelledby="money-title" aria-busy={stale} data-testid="whatnot-money">
+      <div data-testid="tile-paid">
+        <div className="money-head">
+          <h2 id="money-title" className="eyebrow">
+            Sales on Whatnot · last {days} days
+          </h2>
+          <PeriodPicker days={chosen} onChange={onDays} />
+        </div>
+        <div className="money-big">{money(s.paidCents)}</div>
+        <div className="muted small">{s.orders ? `${plural(s.orders, 'paid order', 'paid orders')} · ${money(s.averageOrderCents)} per order` : 'no paid orders yet'}</div>
+      </div>
+      {sold > 0 && (
+        <div>
+          <div className="comp-bar" role="img" aria-label={`Sales: ${money(s.paidCents)} paid, ${money(s.pendingCents)} payment pending, ${money(s.failedCents)} failed`}>
+            {s.paidCents > 0 && <span className="paid" style={{ width: pct(s.paidCents) }} />}
+            {s.pendingCents > 0 && <span className="awaiting" style={{ width: pct(s.pendingCents) }} />}
+            {s.failedCents > 0 && <span className="failed" style={{ width: pct(s.failedCents) }} />}
+          </div>
+          <div className="legend">
+            <span>
+              <i className="sw paid" aria-hidden /> Paid <b>{money(s.paidCents)}</b>
+            </span>
+            {s.pendingCents > 0 && (
+              <span>
+                <i className="sw awaiting" aria-hidden /> Payment pending <b>{money(s.pendingCents)}</b>
+              </span>
+            )}
+            {s.failedCents > 0 && (
+              <span>
+                <i className="sw failed" aria-hidden /> Failed <b>{money(s.failedCents)}</b>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+      <div className="stat-grid">
+        <div data-testid="tile-net">
+          <span>Net payout</span>
+          <b>{m.ledger ? money(m.ledger.netCents) : '—'}</b>
+          <span>{ledgerNote(m)}</span>
+        </div>
+        <div data-testid="tile-fees">
+          <span>Whatnot fees</span>
+          <b>{m.feesCents != null ? money(m.feesCents) : '—'}</b>
+          <span>commission and payment processing</span>
+        </div>
+        <div data-testid="tile-buyers">
+          <span>Buyers</span>
+          <b>{s.buyers}</b>
+          <span>{m.newBuyers != null ? `${m.newBuyers} new to the shop, by Whatnot’s count` : `who paid in the last ${days} days`}</span>
+        </div>
+        <div data-testid="tile-items">
+          <span>Items sold</span>
+          <b>{s.items}</b>
+          <span>
+            {plural(s.failedOrders, 'failed payment', 'failed payments')} · {plural(s.giveaways, 'giveaway', 'giveaways')}
+          </span>
+        </div>
+      </div>
+      <div className="money-foot muted small">
+        <span>
+          {m.ordersReadAt ? `Orders read from Whatnot ${fmtWhen(m.ordersReadAt)}` : 'Orders not read from Whatnot yet'}
+          {s.retriedOrders ? ` · ${plural(s.retriedOrders, 'declined card', 'declined cards')} paid on a retry, counted as paid` : ''}
+          {s.otherCurrencyOrders ? ` · ${plural(s.otherCurrencyOrders, 'order', 'orders')} in another currency not added in` : ''}
+        </span>
+        <Link to="/app/reports">Fees and payouts →</Link>
+      </div>
     </section>
   )
 }
@@ -349,9 +504,41 @@ function StandsPill({ s }: { s: ShowTiles }) {
   return <span className="pill done">Done</span>
 }
 
-function ShowsCard({ shows }: { shows: ShowTiles[] }) {
-  const top = Math.max(1, ...shows.map((s) => s.revenuePaidCents + s.revenuePendingCents))
+/** A show's numbers in the Shows card: Whatnot's when the dashboard shows Whatnot's money
+ * (nothing for a recording not matched to a show on Whatnot), else the app's own. */
+interface ShowFigures {
+  items: number | null
+  buyers: number | null
+  paid: number
+  pending: number
+  net?: number | null
+  /** Why there are no figures: not on Whatnot, or counted under another recording. */
+  why?: string
+}
+
+function ShowsCard({ shows, wn }: { shows: ShowTiles[]; wn?: Map<number, WhatnotShowMoney> }) {
+  const fig = (s: ShowTiles): ShowFigures => {
+    if (!wn) return { items: s.itemsSold, buyers: s.buyers, paid: s.revenuePaidCents, pending: s.revenuePendingCents }
+    const w = wn.get(s.showId)
+    const none = { items: null, buyers: null, paid: 0, pending: 0, net: null }
+    if (!w) return { ...none, why: 'Not matched to a show on Whatnot' }
+    if ('sameAsShowId' in w) {
+      const first = shows.find((x) => x.showId === w.sameAsShowId)
+      return { ...none, why: first ? `Counted under the ${weekdayDate(first.date)} recording of this show` : 'Counted under another recording of this show' }
+    }
+    return { items: w.items, buyers: w.buyers, paid: w.paidCents, pending: w.pendingCents, net: w.netCents }
+  }
+  const rows = shows.map((s) => ({ s, f: fig(s) }))
+  const pendingWord = wn ? 'payment pending' : 'not confirmed'
+  const top = Math.max(1, ...rows.map(({ f }) => f.paid + f.pending))
   const pct = (c: number) => `${Math.max(c ? 1 : 0, Math.round((100 * c) / top))}%`
+  const num = (n: number | null) => (n == null ? '—' : n)
+  const bar = (f: ShowFigures) => (
+    <div className="rev-bar" role="img" aria-label={`${money(f.paid)} paid, ${money(f.pending)} ${pendingWord}`}>
+      {f.paid > 0 && <span className="paid" style={{ width: pct(f.paid) }} />}
+      {f.pending > 0 && <span className="awaiting" style={{ width: pct(f.pending) }} />}
+    </div>
+  )
   return (
     <section className="dcard" aria-labelledby="shows-title">
       <div className="dcard-head pad">
@@ -361,7 +548,7 @@ function ShowsCard({ shows }: { shows: ShowTiles[] }) {
             <i className="sw paid" aria-hidden /> Paid
           </span>
           <span>
-            <i className="sw awaiting" aria-hidden /> Not confirmed
+            <i className="sw awaiting" aria-hidden /> {wn ? 'Payment pending' : 'Not confirmed'}
           </span>
         </div>
       </div>
@@ -384,13 +571,18 @@ function ShowsCard({ shows }: { shows: ShowTiles[] }) {
                     Buyers
                   </th>
                   <th scope="col" className="rev-col">
-                    Revenue
+                    {wn ? 'Sales on Whatnot' : 'Revenue'}
                   </th>
+                  {wn && (
+                    <th scope="col" className="num">
+                      Net payout
+                    </th>
+                  )}
                   <th scope="col">Where it stands</th>
                 </tr>
               </thead>
               <tbody>
-                {shows.map((s) => (
+                {rows.map(({ s, f }) => (
                   <tr key={s.showId}>
                     <td>
                       <Link to={`/app/shows/${s.showId}`} className="show-link">
@@ -400,20 +592,26 @@ function ShowsCard({ shows }: { shows: ShowTiles[] }) {
                         {s.messages} messages · {duration(s.startedAt, s.updatedAt)}
                       </div>
                     </td>
-                    <td className="num">{s.itemsSold}</td>
-                    <td className="num">{s.buyers}</td>
+                    <td className="num">{num(f.items)}</td>
+                    <td className="num">{num(f.buyers)}</td>
                     <td>
-                      <div className="rev">
-                        <div className="rev-bar" role="img" aria-label={`${money(s.revenuePaidCents)} paid, ${money(s.revenuePendingCents)} not confirmed`}>
-                          {s.revenuePaidCents > 0 && <span className="paid" style={{ width: pct(s.revenuePaidCents) }} />}
-                          {s.revenuePendingCents > 0 && <span className="awaiting" style={{ width: pct(s.revenuePendingCents) }} />}
+                      {f.items == null ? (
+                        <span className="muted small">{f.why}</span>
+                      ) : (
+                        <div className="rev">
+                          {bar(f)}
+                          <span className="rev-num">
+                            {shortMoney(f.paid)}
+                            {f.pending ? <span className="muted"> + {shortMoney(f.pending)}</span> : null}
+                          </span>
                         </div>
-                        <span className="rev-num">
-                          {shortMoney(s.revenuePaidCents)}
-                          {s.revenuePendingCents ? <span className="muted"> + {shortMoney(s.revenuePendingCents)}</span> : null}
-                        </span>
-                      </div>
+                      )}
                     </td>
+                    {wn && (
+                      <td className="num" title={f.net == null && f.items != null ? 'Whatnot’s ledger has no line for this show yet' : undefined}>
+                        {f.net == null ? '—' : money(f.net)}
+                      </td>
+                    )}
                     <td>
                       <StandsPill s={s} />
                       {s.openReviews ? <span className="review-note">{s.openReviews} to review</span> : null}
@@ -424,24 +622,22 @@ function ShowsCard({ shows }: { shows: ShowTiles[] }) {
             </table>
           </div>
           <ul className="show-cards" aria-label="Shows">
-            {shows.map((s) => (
+            {rows.map(({ s, f }) => (
               <li key={s.showId}>
                 <Link to={`/app/shows/${s.showId}`}>
                   <div className="show-card-head">
                     <b>{weekdayDate(s.date)}</b>
                     <StandsPill s={s} />
                   </div>
-                  <div className="rev-bar" role="img" aria-label={`${money(s.revenuePaidCents)} paid, ${money(s.revenuePendingCents)} not confirmed`}>
-                    {s.revenuePaidCents > 0 && <span className="paid" style={{ width: pct(s.revenuePaidCents) }} />}
-                    {s.revenuePendingCents > 0 && <span className="awaiting" style={{ width: pct(s.revenuePendingCents) }} />}
-                  </div>
+                  {f.items == null ? null : bar(f)}
                   <div className="show-card-foot">
-                    <span>
-                      {plural(s.itemsSold, 'item', 'items')} · {plural(s.buyers, 'buyer', 'buyers')}
-                    </span>
-                    <b>
-                      {shortMoney(s.revenuePaidCents)} paid{s.revenuePendingCents ? ` + ${shortMoney(s.revenuePendingCents)}` : ''}
-                    </b>
+                    <span>{f.items == null ? f.why : `${plural(f.items, 'item', 'items')} · ${plural(f.buyers ?? 0, 'buyer', 'buyers')}`}</span>
+                    {f.items == null ? null : (
+                      <b>
+                        {shortMoney(f.paid)} paid{f.pending ? ` + ${shortMoney(f.pending)}` : ''}
+                        {f.net != null ? ` · ${money(f.net)} net` : ''}
+                      </b>
+                    )}
                   </div>
                 </Link>
               </li>
@@ -515,9 +711,23 @@ function MoneyCard({ totals }: { totals: Record<string, number> }) {
 export function Dashboard() {
   const { can, me } = useAuth()
   const q = useQuery({ queryKey: ['dashboard'], queryFn: () => apiGet<Overview>('/api/dashboard'), refetchInterval: 30_000 })
-  if (q.isPending) return <p className="muted">Loading…</p>
+  // The money, sales and top buyers as Whatnot states them, for those who may read reports
+  // (not the packing role). A shop not connected to Whatnot keeps the app's own numbers.
+  const [days, setDays] = useState(30)
+  const mayReadMoney = can('reports.view')
+  const wq = useQuery({
+    queryKey: ['dashboard-whatnot', days],
+    queryFn: () => apiGet<WhatnotMoney>(`/api/dashboard/whatnot?days=${days}`),
+    enabled: mayReadMoney,
+    refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+  })
+  // Wait for both: the page never shows the app's money and then swaps in Whatnot's.
+  if (q.isPending || (mayReadMoney && wq.isPending)) return <p className="muted">Loading…</p>
   if (q.isError) return <p className="form-error">Could not load the dashboard.</p>
   const d = q.data
+  const wn = wq.data?.connected ? wq.data : null
+  const wnShows = wn ? new Map(wn.shows.map((s) => [s.showId, s])) : undefined
   const rows = attentionRows(d.attention, can, d.lowStock)
   const today = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })
   const ago = Math.max(0, Math.round((Date.now() - q.dataUpdatedAt) / 1000))
@@ -571,12 +781,16 @@ export function Dashboard() {
             </div>
           )}
         </section>
-        <MoneyCard totals={d.totals} />
+        {wn ? <WhatnotMoneyCard m={wn} chosen={days} onDays={setDays} stale={wq.isPlaceholderData} /> : <MoneyCard totals={d.totals} />}
       </div>
+      {wq.isError && <p className="form-error">Could not load Whatnot’s numbers; these are the app’s own.</p>}
 
-      <ShowsCard shows={d.shows} />
+      <ShowsCard shows={d.shows} wn={wnShows} />
 
-      <TopLists buyers={d.topBuyers} skus={d.topSkus} />
+      <div className="dash-row">
+        {wn ? <WhatnotTopBuyers buyers={wn.topBuyers} days={wn.days} /> : <TopBuyers buyers={d.topBuyers} />}
+        <Products skus={d.topSkus} />
+      </div>
     </section>
   )
 }

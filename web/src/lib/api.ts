@@ -765,6 +765,68 @@ export interface WhatnotLedger {
   shows?: { showId: number | null; title: string; startedAt: string | null; netCents: number; lines: number }[]
 }
 
+/** GET /api/dashboard/whatnot?days= : the dashboard's money as Whatnot states it. */
+export interface WhatnotSales {
+  /** Item prices of the period's paid orders (no shipping, no tax); giveaways never added in. */
+  paidCents: number
+  orders: number
+  items: number
+  buyers: number
+  averageOrderCents: number
+  /** Orders whose payment Whatnot is still taking. */
+  pendingCents: number
+  pendingOrders: number
+  /** Failed payments nobody paid afterwards. */
+  failedCents: number
+  failedOrders: number
+  /** Failed orders a retry then paid (a declined card paid moments later): paid wins. */
+  retriedOrders: number
+  cancelledCents: number
+  cancelledOrders: number
+  giveaways: number
+  /** Orders in a currency other than the shop's: counted, never added in. */
+  otherCurrencyOrders: number
+}
+export interface WhatnotTopBuyer {
+  /** The name the buyer uses now (one row per Whatnot account). */
+  buyer: string
+  paidCents: number
+  orders: number
+  shows: number
+  failedOrders: number
+}
+/** Whatnot's figures for one of the dashboard's shows (this app's id), all its orders; or,
+ * for a second recording of the same Whatnot show, which recording carries them. */
+export type WhatnotShowMoney = WhatnotShowFigures | { showId: number; sameAsShowId: number }
+export interface WhatnotShowFigures {
+  showId: number
+  paidCents: number
+  pendingCents: number
+  orders: number
+  items: number
+  buyers: number
+  /** The sum of Whatnot's ledger lines for the show; null before any is read. */
+  netCents: number | null
+}
+export interface WhatnotMoneyData {
+  connected: true
+  days: number
+  currency: string
+  ordersReadAt: string | null
+  sales: WhatnotSales
+  /** Whatnot's own count of first-time buyers, from the shows it has worked out. */
+  newBuyers: number | null
+  newBuyersShows: number
+  /** The period's ledger (null before any line is read). */
+  ledger: WhatnotFigures | null
+  /** Commission and payment processing (with their taxes), as the ledger lists them. */
+  feesCents: number | null
+  ledgerStatus: Pick<WhatnotLedger, 'lines' | 'building' | 'lastImportedAt' | 'notAllowed' | 'lastFailed'>
+  topBuyers: WhatnotTopBuyer[]
+  shows: WhatnotShowMoney[]
+}
+export type WhatnotMoney = { connected: false } | WhatnotMoneyData
+
 /** What the team says about a buyer: someone to look after, or someone to keep an eye on. */
 export type BuyerFlag = 'vip' | 'watch'
 /** What a buyer bought, from the shop's sales. A "show" is a show date. */

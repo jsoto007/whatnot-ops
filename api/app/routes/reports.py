@@ -31,6 +31,15 @@ def get_counts():
     return jsonify(dashboard.counts(g.u.organization_id))
 
 
+@bp.get("/dashboard/whatnot")
+@require("reports.view", heavy=True)  # money: for those who may read reports, not packing
+def get_dashboard_whatnot():
+    days = request.args.get("days", 30, type=int)
+    if days not in dashboard.PERIODS:
+        return jsonify({"error": "Pick the last 7, 30 or 90 days."}), 400
+    return jsonify(dashboard.whatnot_money(g.u.organization_id, days=days))
+
+
 @bp.get("/dashboard/shows/<int:show_id>")
 @require("shows.view", heavy=True)
 def get_show_dashboard(show_id: int):

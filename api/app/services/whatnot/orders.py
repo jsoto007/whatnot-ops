@@ -212,6 +212,63 @@ def _skip_retried(rows: list[Row]) -> None:
                     break
 
 
+def retried(org_id: int, failed: list[WhatnotOrder]) -> set[int]:
+    """The ids of the failed orders in `failed` that the same buyer then paid on a retry,
+    by the very rule Compare and Apply use (`_skip_retried`): a card declined at the win and
+    paid moments later is one paid win, not a failed payment. Read-only."""
+    failed = [
+        o
+        for o in failed
+        if o.status == "failed" and o.ordered_at is not None and o.transaction_type != GIVEAWAY
+    ]
+    if not failed:
+        return set()
+    name = func.lower(func.ltrim(WhatnotOrder.buyer_username, "@"))
+    paying = [s for s, meaning in PAYMENT.items() if meaning in ("paid", "pending")]
+    later = db.session.scalars(
+        select(WhatnotOrder)
+        .where(
+            WhatnotOrder.organization_id == org_id,
+            WhatnotOrder.status.in_(paying),
+            WhatnotOrder.ordered_at >= min(o.ordered_at for o in failed),
+            WhatnotOrder.whatnot_show_id.in_({o.whatnot_show_id for o in failed}),
+            func.coalesce(WhatnotOrder.transaction_type, "") != GIVEAWAY,
+            name.in_({(o.buyer_username or "").lstrip("@").lower() for o in failed}),
+        )
+        .options(selectinload(WhatnotOrder.items))
+    ).all()
+    # Within each show, oldest first, as `rows_for` lays them out.
+    by_show: dict[str | None, list[WhatnotOrder]] = {}
+    for o in sorted(
+        [*failed, *later], key=lambda o: (o.ordered_at, len(o.whatnot_id), o.whatnot_id)
+    ):
+        by_show.setdefault(o.whatnot_show_id, []).append(o)
+    out: set[int] = set()
+    for orders in by_show.values():
+        rows: list[Row] = []
+        for order in orders:
+            for item in order.items:
+                row = Row(
+                    buyer=(order.buyer_username or "").lstrip("@"),
+                    item=item.title,
+                    quantity=item.quantity,
+                    price_cents=item.unit_price_cents,
+                    status=PAYMENT.get(order.status, "unknown"),
+                    ref=order.id,
+                    ordered_at=order.ordered_at,
+                    listing=item.product_id,
+                )
+                if not row.buyer or not row.item:
+                    row.action = "skip"
+                rows.append(row)
+        _skip_retried(rows)
+        for order in orders:
+            mine = [r for r in rows if r.ref == order.id]
+            if order.status == "failed" and mine and all(r.note == RETRIED for r in mine):
+                out.add(order.id)
+    return out
+
+
 def _complete(ws: WhatnotShow) -> bool:
     """Every order of the show has been read after it ended: only then does a sale with
     no order mean something."""
