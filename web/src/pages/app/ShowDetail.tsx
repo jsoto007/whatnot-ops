@@ -1,7 +1,8 @@
 import { Fragment, useMemo, useState } from 'react'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useParams, useSearchParams } from 'react-router'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
+import { DeleteLaptopData } from '../../components/DeleteLaptopData'
 import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleMode, type SaleStatus, type Shelf, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway, type WhatnotRecap as WhatnotRecapData } from '../../lib/api'
 import { fmtLongDate, fmtShopClock, fmtShopTime, plural } from '../../lib/format'
 import { SALE_MODE_LABEL, lotLabel, saleModeHelp, saleModeLabel, saleStatusLabel } from '../../lib/labels'
@@ -21,6 +22,9 @@ export function ShowDetail() {
   const { id = '' } = useParams()
   const { can, me } = useAuth()
   const qc = useQueryClient()
+  const navigate = useNavigate()
+  const [deleting, setDeleting] = useState(false)
+  const [notice, setNotice] = useState('')
   const [params, setParams] = useSearchParams()
   const asked = (TABS as readonly string[]).includes(params.get('tab') ?? '') ? (params.get('tab') as Tab) : 'sales'
   const setTab = (t: Tab) => {
@@ -103,8 +107,30 @@ export function ShowDetail() {
               {aiAudit.isError && <span className="form-error small">{(aiAudit.error as Error).message}</span>}
             </>
           )}
+          {can('shows.delete') && s && s.recorded !== false && (
+            <button className="btn ghost" onClick={() => setDeleting(true)} data-testid="laptop-data-open" title="Delete what the laptop recorded for this show (never Whatnot's own data)">
+              Delete laptop data…
+            </button>
+          )}
         </span>
       </div>
+      {deleting && s && (
+        <DeleteLaptopData
+          showId={id}
+          label={`${fmtLongDate(s.date)}${s.title ? ` · ${s.title}` : ''}`}
+          onClose={() => setDeleting(false)}
+          onDone={(r) => {
+            setDeleting(false)
+            if (r.showId === null) navigate('/app/shows')
+            else setNotice(`Deleted the laptop data: ${plural(r.messages, 'chat line', 'chat lines')} and ${plural(r.sales, 'sale', 'sales')}. What came from Whatnot stays on this show.`)
+          }}
+        />
+      )}
+      {notice && (
+        <div className="card small" role="status" data-testid="laptop-data-notice">
+          {notice}
+        </div>
+      )}
 
       {!!show.data?.clockProblems?.length && <ClockWarning problems={show.data.clockProblems} />}
       {show.data?.noShelves && tab !== 'shelves' && (

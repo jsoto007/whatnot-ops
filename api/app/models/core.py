@@ -153,6 +153,25 @@ class Show(db.Model):
     whatnot_show: Mapped["WhatnotShow | None"] = relationship()  # noqa: F821 (models/whatnot.py)
 
 
+class DeletedRecording(db.Model):
+    """A laptop recording whose data the owner deleted (services/recordings.py), by its key,
+    so a late upload of the same recording (a laptop's outbox) is dropped instead of making
+    it again. Only the key, who and when: nothing of the chat."""
+
+    __tablename__ = "deleted_recordings"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "show_key", name="uq_deleted_recordings_org_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    show_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    deleted_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    deleted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
 class ShowShelf(db.Model):
     """Where a product sits for one show: "B4" is shelf B, spot 4 (services/shelves.py). A
     table of its own, so saving a layout never touches the show's `updated_at` (read as the

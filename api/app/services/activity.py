@@ -11,6 +11,7 @@ the page shows them as plain text.
 """
 
 from collections.abc import Callable
+from datetime import date
 from decimal import Decimal
 
 from .permissions import role_label
@@ -320,6 +321,24 @@ def sale_mode_words(mode) -> str:
     return SALE_MODES.get(mode, "another way")
 
 
+def _laptop_data_deleted(d: dict, _target: str) -> str:
+    try:
+        when = date.fromisoformat(d.get("date") or "")
+        day = f"the {when:%b} {when.day} show"
+    except ValueError:
+        day = "a show"
+    text = (
+        f"Deleted the laptop data of {day}: {_plural(d.get('messages', 0), 'chat line')}, "
+        f"{_plural(d.get('sales', 0), 'sale')}, {_plural(d.get('orders', 0), 'order')}, "
+        f"{_plural(d.get('reviews', 0), 'question')}"
+    )
+    if d.get("moved"):
+        text += f"; {_plural(d['moved'], 'sale')} moved to another laptop's recording"
+    if d.get("inPackage"):
+        text += f"; {d['inPackage']} already packed, not counted back"
+    return text + ("; Whatnot's own data kept" if d.get("kept") else "")
+
+
 def _show_mode(d: dict, _target: str) -> str:
     words = sale_mode_words(d.get("mode"))
     if not d.get("own"):
@@ -390,6 +409,7 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "show.parsed": ("Re-read a show's chat", _parsed),
     "show.ai_audit_requested": ("Asked the AI to check a show", None),
     "show.mode": ("Changed how a show sells", _show_mode),
+    "show.laptop_data_deleted": ("Deleted a show's laptop data", _laptop_data_deleted),
     "sale.product_changed": (
         "Changed a sale's product",
         lambda d, t: (
