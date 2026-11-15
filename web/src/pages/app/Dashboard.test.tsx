@@ -52,20 +52,23 @@ const whatnot = (days: number): WhatnotMoney => ({
     averageOrderCents: 1682,
     pendingCents: 1000,
     pendingOrders: 1,
-    failedCents: 800,
-    failedOrders: 1,
-    retriedOrders: 2,
     cancelledCents: 500,
     cancelledOrders: 1,
     giveaways: 1,
     otherCurrencyOrders: 0,
   },
-  newBuyers: 19,
-  newBuyersShows: 1,
+  customers: {
+    new: { buyers: 1, orders: 2, paidCents: days === 7 ? 1700 : 4200 },
+    returning: { buyers: 1, orders: 1, paidCents: days === 7 ? 0 : 845 },
+    knownSince: '2026-10-04T23:00:00+00:00',
+  },
   ledger: { currency: 'USD', otherCurrencyLines: 0, netCents: 1997, kinds: [], fees: {}, itemPricesCents: 2500, costOfGoodsCents: null, through: '2026-11-13T10:00:00+00:00' },
   feesCents: 303,
   ledgerStatus: { lines: 3, building: false, lastImportedAt: null, notAllowed: false, lastFailed: false },
-  topBuyers: [{ buyer: 'mika_r', paidCents: 4200, orders: 2, shows: 1, failedOrders: 1 }],
+  topBuyers: [
+    { buyer: 'mika_r', paidCents: 4200, orders: 2, shows: 1, returning: false },
+    { buyer: 'jo.b', paidCents: 845, orders: 1, shows: 1, returning: true },
+  ],
   shows: [
     { showId: 2, paidCents: 4200, pendingCents: 1000, orders: 2, items: 3, buyers: 1, netCents: -525 },
     { showId: 3, sameAsShowId: 2 },
@@ -102,14 +105,19 @@ test("connected to Whatnot, the money, the shows' sales and the top buyers are W
   expect(card.textContent).toContain('Sales on Whatnot · last 30 days')
   expect(card.textContent).toContain('$50.45')
   expect(card.textContent).toContain('3 paid orders · $16.82 per order')
-  expect(card.textContent).toContain('Payment pending $10.00')
-  expect(card.textContent).toContain('Failed $8.00')
+  // Paid sales by customer; failed payments are not on the card at all.
+  const split = screen.getByTestId('customers')
+  expect(split.textContent).toContain('New customers $42.00 · 1 buyer')
+  expect(split.textContent).toContain('Returning $8.45 · 1 buyer')
+  expect(split.textContent).toContain('Returning: bought here before these 30 days, as far back as Whatnot’s orders in the app go (Oct 4).')
+  expect(split.textContent).toContain('$10.00 more is still being paid.')
+  expect(card.textContent).not.toMatch(/failed|Failed|declined/)
   expect(screen.getByTestId('tile-net').textContent).toContain('$19.97')
   expect(screen.getByTestId('tile-net').textContent).toContain('ledger lines of these 30 days, through Nov 13')
   expect(screen.getByTestId('tile-fees').textContent).toContain('$3.03')
-  expect(screen.getByTestId('tile-buyers').textContent).toContain('19 new to the shop')
-  expect(screen.getByTestId('tile-items').textContent).toContain('1 failed payment · 1 giveaway')
-  expect(card.textContent).toContain('Orders read from Whatnot 5 min ago · 2 declined cards paid on a retry, counted as paid')
+  expect(screen.getByTestId('tile-buyers').textContent).toContain('1 new · 1 returning')
+  expect(screen.getByTestId('tile-items').textContent).toContain('1 giveaway')
+  expect(card.textContent).toContain('Orders read from Whatnot 5 min ago')
   // The app's own count of the same shows is not on the page.
   expect(document.body.textContent).not.toContain('$333')
   expect(document.body.textContent).not.toContain('chat_name')
@@ -117,7 +125,9 @@ test("connected to Whatnot, the money, the shows' sales and the top buyers are W
   const buyers = screen.getByTestId('top-buyers')
   expect(buyers.textContent).toContain('by spend · last 30 days')
   expect(buyers.textContent).toContain('$42.00')
-  expect(buyers.textContent).toContain('2 orders · 1 show · 1 failed')
+  expect(buyers.textContent).toContain('2 orders · 1 show · new customer')
+  expect(buyers.textContent).toContain('1 order · 1 show · returning')
+  expect(buyers.textContent).not.toContain('failed')
   expect(within(buyers).getByRole('link', { name: 'mika_r' })).toHaveAttribute('href', '/app/buyers/mika_r')
   expect(await within(buyers).findByTestId('buyer-flag')).toHaveTextContent('VIP')
 
