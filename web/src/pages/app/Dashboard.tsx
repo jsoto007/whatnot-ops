@@ -203,8 +203,7 @@ function WhatnotTopBuyers({ buyers, days }: { buyers: WhatnotTopBuyer[]; days: n
               <div className="rank-num">
                 <div>{money(b.paidCents)}</div>
                 <div className="muted small">
-                  {plural(b.orders, 'order', 'orders')} · {plural(b.shows, 'show', 'shows')}
-                  {b.failedOrders ? <span className="danger-ink"> · {b.failedOrders} failed</span> : null}
+                  {plural(b.orders, 'order', 'orders')} · {plural(b.shows, 'show', 'shows')} · {b.returning ? 'returning' : 'new customer'}
                 </div>
               </div>
             </li>
@@ -240,14 +239,16 @@ function ledgerNote(m: WhatnotMoneyData): string {
   return 'Not read from Whatnot yet'
 }
 
-/** The dashboard's money as Whatnot states it: sales by payment, net, fees, buyers. */
+/** The dashboard's money as Whatnot states it: paid sales by new and returning customers, net, fees, buyers. */
 function WhatnotMoneyCard({ m, chosen, onDays, stale }: { m: WhatnotMoneyData; chosen: number; onDays: (d: number) => void; stale: boolean }) {
   // Labelled with the period of the numbers on screen (`m.days`): while another period
   // loads, the card is dimmed and still says which days it shows.
   const s = m.sales
   const days = m.days
-  const sold = s.paidCents + s.pendingCents + s.failedCents
-  const pct = (c: number) => `${sold ? (100 * c) / sold : 0}%`
+  const c = m.customers
+  const split = c.new.paidCents + c.returning.paidCents
+  const pct = (x: number) => `${split ? (100 * x) / split : 0}%`
+  const since = c.knownSince ? new Date(c.knownSince).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: SHOP_TZ }) : null
   return (
     <section className={'dcard money' + (stale ? ' stale' : '')} aria-labelledby="money-title" aria-busy={stale} data-testid="whatnot-money">
       <div data-testid="tile-paid">
@@ -260,27 +261,23 @@ function WhatnotMoneyCard({ m, chosen, onDays, stale }: { m: WhatnotMoneyData; c
         <div className="money-big">{money(s.paidCents)}</div>
         <div className="muted small">{s.orders ? `${plural(s.orders, 'paid order', 'paid orders')} · ${money(s.averageOrderCents)} per order` : 'no paid orders yet'}</div>
       </div>
-      {sold > 0 && (
-        <div>
-          <div className="comp-bar" role="img" aria-label={`Sales: ${money(s.paidCents)} paid, ${money(s.pendingCents)} payment pending, ${money(s.failedCents)} failed`}>
-            {s.paidCents > 0 && <span className="paid" style={{ width: pct(s.paidCents) }} />}
-            {s.pendingCents > 0 && <span className="awaiting" style={{ width: pct(s.pendingCents) }} />}
-            {s.failedCents > 0 && <span className="failed" style={{ width: pct(s.failedCents) }} />}
+      {split > 0 && (
+        <div data-testid="customers">
+          <div className="comp-bar" role="img" aria-label={`Sales: ${money(c.new.paidCents)} from new customers, ${money(c.returning.paidCents)} from returning customers`}>
+            {c.new.paidCents > 0 && <span className="new-customers" style={{ width: pct(c.new.paidCents) }} />}
+            {c.returning.paidCents > 0 && <span className="returning-customers" style={{ width: pct(c.returning.paidCents) }} />}
           </div>
           <div className="legend">
             <span>
-              <i className="sw paid" aria-hidden /> Paid <b>{money(s.paidCents)}</b>
+              <i className="sw new-customers" aria-hidden /> New customers <b>{money(c.new.paidCents)}</b> <span className="muted">· {plural(c.new.buyers, 'buyer', 'buyers')}</span>
             </span>
-            {s.pendingCents > 0 && (
-              <span>
-                <i className="sw awaiting" aria-hidden /> Payment pending <b>{money(s.pendingCents)}</b>
-              </span>
-            )}
-            {s.failedCents > 0 && (
-              <span>
-                <i className="sw failed" aria-hidden /> Failed <b>{money(s.failedCents)}</b>
-              </span>
-            )}
+            <span>
+              <i className="sw returning-customers" aria-hidden /> Returning <b>{money(c.returning.paidCents)}</b> <span className="muted">· {plural(c.returning.buyers, 'buyer', 'buyers')}</span>
+            </span>
+          </div>
+          <div className="muted small customers-note">
+            Returning: bought here before these {days} days{since ? `, as far back as Whatnot’s orders in the app go (${since})` : ''}.
+            {s.pendingCents > 0 ? ` ${money(s.pendingCents)} more is still being paid.` : ''}
           </div>
         </div>
       )}
@@ -298,20 +295,19 @@ function WhatnotMoneyCard({ m, chosen, onDays, stale }: { m: WhatnotMoneyData; c
         <div data-testid="tile-buyers">
           <span>Buyers</span>
           <b>{s.buyers}</b>
-          <span>{m.newBuyers != null ? `${m.newBuyers} new to the shop, by Whatnot’s count` : `who paid in the last ${days} days`}</span>
+          <span>
+            {c.new.buyers} new · {c.returning.buyers} returning
+          </span>
         </div>
         <div data-testid="tile-items">
           <span>Items sold</span>
           <b>{s.items}</b>
-          <span>
-            {plural(s.failedOrders, 'failed payment', 'failed payments')} · {plural(s.giveaways, 'giveaway', 'giveaways')}
-          </span>
+          <span>{plural(s.giveaways, 'giveaway', 'giveaways')}</span>
         </div>
       </div>
       <div className="money-foot muted small">
         <span>
           {m.ordersReadAt ? `Orders read from Whatnot ${fmtWhen(m.ordersReadAt)}` : 'Orders not read from Whatnot yet'}
-          {s.retriedOrders ? ` · ${plural(s.retriedOrders, 'declined card', 'declined cards')} paid on a retry, counted as paid` : ''}
           {s.otherCurrencyOrders ? ` · ${plural(s.otherCurrencyOrders, 'order', 'orders')} in another currency not added in` : ''}
         </span>
         <Link to="/app/reports">Fees and payouts →</Link>

@@ -776,11 +776,6 @@ export interface WhatnotSales {
   /** Orders whose payment Whatnot is still taking. */
   pendingCents: number
   pendingOrders: number
-  /** Failed payments nobody paid afterwards. */
-  failedCents: number
-  failedOrders: number
-  /** Failed orders a retry then paid (a declined card paid moments later): paid wins. */
-  retriedOrders: number
   cancelledCents: number
   cancelledOrders: number
   giveaways: number
@@ -793,7 +788,8 @@ export interface WhatnotTopBuyer {
   paidCents: number
   orders: number
   shows: number
-  failedOrders: number
+  /** Bought here before the period (a returning customer); false: a new one. */
+  returning: boolean
 }
 /** Whatnot's figures for one of the dashboard's shows (this app's id), all its orders; or,
  * for a second recording of the same Whatnot show, which recording carries them. */
@@ -808,15 +804,25 @@ export interface WhatnotShowFigures {
   /** The sum of Whatnot's ledger lines for the show; null before any is read. */
   netCents: number | null
 }
+export interface WhatnotCustomerSide {
+  buyers: number
+  orders: number
+  paidCents: number
+}
+export interface WhatnotCustomers {
+  new: WhatnotCustomerSide
+  returning: WhatnotCustomerSide
+  /** The oldest Whatnot order the app holds: how far back "returning" can see. */
+  knownSince: string | null
+}
 export interface WhatnotMoneyData {
   connected: true
   days: number
   currency: string
   ordersReadAt: string | null
   sales: WhatnotSales
-  /** Whatnot's own count of first-time buyers, from the shows it has worked out. */
-  newBuyers: number | null
-  newBuyersShows: number
+  /** Paid sales split by customer: returning = a paid order with the shop before the period. */
+  customers: WhatnotCustomers
   /** The period's ledger (null before any line is read). */
   ledger: WhatnotFigures | null
   /** Commission and payment processing (with their taxes), as the ledger lists them. */

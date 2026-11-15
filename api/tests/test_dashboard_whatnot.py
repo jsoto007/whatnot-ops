@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select, update
 
 from app.db import db
-from app.models import Organization, Show, WhatnotConnection, WhatnotOrder, WhatnotShow
+from app.models import Organization, Show, WhatnotConnection, WhatnotOrder
 from app.services import dashboard
 from app.services.whatnot import results
 from tests import test_whatnot_orders as wo
@@ -52,7 +52,7 @@ def test_sales_are_whatnots_paid_orders_item_prices_in_cents(app, shop):
       mika_r  paid: $17.00                        -> 1700, 1 item
       jo.b    paid: $8.45                         ->  845, 1 item
       sam_t   payment still being taken: $10.00   -> pending 1000
-      ana.k   failed: $8.00                       -> failed 800
+      ana.k   failed: $8.00                       -> left out: not a sale
       ana.k   cancelled: $5.00                    -> cancelled 500
       lu.w    a giveaway ($0)                     -> counted, never summed
       vee     paid $99.00, but 40 days ago        -> only in the 90 days
@@ -87,9 +87,6 @@ def test_sales_are_whatnots_paid_orders_item_prices_in_cents(app, shop):
         "averageOrderCents": 1682,
         "pendingCents": 1000,
         "pendingOrders": 1,
-        "failedCents": 800,
-        "failedOrders": 1,
-        "retriedOrders": 0,
         "cancelledCents": 500,
         "cancelledOrders": 1,
         "giveaways": 1,
@@ -113,30 +110,10 @@ def test_top_buyers_are_by_what_they_paid_one_row_per_whatnot_account(app, shop)
     add(shop, "sam_t", 4000, status="pending")
     read(app, shop)
     assert money(app, shop)["topBuyers"] == [
-        {"buyer": "new_name", "paidCents": 3500, "orders": 2, "shows": 1, "failedOrders": 0},
-        {"buyer": "kim.p", "paidCents": 3000, "orders": 1, "shows": 1, "failedOrders": 1},
+        {"buyer": "new_name", "paidCents": 3500, "orders": 2, "shows": 1, "returning": False},
+        {"buyer": "kim.p", "paidCents": 3000, "orders": 1, "shows": 1, "returning": False},
     ]
     assert money(app, shop)["sales"]["buyers"] == 2
-
-
-def test_a_card_declined_then_paid_on_a_retry_is_a_paid_win_not_a_failed_payment(app, shop):
-    """The 2026-11-13 show: half the lots were a declined card, then a second order for the
-    same lot, paid minutes later. Those failed orders are history (Compare and Apply skip
-    them the same way); a decline nobody paid afterwards, and a payment for another lot,
-    still count as failed."""
-    now = datetime.now(UTC)
-    add(shop, "mika_r", 2500, status="failed", created=now - timedelta(minutes=50))
-    add(shop, "mika_r", 2500, created=now - timedelta(minutes=48))  # the retry, paid
-    add(shop, "jo.b", 1500, status="failed", created=now - timedelta(minutes=40))
-    add(shop, "jo.b", 900, created=now - timedelta(minutes=39))  # another lot's price
-    add(shop, "sam_t", 1200, status="failed", created=now - timedelta(minutes=30))
-    read(app, shop)
-    got = money(app, shop)
-    s = got["sales"]
-    assert (s["failedOrders"], s["failedCents"], s["retriedOrders"]) == (2, 2700, 1)
-    assert (s["orders"], s["paidCents"]) == (2, 3400)
-    failed = {b["buyer"]: b["failedOrders"] for b in got["topBuyers"]}
-    assert failed == {"mika_r": 0, "jo.b": 1}  # sam_t paid nothing: not a top buyer
 
 
 def test_the_net_is_the_ledgers_own_sum_and_the_fees_are_whatnots_listed_fees(app, shop):
@@ -288,14 +265,56 @@ def test_a_shop_connected_with_nothing_read_yet_shows_zeros_not_an_error(app, sh
     got = money(app, shop, days=days)
     assert got["sales"]["paidCents"] == 0 and got["sales"]["averageOrderCents"] == 0
     assert got["topBuyers"] == [] and got["ledger"] is None and got["feesCents"] is None
-    assert got["newBuyers"] is None and got["shows"] == []
+    assert got["shows"] == []
+    assert (
+        got["customers"]["new"]
+        == got["customers"]["returning"]
+        == {
+            "buyers": 0,
+            "orders": 0,
+            "paidCents": 0,
+        }
+    )
 
 
-def test_new_buyers_are_whatnots_own_count_from_the_shows_it_has_worked_out(app, shop):
-    read(app, shop, orders=False)
+def test_paid_sales_are_split_between_new_and_returning_customers(app, shop):
+    """Last 30 days, in cents. vee bought 40 days ago (paid) and again now: returning, 1500.
+    rey's earlier order failed and lu.w's was a giveaway: neither ever bought, so both are
+    new now, as is mika_r. New: 2500 + 1200 + 700 over 3 buyers and 3 orders; returning:
+    1500 over 1. The oldest order the app holds says how far back "returning" can see."""
+    now = datetime.now(UTC)
+    # Read with the show, then dated back: the orders of an older show.
+    old = [
+        add(shop, "vee", 9900),
+        add(shop, "rey", 800, status="failed"),
+        add(shop, "lu.w", 0, transaction_type="giveaway"),
+    ]
+    add(shop, "vee", 1500)
+    add(shop, "rey", 1200)
+    add(shop, "lu.w", 700)
+    add(shop, "mika_r", 2500)
+    read(app, shop)
     with app.app_context():
-        ws = db.session.scalar(select(WhatnotShow).where(WhatnotShow.whatnot_id == shop["wshow"]))
-        ws.analytics = {"first_time_buyers_count": 19, "buyers_count": 73}
+        for o, days in zip(old, (40, 41, 42), strict=True):
+            db.session.execute(
+                update(WhatnotOrder)
+                .where(WhatnotOrder.whatnot_id == o["id"])
+                .values(ordered_at=now - timedelta(days=days))
+            )
         db.session.commit()
     got = money(app, shop)
-    assert (got["newBuyers"], got["newBuyersShows"]) == (19, 1)
+    c = got["customers"]
+    assert c["new"] == {"buyers": 3, "orders": 3, "paidCents": 4400}
+    assert c["returning"] == {"buyers": 1, "orders": 1, "paidCents": 1500}
+    assert c["new"]["paidCents"] + c["returning"]["paidCents"] == got["sales"]["paidCents"]
+    assert got["sales"]["buyers"] == 4
+    oldest = datetime.fromisoformat(c["knownSince"])
+    assert abs(oldest - (now - timedelta(days=42))) < timedelta(seconds=1)
+    assert {b["buyer"]: b["returning"] for b in got["topBuyers"]} == {
+        "mika_r": False,
+        "vee": True,
+        "rey": False,
+        "lu.w": False,
+    }
+    # Seen over 90 days, vee's first order is inside the period: a new customer then.
+    assert money(app, shop, days=90)["customers"]["returning"]["buyers"] == 0

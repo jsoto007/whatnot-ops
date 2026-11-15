@@ -535,7 +535,9 @@ code.sku { margin-left: 8px; }
 .comp-bar { display: flex; gap: 3px; height: 12px; border-radius: var(--pill); overflow: hidden; background: var(--fill); }
 .comp-bar .paid, .rev-bar .paid, .sw.paid { background: var(--paid); }
 .comp-bar .awaiting, .rev-bar .awaiting, .sw.awaiting { background: var(--awaiting); }
-.comp-bar .failed, .rev-bar .failed, .sw.failed { background: var(--failed); }
+.comp-bar .new-customers, .sw.new-customers { background: var(--new-customers); }
+.comp-bar .returning-customers, .sw.returning-customers { background: var(--returning-customers); }
+.customers-note { margin-top: 6px; }
 .money-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
 .period { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .money-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; }

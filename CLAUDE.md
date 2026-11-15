@@ -354,9 +354,11 @@ commands.
   show linked to Whatnot, else the host/platform chat lines. The dashboard's
   money, Shows revenue and top buyers are Whatnot's for roles with
   `reports.view` when the shop has a working connection
-  (`dashboard.whatnot_money`, `GET /api/dashboard/whatnot?days=7|30|90`): orders by
-  Whatnot status (a decline a retry paid is paid, `whatnot/orders.retried`), net from
-  the ledger only (`results.nets_by_show` = `figures` per show), top buyers by
+  (`dashboard.whatnot_money`, `GET /api/dashboard/whatnot?days=7|30|90`): paid orders
+  split by new and returning customers (`_customers`: returning = a paid order from
+  the same Whatnot account before the period; the app only holds orders since the
+  connection, said as `knownSince`), no failed payments (Javier's call 2026-11-14), net
+  from the ledger only (`results.nets_by_show` = `figures` per show), top buyers by
   Whatnot account. The packing role, the show pages, the live band and the Excel
   sheet keep the app's own counts. Reports are built synchronously with openpyxl
   (`services/reports.py`); move them to a job if a shop outgrows that.

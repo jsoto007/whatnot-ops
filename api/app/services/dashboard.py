@@ -741,18 +741,19 @@ def _round_div(total: int, n: int) -> int:
 
 def whatnot_money(org_id: int, *, days: int = 30) -> dict:
     """The dashboard's money for those who may read reports, as Whatnot states it: what
-    its orders of the last `days` days sold (paid, payment still being taken, failed), who
-    spent most, each recent show's sales, and its ledger's net and fees for the same days.
+    its orders of the last `days` days sold (paid, and payment still being taken), how much
+    of it came from new and from returning customers, who spent most, each recent show's
+    sales, and its ledger's net and fees for the same days.
 
     Whatnot decides what was sold and whether it was paid, so nothing here is the app's
     own count of sales. Sales are the orders' item subtotals (no shipping, no tax);
-    giveaways are counted, never added in. Only the shop's currency is added up: orders
+    giveaways are counted, never added in. Failed payments are left out (Javier's call,
+    2026-11-14): a failed order is not a sale. Only the shop's currency is added up: orders
     in any other are counted and said. The net is the ledger's (`results.figures`), never
     worked out from the fee columns. {"connected": False} without a working connection:
     the page then shows the app's own numbers."""
     from ..models import WhatnotOrder, WhatnotOrderItem, WhatnotShow, WhatnotSyncState
     from .whatnot import connection, results
-    from .whatnot import orders as whatnot_orders
     from .whatnot.orders import GIVEAWAY, PAYMENT
 
     conn = connection.active(org_id)
@@ -772,7 +773,7 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
 
     (
         paid_n, paid_cents, priced_n, pending_n, pending_cents,
-        cancelled_n, cancelled_cents, buyers, giveaways, other,
+        cancelled_n, cancelled_cents, giveaways, other,
     ) = db.session.execute(
         select(
             *bucket(paid),
@@ -780,7 +781,6 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
             func.count().filter(mine & sale & o.status.in_(paid) & o.subtotal_cents.is_not(None)),
             *bucket(("pending",)),
             *bucket(("cancelled",)),
-            func.count(func.distinct(_whatnot_buyer())).filter(mine & sale & o.status.in_(paid)),
             func.count().filter(~sale & o.status.not_in(("cancelled", "failed"))),
             func.count().filter(~mine),
         ).where(*in_period)
@@ -790,28 +790,7 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
         .join(o, o.id == WhatnotOrderItem.order_id)
         .where(*in_period, mine, sale, o.status.in_(paid))
     )
-    # A card declined at the win and paid on a retry is two orders on Whatnot, the first
-    # one failed: that win was paid, so it is not a failed payment here (the same rule as
-    # Compare and Apply). Only failures nobody paid afterwards are counted.
-    failed = db.session.scalars(
-        select(o).where(*in_period, mine, sale, o.status == "failed").options(selectinload(o.items))
-    ).all()
-    retried = whatnot_orders.retried(org_id, list(failed))
-    unpaid = [f for f in failed if f.id not in retried]
-    # Whatnot's own count of first-time buyers, from the results of the shows it has
-    # finished working out (each buyer is a first-time buyer once, so they add up).
-    start = func.coalesce(WhatnotShow.started_at, WhatnotShow.scheduled_start_at)
-    firsts = [
-        a["first_time_buyers_count"]
-        for a in db.session.scalars(
-            select(WhatnotShow.analytics).where(
-                WhatnotShow.organization_id == org_id,
-                start >= since,
-                WhatnotShow.analytics.is_not(None),
-            )
-        )
-        if isinstance(a, dict) and isinstance(a.get("first_time_buyers_count"), int)
-    ]
+    customers, returning = _customers(org_id, in_period, mine, sale, paid, since)
     ledger = results.figures(org_id, since=since)
     # When Whatnot's orders were last read: the timer's read, or a show's own read.
     reads = [
@@ -836,27 +815,68 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
             "paidCents": int(paid_cents),
             "orders": int(paid_n),
             "items": int(items or 0),
-            "buyers": int(buyers),
+            "buyers": customers["new"]["buyers"] + customers["returning"]["buyers"],
             "averageOrderCents": _round_div(int(paid_cents), int(priced_n)),
             "pendingCents": int(pending_cents),
             "pendingOrders": int(pending_n),
-            "failedCents": sum(f.subtotal_cents or 0 for f in unpaid),
-            "failedOrders": len(unpaid),
-            "retriedOrders": len(retried),
             "cancelledCents": int(cancelled_cents),
             "cancelledOrders": int(cancelled_n),
             "giveaways": int(giveaways),
             "otherCurrencyOrders": int(other),
         },
-        "newBuyers": sum(firsts) if firsts else None,
-        "newBuyersShows": len(firsts),
+        "customers": customers,
         "ledger": ledger,
         # Whatnot's fees on the orders, as its ledger lists them (the net already has them).
         "feesCents": sum(ledger["fees"][k] for k in WHATNOT_FEES) if ledger else None,
         "ledgerStatus": results.status(org_id),
-        "topBuyers": _whatnot_top_buyers(in_period, mine & sale, paid, retried),
+        "topBuyers": _whatnot_top_buyers(in_period, mine & sale, paid, returning),
         "shows": _whatnot_shows(org_id, mine & sale, paid),
     }
+
+
+def _customers(org_id: int, in_period, mine, sale, paid, since) -> tuple[dict, set[str]]:
+    """The period's paid sales split by customer, and the buyers who are returning ones.
+
+    A customer is RETURNING when their Whatnot account has a paid order with the shop from
+    before the period, NEW when the first paid order the app holds from them is in it. The
+    app holds Whatnot's orders only since the shop connected (`knownSince`, the oldest one
+    it read), so a customer whose earlier orders are older than that counts as new. A
+    giveaway is not a purchase and makes nobody a customer; an earlier order in another
+    currency still does."""
+    from ..models import WhatnotOrder as o
+
+    who = _whatnot_buyer()
+    is_paid = o.status.in_(paid)
+    rows = db.session.execute(
+        select(who, func.coalesce(func.sum(o.subtotal_cents), 0), func.count())
+        .where(*in_period, mine, sale, is_paid, who.is_not(None))
+        .group_by(who)
+    ).all()
+    earlier = set(
+        db.session.scalars(
+            select(who)
+            .where(
+                o.organization_id == org_id,
+                o.ordered_at < since,
+                sale,
+                is_paid,
+                who.is_not(None),
+            )
+            .distinct()
+        )
+    )
+    split = {side: {"buyers": 0, "orders": 0, "paidCents": 0} for side in ("new", "returning")}
+    returning: set[str] = set()
+    for key, cents, n in rows:
+        side = "returning" if key in earlier else "new"
+        if side == "returning":
+            returning.add(key)
+        split[side]["buyers"] += 1
+        split[side]["orders"] += int(n)
+        split[side]["paidCents"] += int(cents)
+    # How far back the app read Whatnot's orders: its oldest order of any kind.
+    known = db.session.scalar(select(func.min(o.ordered_at)).where(o.organization_id == org_id))
+    return {**split, "knownSince": known.isoformat() if known else None}, returning
 
 
 def _whatnot_buyer():
@@ -871,15 +891,16 @@ def _whatnot_buyer():
     )
 
 
-def _whatnot_top_buyers(in_period, counted, paid, retried: set[int], limit: int = 8) -> list[dict]:
-    """The buyers who paid most in the period, each under the name they use now, with the
-    failed payments nobody paid afterwards (`retried` are the failed orders a retry paid).
-    Whatnot's own account ids stay here; the page gets names."""
+def _whatnot_top_buyers(
+    in_period, counted, paid, returning: set[str], limit: int = 8
+) -> list[dict]:
+    """The buyers who paid most in the period, each under the name they use now, and
+    whether they are returning customers (`_customers`). Whatnot's own account ids stay
+    here; the page gets names."""
     from ..models import WhatnotOrder as o
 
     who = _whatnot_buyer()
-    is_paid = o.status.in_(paid)
-    spent = func.coalesce(func.sum(o.subtotal_cents).filter(is_paid), 0)
+    spent = func.coalesce(func.sum(o.subtotal_cents), 0)
     # The name on the buyer's latest order in the period: the name they use now, read in
     # the same pass (an account changes its name rarely, and never mid-period here).
     latest_name = func.array_agg(
@@ -888,15 +909,14 @@ def _whatnot_top_buyers(in_period, counted, paid, retried: set[int], limit: int 
     ).filter(o.buyer_username.is_not(None))[1]
     rows = db.session.execute(
         select(
+            who,
             latest_name,
             spent,
-            func.count().filter(is_paid),
-            func.count(func.distinct(o.whatnot_show_id)).filter(is_paid),
-            func.count().filter((o.status == "failed") & o.id.not_in(retried)),
+            func.count(),
+            func.count(func.distinct(o.whatnot_show_id)),
         )
-        .where(*in_period, counted, o.status.in_((*paid, "failed")), who.is_not(None))
+        .where(*in_period, counted, o.status.in_(paid), who.is_not(None))
         .group_by(who)
-        .having(func.count().filter(is_paid) > 0)
         .order_by(spent.desc(), who)
         .limit(limit)
     ).all()
@@ -906,9 +926,9 @@ def _whatnot_top_buyers(in_period, counted, paid, retried: set[int], limit: int 
             "paidCents": int(cents),
             "orders": int(n),
             "shows": int(shows),
-            "failedOrders": int(failed),
+            "returning": key in returning,
         }
-        for name, cents, n, shows, failed in rows
+        for key, name, cents, n, shows in rows
     ]
 
 
