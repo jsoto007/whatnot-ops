@@ -66,6 +66,16 @@ test('wins are paid orders at once; a declined card comes off the queue; pick �
   await expect(page).toHaveURL(/\/app\/orders\/slips\/\d+\?only=ready$/)
   await expect(page.getByTestId('slips-cover')).toContainText('Ready to pick only')
   await expect(page.getByTestId('slips-cover')).toContainText('Total Buyers: 2')
+  // Printed, the pick list is the shop's own sheet: every page a 4×6 label (288 × 432 pt),
+  // Comfortaa, black on white (no pink header).
+  await page.evaluate(() => document.fonts.ready)
+  const pdf = (await page.pdf({ preferCSSPageSize: true, printBackground: true })).toString('latin1')
+  expect([...new Set(pdf.match(/\/MediaBox\s*\[[^\]]*\]/g))]).toEqual(['/MediaBox [0 0 288 432]'])
+  await page.emulateMedia({ media: 'print' })
+  const head = page.getByTestId('slip-lani808').locator('th').first()
+  await expect(head).toHaveCSS('background-color', 'rgb(255, 255, 255)')
+  await expect(head).toHaveCSS('font-family', /Comfortaa/)
+  await page.emulateMedia({ media: null })
   await expect(page.getByRole('tab', { name: /Ready to pick/ })).toContainText('2')
   await page.getByRole('link', { name: '← Orders' }).click()
   // Paid at the win: all four units left the shelf (5 − 3 − 1 = 1).
