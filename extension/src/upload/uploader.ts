@@ -51,6 +51,8 @@ export class UploadError extends Error {
     message: string,
     /** Set for a 429: how long the server asked us to wait (its Retry-After header). */
     readonly retryAfterMs?: number,
+    /** Set for a refusal (`rejected`): the HTTP status the server answered with. */
+    readonly status?: number,
   ) {
     super(message)
   }
@@ -69,6 +71,17 @@ export function slowDown(res: Response): UploadError {
   const header = Number(res.headers.get('Retry-After'))
   const seconds = Number.isFinite(header) && header > 0 ? Math.min(SLOW_DOWN_MAX_S, Math.ceil(header)) : SLOW_DOWN_DEFAULT_S
   return new UploadError('offline', `server asked to slow down; next try in ${seconds} s`, seconds * 1000)
+}
+
+/**
+ * True when an API from before `show.channel` / `show.movedOnAt` refused a batch only because its
+ * show carries a field that API does not know. Its validator (api/app/services/ingest.py) words
+ * that as `show: fails additionalProperties` (plus ` False`), after the `invalid batch` error, so
+ * the match is that path and rule exactly, on a 400: not `show/channel` (a bad value), not `rows/…`,
+ * and never a 422 (another seller's lines) or a 413.
+ */
+export function refusedUnknownShowField(err: unknown): boolean {
+  return err instanceof UploadError && err.kind === 'rejected' && err.status === 400 && /(^|; )show: fails additionalProperties( False)?($|;)/.test(err.message)
 }
 
 /**
@@ -104,7 +117,16 @@ export async function uploadOnce(
       rows: showRows.map(wireRow),
     }
     try {
-      await postBatch(settings, batch, fetchFn)
+      try {
+        await postBatch(settings, batch, fetchFn)
+      } catch (err) {
+        // An API older than this build (rolled back after the laptop installed it) refuses the
+        // channel as an unknown field, and would refuse it for ever. Send the lines once more
+        // without it; nothing else is stripped, and a 422 (another seller's lines) is never resent.
+        if (!batch.show.channel || !refusedUnknownShowField(err)) throw err
+        const { channel: _channel, ...show } = batch.show
+        await postBatch(settings, { ...batch, show }, fetchFn)
+      }
     } catch (err) {
       // A batch the server refuses would be refused forever: set it aside and keep
       // the queue moving. Auth and network problems still stop the flush.
@@ -125,7 +147,7 @@ export async function uploadOnce(
  * Tell the server, once per move, that a show's page moved on to another channel (Whatnot does
  * that when a show ends): a batch with no rows, after all the show's lines (the server takes the
  * moment it hears this, by its own clock, as the show's end when Whatnot gives none). A server
- * that refuses it (an API older than the field answers 400) is not asked again; one that could
+ * that refuses it for another reason is not asked again; one older than the field (it refuses the show's field) is asked again later; one that could
  * not be reached is, with the rows' backoff. Returns how many the server took, or null when
  * there was none to send.
  */
@@ -146,6 +168,11 @@ async function sendMoves(store: UploadStore, settings: Settings, fetchFn: typeof
       took++
     } catch (err) {
       if (!(err instanceof UploadError) || err.kind !== 'rejected') throw err
+      // An API older than the field cannot use the report, and the report is nothing without it
+      // (no rows, no way to strip it): it stays owed and goes up when the API is ahead again.
+      // Not marked, so a flush asks again (one small request), never a loop: a flush with nothing
+      // else to do only runs for new lines or the sweep.
+      if (refusedUnknownShowField(err)) continue
     }
     await store.markMoveSent(m.id, m.movedOnAt)
   }
@@ -175,7 +202,7 @@ export async function postBatch(settings: Settings, batch: ChatEventBatch, fetch
     } catch {
       /* not JSON */
     }
-    throw new UploadError('rejected', detail)
+    throw new UploadError('rejected', detail, undefined, res.status)
   }
   throw new UploadError('offline', `server returned ${res.status}`)
 }

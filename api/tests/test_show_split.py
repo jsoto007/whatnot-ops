@@ -31,6 +31,7 @@ from app.models import (
     ReviewStatus,
     Role,
     Sale,
+    SaleStatus,
     Show,
     ShowSaleMode,
     ShowShelf,
@@ -473,6 +474,308 @@ def test_a_recording_the_clock_tied_to_the_later_show_hands_each_show_its_own(ap
         [("kat.c", rec), ("kat.c", part), ("lani808", rec), ("pine.owl", part)]
     )
     assert _ledger(app) == ledger and level(app, shop["red"]) == red
+
+
+# ---------- what Whatnot's orders told a person, with no sale or line to follow ----------
+
+
+def _clock_tied_to_the_late_show(app, shop):
+    """The shape above: the early show 5 h to 4 h ago, the late show 3 h to 10 min ago, a
+    win line and its paid order in each, orders applied as they arrive. Read before the chat
+    is, the clock ties the recording to the longer, later show."""
+    _quiet(app, shop)
+    now, fake = shop["now"], shop["fake"]
+    early = fake.add_show(title="Early show", start=now - 5 * H, ended=now - 4 * H)["id"]
+    late = fake.add_show(title="Late show", start=now - 3 * H, ended=now - 10 * M)["id"]
+    for show_id, buyer, title, price, ago in (
+        (early, "kat.c", "Red bundle", 2500, 4 * H + 30 * M),
+        (late, "pine.owl", LOT, 700, 2 * H),
+    ):
+        fake.add_order(
+            show_id=show_id, buyer=buyer, items=[{"title": title, "price_cents": price}],
+            created=now - ago,
+        )  # fmt: skip
+    lines = [
+        (5 * H + 5 * M, "host_shop", "welcome to the early show"),
+        (4 * H + 30 * M, *win("kat.c", "Red bundle")),
+        (3 * H + 5 * M, "host_shop", "late show in five"),
+        (2 * H, *win("pine.owl", LOT, "7.00")),
+    ]
+    rec = _recording(app, shop, lines, began=5 * H + 10 * M)
+    with app.app_context():
+        db.session.scalar(select(WhatnotConnection)).orders_mode = "auto"
+        db.session.commit()
+    return early, late, rec
+
+
+def _bare(shop, show_id: str, buyer: str, ago: timedelta) -> None:
+    """A paid order Whatnot lists with no items yet (left out of the apply)."""
+    order = shop["fake"].add_order(
+        show_id=show_id, buyer=buyer, items=[{"title": "Green bundle", "price_cents": 800}],
+        created=shop["now"] - ago,
+    )  # fmt: skip
+    for item in shop["fake"].items_of(order["id"]):
+        del shop["fake"].order_items[item["id"]]
+
+
+def _apply(app, shop, *whatnot_ids) -> None:
+    with app.app_context():
+        for whatnot_id in whatnot_ids:
+            whatnot_orders.apply_show_job({"org_id": shop["org"], "whatnot_show_id": whatnot_id})
+
+
+def _notices(app, reason: str, *names: str) -> dict[int, tuple[int, str, str | None]]:
+    """Every Review item for `reason`, by id: its show, its status, and whom it is about (the
+    buyer it was written for, else the first of `names` its words mention)."""
+    with app.app_context():
+        out = {}
+        for i in db.session.scalars(select(ReviewItem).where(ReviewItem.reason == reason)):
+            named = next((n for n in names if n in i.summary), None)
+            out[i.id] = (i.show_id, i.status.value, (i.proposal or {}).get("buyer") or named)
+        db.session.rollback()
+        return out
+
+
+def _ids(notices: dict) -> dict[str | None, int]:
+    return {who: i for i, (_show, _status, who) in notices.items()}
+
+
+def _dismiss(app, shop, item_id: int) -> None:
+    """A person's "Got it" in Review."""
+    with app.app_context():
+        person = db.session.scalar(select(User).where(User.organization_id == shop["org"]))
+        if person is None:
+            person = User(
+                organization_id=shop["org"],
+                email="owner@shop.test",
+                name="Olive",
+                password_hash="x",
+                role=Role.owner,
+                session_token="t" * 32,
+            )
+            db.session.add(person)
+            db.session.flush()
+        pipeline.resolve(db.session.get(ReviewItem, item_id), "dismiss", {}, user=person)
+        db.session.commit()
+
+
+def _again(app, shop, early: str, late: str) -> None:
+    """Later reads: both shows' orders read and applied, the shows read (the split asked
+    again), and applied once more."""
+    _read(app, shop, early, late)
+    _apply(app, shop, late, early)
+    _read(app, shop)
+    _apply(app, shop, late, early)
+
+
+def test_a_declined_payment_of_the_later_show_goes_to_its_half_as_it_was(app, shop):
+    """Whatnot declined two buyers' payments in the late show, wins with no line here (no
+    sale): each is a Review item on the show the late show's orders were applied to, the
+    recording the clock tied to it. A person said "Got it" to one. Split, both go to the
+    late show's half as they were: its next applies know them and ask nothing again (a
+    dismissed one is never opened again), and the open one clears there when the buyer pays
+    after all."""
+    early, late, rec = _clock_tied_to_the_late_show(app, shop)
+    now, fake = shop["now"], shop["fake"]
+    for buyer, title, price, ago in (
+        ("moss.fern", "Green bundle", 800, 90 * M),
+        ("fern.moss", "Blue bundle", 600, 80 * M),
+    ):
+        fake.add_order(
+            show_id=late, buyer=buyer, items=[{"title": title, "price_cents": price}],
+            created=now - ago, status="failed",
+        )  # fmt: skip
+    _read(app, shop, early, late)
+    _apply(app, shop, early, late)
+    with app.app_context():
+        assert db.session.get(Show, rec).whatnot_show_id == _ws(late).id  # the clock's tie
+    declined = _notices(app, "order_declined")
+    assert sorted(declined.values()) == [(rec, "open", "fern.moss"), (rec, "open", "moss.fern")]
+    ids = _ids(declined)
+    _dismiss(app, shop, ids["moss.fern"])
+    run(app, rec)
+
+    _read(app, shop)
+
+    parts = _parts(app)
+    assert len(parts) == 2 and parts[0] == rec
+    part = parts[1]
+    told = {
+        ids["moss.fern"]: (part, "dismissed", "moss.fern"),
+        ids["fern.moss"]: (part, "open", "fern.moss"),
+    }
+    assert _notices(app, "order_declined") == told
+    _again(app, shop, early, late)
+    assert _parts(app) == parts
+    assert _notices(app, "order_declined") == told
+    # fern.moss pays after all: a retried card, a paid order for the same lot and price.
+    fake.add_order(
+        show_id=late, buyer="fern.moss", items=[{"title": "Blue bundle", "price_cents": 600}],
+        created=now - 79 * M,
+    )  # fmt: skip
+    _read(app, shop, late)
+    _apply(app, shop, late, early)
+    assert _notices(app, "order_declined") == {
+        **told,
+        ids["fern.moss"]: (part, "resolved", "fern.moss"),
+    }
+    with app.app_context():
+        item = db.session.get(ReviewItem, ids["fern.moss"])
+        assert item.resolution == {"by": "paid on Whatnot"}
+    assert _sales(app)["fern.moss"] == [part]
+
+
+@pytest.mark.parametrize("late_said", ["open", "dismissed"])
+def test_each_shows_orders_left_out_notice_stays_with_its_own_half(app, shop, late_said):
+    """Whatnot lists a paid order with no items in each show: one "orders left out" notice
+    per show, the early show's on the show made from its orders, the late show's on the
+    recording the clock tied to it (open, or dismissed by a person). Split, the late show's
+    goes to its half as it was before the made show folds into the first half: each half
+    holds its own show's notice, and neither show's next apply asks again or settles the
+    other show's."""
+    early, late, rec = _clock_tied_to_the_late_show(app, shop)
+    _bare(shop, early, "early.bare", 4 * H + 40 * M)
+    _bare(shop, late, "late.bare", 90 * M)
+    _read(app, shop, early, late)
+    _apply(app, shop, early, late)
+    with app.app_context():
+        assert db.session.get(Show, rec).whatnot_show_id == _ws(late).id  # the clock's tie
+        made = [s.id for s in sync.recordings_of(_ws(early))]
+        assert len(made) == 1 and made[0] != rec
+    left_out = _notices(app, "orders_left_out", "early.bare", "late.bare")
+    assert sorted(left_out.values()) == sorted(
+        [(made[0], "open", "early.bare"), (rec, "open", "late.bare")]
+    )
+    ids = _ids(left_out)
+    if late_said == "dismissed":
+        _dismiss(app, shop, ids["late.bare"])
+    run(app, rec)
+
+    _read(app, shop)
+
+    parts = _parts(app)
+    assert len(parts) == 2 and parts[0] == rec
+    part = parts[1]
+    with app.app_context():
+        assert db.session.get(Show, made[0]) is None  # folded into the first half
+    told = {
+        ids["early.bare"]: (rec, "open", "early.bare"),
+        ids["late.bare"]: (part, late_said, "late.bare"),
+    }
+    assert _notices(app, "orders_left_out", "early.bare", "late.bare") == told
+    _again(app, shop, early, late)
+    assert _parts(app) == parts
+    assert _notices(app, "orders_left_out", "early.bare", "late.bare") == told
+
+
+def test_a_payment_no_sale_here_answers_goes_to_the_later_shows_half(app, shop):
+    """fen.moss's paid order in the late show made a sale here (no win line), and a person
+    cancelled that sale: the late show's next apply asks a person about the payment ("paid,
+    but no matching sale"), an item that names the order, on the recording the clock tied
+    to the late show. Split, it goes to the late show's half with the order's sale, and the
+    late show's next applies know it."""
+    early, late, rec = _clock_tied_to_the_late_show(app, shop)
+    now, fake = shop["now"], shop["fake"]
+    paid = fake.add_order(
+        show_id=late, buyer="fen.moss", items=[{"title": "Red bundle", "price_cents": 2500}],
+        created=now - 100 * M,
+    )  # fmt: skip
+    _read(app, shop, early, late)
+    _apply(app, shop, early, late)
+    with app.app_context():
+        assert db.session.get(Show, rec).whatnot_show_id == _ws(late).id  # the clock's tie
+        sale = db.session.scalar(select(Sale).where(Sale.buyer_username == "fen.moss"))
+        assert sale.show_id == rec
+        pipeline.set_sale_status(
+            sale, SaleStatus.cancelled, reason="a person cancelled it", actor=pipeline.RULE_ACTOR
+        )
+        db.session.commit()
+    _apply(app, shop, late)
+    unmatched = _notices(app, "unmatched_payment")
+    assert list(unmatched.values()) == [(rec, "open", "fen.moss")]
+    with app.app_context():
+        item = db.session.get(ReviewItem, next(iter(unmatched)))
+        assert item.proposal["dedupeKey"] == f"order:{paid['id']}"
+    run(app, rec)
+
+    _read(app, shop)
+
+    parts = _parts(app)
+    assert len(parts) == 2 and parts[0] == rec
+    told = {i: (parts[1], "open", "fen.moss") for i in unmatched}
+    assert _notices(app, "unmatched_payment") == told
+    assert _sales(app)["fen.moss"] == [parts[1]]
+    _again(app, shop, early, late)
+    assert _parts(app) == parts
+    assert _notices(app, "unmatched_payment") == told
+
+
+def test_whatnots_notices_stay_put_when_the_clock_tied_the_recording_to_the_early_show(app, shop):
+    """The mirror: the recording overlaps the early show longer, so the clock tied it to the
+    early show. The early show's declined payment and orders-left-out notice are on it and
+    stay there; the late show's are on the show made from its orders and come to the late
+    half as that show folds into it. Nothing is asked twice."""
+    _quiet(app, shop)
+    now, fake = shop["now"], shop["fake"]
+    early = fake.add_show(title="Early show", start=now - 5 * H, ended=now - 90 * M)["id"]
+    late = fake.add_show(title="Late show", start=now - 60 * M, ended=now - 5 * M)["id"]
+    for show_id, buyer, title, price, ago, status in (
+        (early, "kat.c", "Red bundle", 2500, 4 * H + 30 * M, "pending_fulfillment"),
+        (early, "dune.wren", "Green bundle", 800, 4 * H, "failed"),
+        (late, "pine.owl", LOT, 700, 40 * M, "pending_fulfillment"),
+        (late, "kat.c", LOT, 900, 20 * M, "pending_fulfillment"),
+        (late, "fern.moss", "Blue bundle", 600, 30 * M, "failed"),
+    ):
+        fake.add_order(
+            show_id=show_id, buyer=buyer, items=[{"title": title, "price_cents": price}],
+            created=now - ago, status=status,
+        )  # fmt: skip
+    _bare(shop, early, "early.bare", 4 * H + 10 * M)
+    _bare(shop, late, "late.bare", 35 * M)
+    lines = [
+        (5 * H + 5 * M, "host_shop", "welcome to the early show"),
+        (4 * H + 30 * M, *win("kat.c", "Red bundle")),
+        (65 * M, "host_shop", "late show in five"),
+        (40 * M, *win("pine.owl", LOT, "7.00")),
+        (20 * M, *win("kat.c", LOT, "9.00")),
+    ]
+    rec = _recording(app, shop, lines, began=5 * H + 10 * M)
+    with app.app_context():
+        db.session.scalar(select(WhatnotConnection)).orders_mode = "auto"
+        db.session.commit()
+    _read(app, shop, early, late)
+    _apply(app, shop, early, late)
+    with app.app_context():
+        assert db.session.get(Show, rec).whatnot_show_id == _ws(early).id  # the clock's tie
+        made = [s.id for s in sync.recordings_of(_ws(late))]
+        assert len(made) == 1 and made[0] != rec
+    names = ("early.bare", "late.bare")
+    before = {r: _notices(app, r, *names) for r in ("order_declined", "orders_left_out")}
+    assert sorted(before["order_declined"].values()) == sorted(
+        [(rec, "open", "dune.wren"), (made[0], "open", "fern.moss")]
+    )
+    assert sorted(before["orders_left_out"].values()) == sorted(
+        [(rec, "open", "early.bare"), (made[0], "open", "late.bare")]
+    )
+    run(app, rec)
+
+    _read(app, shop)
+
+    parts = _parts(app)
+    assert len(parts) == 2 and parts[0] == rec
+    with app.app_context():
+        assert db.session.get(Show, made[0]) is None  # folded into the late half
+    half = {rec: rec, made[0]: parts[1]}
+    told = {
+        r: {i: (half[s], status, who) for i, (s, status, who) in items.items()}
+        for r, items in before.items()
+    }
+    for reason, items in told.items():
+        assert _notices(app, reason, *names) == items
+    _again(app, shop, early, late)
+    assert _parts(app) == parts
+    for reason, items in told.items():
+        assert _notices(app, reason, *names) == items
 
 
 def test_a_late_line_not_read_yet_is_read_in_its_half(app, shop):

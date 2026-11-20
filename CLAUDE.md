@@ -585,7 +585,10 @@ commands.
   differs, case aside, from the Whatnot connection's username: nothing is stored, the lines
   are counted in `devices.other_channel_lines`, and another seller's name is never stored or
   logged. Every doubt reads as "not read", never as another channel. Deploy the API before
-  an extension that sends a new field.
+  an extension that sends a new field, and roll them back together: against an older API
+  the uploader resends a batch once without `show.channel` only on that API's own
+  unknown-field 400 (`refusedUnknownShowField`), never on a 422, and that older API cannot
+  check the channel (`shared/README.md`).
 - **When a show is over** is decided only in `services/whatnot/showend.py` (`ending`,
   `end_of`, `is_over`, `on_air`, `ended_within`). Never compare Whatnot's status or
   `ended_at` yourself. Whatnot's own end time wins and is never written over. Otherwise a
@@ -598,7 +601,11 @@ commands.
   pass, whatever the webhooks do (`showend.still_read`); if it sells again it goes back on
   air, and labels, picks and "every order read" wait again. Nothing done while it looked
   over is undone (a label, a pick, a sale that gave way), so keep anything irreversible
-  behind `end_of`.
+  behind `end_of`. **An apply more than three days after a show's end** (whoever ended it:
+  `whatnot/orders._ended_long_ago`, `GIVE_WAY_WITHIN`) never makes a sale give way by
+  itself, a person's Apply included: the win keeps its "no order on Whatnot" item, no stock
+  moves, and a person decides. That keeps the 12-hour rule, an end time Whatnot fills in
+  late, and a first full read of an old show from cancelling paid sales days afterwards.
 - **One recording, two shows** (`services/show_split.py`). The laptop keeps one key from
   Start to "Clear this show", so one recording can run through two of the shop's shows.
   Only at a read of Whatnot's shows (`sync.sync_shows`, the shows webhook), never inside an
@@ -606,7 +613,10 @@ commands.
   two shows, each said while that show alone was on air. The split falls at the longest
   quiet stretch of its own chat between them, and the later part becomes its own show by
   re-pointing (chat, sales, per-buyer Orders, Review questions, lots, parcels), never
-  cancel-and-recreate: no stock moves. Both halves get `whatnot_link` "split" (never
+  cancel-and-recreate: no stock moves. What Whatnot's orders told a person with no sale or
+  line to follow goes to the half whose Whatnot show it is about, as it was (open, dismissed
+  or resolved), so that show's next apply never asks twice
+  (`show_split._move_whatnot_questions`, before the re-tie and the made-show fold). Both halves get `whatnot_link` "split" (never
   re-tied by the clock). Ingest routes each later line by capture time and never stores a
   client id either half already holds. A box being picked, packed or shipped with a win
   from the later show blocks the split (one Review item). Never split: a recording a person
