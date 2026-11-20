@@ -78,6 +78,22 @@ describe('db', () => {
     expect((await pendingRows(10)).map((r) => r.channel)).toEqual(['maple_cards_demo', undefined])
   })
 
+  it('drops a move the tab came back from and recorded after, before the server was told', async () => {
+    // Offline with lines waiting: the page moved on, came back to its own show, and recorded again.
+    const id = '2026-11-19T20:00:00.000Z'
+    const moved = '2026-11-19T22:40:00.000Z'
+    await putRows({ id, startedAt: id, channel: 'maple_cards_demo' }, [{ ...row(id, 1), capturedAt: '2026-11-19T22:30:00.000Z' }])
+    await putRows({ id, startedAt: id, movedOnAt: moved }, [])
+    await putRows({ id, startedAt: id }, [{ ...row(id, 2), capturedAt: '2026-11-19T22:45:00.000Z' }]) // back, recording
+    await markUploaded([`${id}-1`, `${id}-2`])
+    expect(await unsentMoves()).toEqual([]) // never told: the show did not end there
+    expect(await unsentMoves()).toEqual([])
+    // A later move, with nothing recorded after it, is a new one and is owed.
+    const later = '2026-11-19T23:10:00.000Z'
+    await putRows({ id, startedAt: id, movedOnAt: later }, [])
+    expect((await unsentMoves()).map((m) => m.movedOnAt)).toEqual([later])
+  })
+
   it('keeps when the page last moved on to another channel, and owes the server that until it has it', async () => {
     const id = '2026-11-19T20:00:00.000Z'
     const first = '2026-11-19T22:40:00.000Z'
