@@ -67,11 +67,24 @@ const showRange = (showId: string) => IDBKeyRange.bound([showId, 0], [showId, Nu
 const seqInRange = (seq: number) => seq >= 0 && seq <= Number.MAX_SAFE_INTEGER
 
 /**
+ * The recording's channel: what the show was first saved with (what Start read; '' when it read
+ * none), never changed afterwards, except that the host's own choice of the page (`chosen`: a
+ * chat line clicked after Start or Pick chat) fills one that is still empty. A later save never
+ * fills it: a page read after Start may be another seller's show Whatnot moved the tab to.
+ */
+function keptChannel(prev: StoredShow | undefined, next: string | undefined, chosen: boolean): string | undefined {
+  if (!prev) return next
+  if (prev.channel) return prev.channel
+  return chosen && next ? next : prev.channel
+}
+
+/**
  * Add rows (idempotent by id) and refresh the show's metadata. Returns the new metadata.
  * The count goes up by the rows that were new: counting the show's index range walks
  * every row it has, inside this write, so it is done once per show and then kept.
+ * `chosen`: the save comes from the host choosing the page (see keptChannel).
  */
-export async function putRows(show: ShowRef, rows: CapturedRow[]): Promise<ShowMeta> {
+export async function putRows(show: ShowRef, rows: CapturedRow[], { chosen = false }: { chosen?: boolean } = {}): Promise<ShowMeta> {
   const db = await getDb()
   const tx = db.transaction(['rows', 'shows'], 'readwrite')
   const rowStore = tx.objectStore('rows')
@@ -92,6 +105,10 @@ export async function putRows(show: ShowRef, rows: CapturedRow[]): Promise<ShowM
     count,
     date: showDate(show.startedAt),
     url: show.url ?? prev?.url,
+    channel: keptChannel(prev, show.channel, chosen),
+    // The latest move onto another channel the tab noted; a save that names none keeps it.
+    movedOnAt: show.movedOnAt || prev?.movedOnAt,
+    movedOnSent: prev?.movedOnSent,
     counted: true,
   }
   await shows.put(meta)
@@ -187,6 +204,39 @@ export async function parkAllPending(): Promise<number> {
 export async function parkedCount(): Promise<number> {
   const db = await getDb()
   return db.countFromIndex('rows', 'by-uploaded', IDBKeyRange.bound([2, '', 0], [2, '\uffff', Number.MAX_SAFE_INTEGER]))
+}
+
+/** What the server is told when a show's page moved on to another channel (upload/uploader.ts). */
+export interface PendingMove {
+  id: string
+  startedAt: string
+  url?: string
+  channel?: string
+  movedOnAt: string
+}
+
+/**
+ * Shows whose latest move onto another channel the server does not have yet, and none of whose
+ * lines are still waiting: the server takes the moment it hears this as the show's end (when
+ * Whatnot gives none), so it must come after every line recorded before it.
+ */
+export async function unsentMoves(): Promise<PendingMove[]> {
+  const out: PendingMove[] = []
+  for (const s of await listShows()) {
+    if (!s.movedOnAt || s.movedOnAt === s.movedOnSent) continue
+    if (await hasPending(s.id)) continue
+    out.push({ id: s.id, startedAt: s.startedAt, ...(s.url ? { url: s.url } : {}), ...(s.channel !== undefined ? { channel: s.channel } : {}), movedOnAt: s.movedOnAt })
+  }
+  return out
+}
+
+/** The server has the move noted at `at` (or refused it for good): not sent again. A newer move stays owed. */
+export async function markMoveSent(showId: string, at: string): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction('shows', 'readwrite')
+  const s = await tx.store.get(showId)
+  if (s) await tx.store.put({ ...s, movedOnSent: at })
+  await tx.done
 }
 
 export async function getShow(showId: string): Promise<ShowMeta | undefined> {

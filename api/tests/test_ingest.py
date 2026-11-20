@@ -37,19 +37,25 @@ def batch(rows, show=SHOW, url="/live/abc"):
 # ---------- contract: the shared fixtures ----------
 
 
-def test_shared_valid_fixture_passes():
-    validate(load("batch-valid.json"))
+VALID = sorted(p.name for p in FIXTURES.glob("batch-valid*.json"))
+INVALID = sorted(p.name for p in FIXTURES.glob("batch-invalid*.json"))
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "batch-invalid-bad-id.json",
-        "batch-invalid-empty.json",
-        "batch-invalid-extra-field.json",
-        "batch-invalid-bad-source.json",
-    ],
-)
+def test_the_shared_fixtures_are_all_here():
+    # The extension's tests read the same folder: a fixture added on one side is run on both.
+    assert "batch-valid.json" in VALID and "batch-valid-channel.json" in VALID
+    assert "batch-valid-channel-unread.json" in VALID
+    assert "batch-valid-moved-on.json" in VALID and "batch-invalid-moved-on-date.json" in INVALID
+    assert {"batch-invalid-channel-long.json", "batch-invalid-channel-null.json"} <= set(INVALID)
+    assert len(INVALID) >= 6
+
+
+@pytest.mark.parametrize("name", VALID)
+def test_shared_valid_fixtures_pass(name):
+    validate(load(name))
+
+
+@pytest.mark.parametrize("name", INVALID)
 def test_shared_invalid_fixtures_fail(name):
     with pytest.raises(BatchInvalid):
         validate(load(name))
@@ -202,6 +208,198 @@ def test_shows_are_scoped_to_the_organization(client, app, auth):
 
 def test_unknown_show_status_is_404(client, auth):
     assert client.get("/api/ingest/shows/none", headers=auth).status_code == 404
+
+
+# ---------- whose show it was: the channel (seller) the page showed ----------
+# Made-up names only (the repository is public).
+
+OWN = "Maple_Cards_Demo"
+OTHER = "birch_breaks_demo"
+
+
+def with_channel(rows, channel, **kw):
+    b = batch(rows, **kw)
+    b["show"]["channel"] = channel
+    return b
+
+
+def connect_shop(app, device, username=OWN, *, disconnected=False):
+    from datetime import datetime
+
+    from app.models import WhatnotConnection
+
+    with app.app_context():
+        org_id = db.session.get(Device, device[0]).organization_id
+        db.session.add(
+            WhatnotConnection(
+                organization_id=org_id,
+                seller_id="900001",
+                username=username,
+                disconnected_at=datetime.now(UTC) if disconnected else None,
+            )
+        )
+        db.session.commit()
+
+
+def win_row(seq, winner="fern_buyer"):
+    body = f"{winner} won the auction for Blue bundle #4 for $3.00"
+    return {**row(seq, body, user=""), "rawText": body, "source": "player"}
+
+
+def test_the_channel_is_kept_on_the_recording_as_plain_text(client, app, auth):
+    b = with_channel([row(1)], " @" + OWN + "​ ")
+    r = client.post("/api/ingest", json=b, headers=auth)
+    assert r.status_code == 200, r.get_json()
+    with app.app_context():
+        assert db.session.scalar(select(Show.channel)) == OWN
+
+
+def test_a_channel_the_laptop_could_not_read_is_accepted_and_stores_nothing(client, app, auth):
+    r = client.post("/api/ingest", json=with_channel([row(1)], ""), headers=auth)
+    assert r.status_code == 200 and r.get_json()["accepted"] == 1
+    with app.app_context():
+        assert db.session.scalar(select(Show.channel)) is None
+
+
+def test_the_first_channel_read_stays_on_the_recording(client, app, auth):
+    client.post("/api/ingest", json=with_channel([row(1)], ""), headers=auth)
+    client.post("/api/ingest", json=with_channel([row(2)], OWN), headers=auth)
+    client.post("/api/ingest", json=with_channel([row(3)], "Maple_Cards_Demo2"), headers=auth)
+    with app.app_context():
+        assert db.session.scalar(select(Show.channel)) == OWN
+
+
+def test_another_sellers_show_is_refused_when_the_shops_seller_is_known(client, app, device, auth):
+    from app.models import Job
+
+    connect_shop(app, device)
+    b = with_channel([row(1, "i will take 2", user="fern_buyer"), win_row(2)], OTHER)
+    r = client.post("/api/ingest", json=b, headers=auth)
+    assert r.status_code == 422  # the laptop sets the lines aside instead of retrying
+    error = r.get_json()["error"]
+    assert "another seller's show" in error
+    assert OTHER not in r.get_data(as_text=True)  # no name is echoed back
+    assert not any(w in error for w in ("channel", "username", "WhatnotConnection"))
+    with app.app_context():
+        # All or nothing: no recording, no line, no win, no parse queued.
+        assert db.session.scalar(select(db.func.count()).select_from(Show)) == 0
+        assert db.session.scalar(select(db.func.count()).select_from(ChatMessage)) == 0
+        assert db.session.scalar(select(db.func.count()).select_from(Job)) == 0
+        d = db.session.get(Device, device[0])
+        assert d.other_channel_lines == 2
+        assert d.other_channel_at is not None
+        assert d.last_seen_at is not None  # the laptop was still seen
+    # Counted again on the next refusal, never stored.
+    client.post("/api/ingest", json=with_channel([row(3)], OTHER), headers=auth)
+    with app.app_context():
+        assert db.session.get(Device, device[0]).other_channel_lines == 3
+        assert db.session.scalar(select(db.func.count()).select_from(Show)) == 0
+
+
+def test_the_shops_own_channel_is_accepted_whatever_its_case(client, app, device, auth):
+    connect_shop(app, device)
+    r = client.post("/api/ingest", json=with_channel([row(1)], "@maple_cards_DEMO"), headers=auth)
+    assert r.status_code == 200 and r.get_json()["accepted"] == 1
+    with app.app_context():
+        assert db.session.get(Device, device[0]).other_channel_lines == 0
+
+
+def test_a_batch_that_names_no_channel_is_accepted_as_before(client, app, device, auth):
+    connect_shop(app, device)
+    # An older extension sends no channel; a newer one that could not read it sends "".
+    assert client.post("/api/ingest", json=batch([row(1)]), headers=auth).status_code == 200
+    r = client.post("/api/ingest", json=with_channel([row(2)], ""), headers=auth)
+    assert r.status_code == 200
+    with app.app_context():
+        assert db.session.scalar(select(db.func.count()).select_from(ChatMessage)) == 2
+
+
+def test_without_a_connected_seller_nothing_is_refused(client, app, device, auth):
+    connect_shop(app, device, disconnected=True)
+    r = client.post("/api/ingest", json=with_channel([row(1)], OTHER), headers=auth)
+    assert r.status_code == 200
+    with app.app_context():
+        assert db.session.scalar(select(Show.channel)) == OTHER
+
+
+def test_the_laptops_list_carries_the_refused_count(app, device):
+    from app import serializers
+
+    with app.app_context():
+        d = db.session.get(Device, device[0])
+        out = serializers.device(d)
+        assert out["otherChannelLines"] == 0 and out["otherChannelAt"] is None
+
+
+# ---------- the page moved on: a report with no lines (A32) ----------
+# When Whatnot moves the laptop's tab on to another channel, the extension tells the server
+# once, in a batch with no lines; that is evidence the show ended (services/whatnot/showend.py).
+
+
+def moved_on(at="2026-10-19T21:30:00.000Z", **kw):
+    b = batch([], **kw)
+    b["show"]["movedOnAt"] = at
+    return b
+
+
+def test_a_laptop_that_saw_the_page_move_on_says_so_with_no_lines(client, app, auth):
+    from datetime import datetime
+
+    from app.models import Job
+
+    assert client.post("/api/ingest", json=batch([row(1), row(2)]), headers=auth).status_code == 200
+    with app.app_context():
+        before = db.session.scalar(select(Show.updated_at))
+        jobs_before = db.session.scalar(select(db.func.count()).select_from(Job))
+    sent = datetime.now(UTC)
+    r = client.post("/api/ingest", json=moved_on(), headers=auth)
+    assert r.status_code == 200, r.get_json()
+    assert r.get_json()["accepted"] == 0
+    with app.app_context():
+        show = db.session.scalar(select(Show))
+        # The server's own time, not the laptop's clock (which said 2026-10-19 21:30).
+        assert show.moved_on_at is not None and show.moved_on_at >= sent
+        assert show.updated_at == before  # no chat arrived: the Live pill must not light up
+        assert db.session.scalar(select(db.func.count()).select_from(ChatMessage)) == 2
+        assert db.session.scalar(select(db.func.count()).select_from(Job)) == jobs_before
+
+
+def test_a_move_for_a_recording_the_server_never_had_makes_nothing(client, app, auth):
+    r = client.post("/api/ingest", json=moved_on(), headers=auth)
+    assert r.status_code == 200
+    with app.app_context():
+        assert db.session.scalar(select(db.func.count()).select_from(Show)) == 0
+
+
+def test_a_move_for_a_deleted_recording_is_dropped(client, app, auth):
+    from app.models import DeletedRecording
+
+    client.post("/api/ingest", json=batch([row(1)]), headers=auth)
+    with app.app_context():
+        show = db.session.scalar(select(Show))
+        db.session.add(DeletedRecording(organization_id=show.organization_id, show_key=SHOW))
+        db.session.commit()
+    r = client.post("/api/ingest", json=moved_on(), headers=auth)
+    assert r.status_code == 200 and r.get_json()["deleted"] is True  # the outbox lets it go
+    with app.app_context():
+        assert db.session.scalar(select(Show.moved_on_at)) is None
+
+
+def test_a_move_report_on_another_sellers_recording_counts_no_lines(client, app, device, auth):
+    connect_shop(app, device)
+    b = moved_on()
+    b["show"]["channel"] = OTHER
+    assert client.post("/api/ingest", json=b, headers=auth).status_code == 422
+    with app.app_context():
+        d = db.session.get(Device, device[0])
+        assert d.other_channel_lines == 0 and d.other_channel_at is None
+
+
+def test_a_batch_with_no_lines_must_be_a_move(client, auth):
+    r = client.post("/api/ingest", json=batch([]), headers=auth)
+    assert r.status_code == 400
+    bad = moved_on(at="yesterday")
+    assert client.post("/api/ingest", json=bad, headers=auth).status_code == 400
 
 
 # ---------- CORS for the extension's service worker ----------

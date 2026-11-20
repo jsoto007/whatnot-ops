@@ -1565,7 +1565,11 @@ def test_what_counts_as_a_show_from_before_the_choice():
     assert sync.history(conn, show("ended", start=chose - 3 * hour, ended=chose - hour)) is True
     # On air when the choice was made, over after it: followed.
     assert sync.history(conn, show("ended", start=chose - hour, ended=chose + hour)) is False
-    assert sync.history(conn, show("live", start=chose - 30 * hour)) is False
+    # Whatnot still calls it live but it began 30 hours before the choice: over by the
+    # 12-hour rule (services/whatnot/showend.py) before the choice, so history. One live
+    # since an hour before the choice is followed.
+    assert sync.history(conn, show("live", start=chose - 30 * hour)) is True
+    assert sync.history(conn, show("live", start=chose - hour)) is False
     assert sync.history(conn, show("scheduled", start=chose + hour)) is False
     # An ended show Whatnot gives no end time for is judged by its start; with no time at
     # all it is history (it never applies itself by accident).

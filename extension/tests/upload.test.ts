@@ -10,12 +10,14 @@ const FIXTURES = path.resolve(__dirname, '..', '..', 'shared', 'fixtures')
 const fixture = (name: string) => JSON.parse(readFileSync(path.join(FIXTURES, name), 'utf8'))
 
 describe('shared contract (same fixtures as the API tests)', () => {
-  it('accepts the valid fixture', () => {
-    expect(validateBatch(fixture('batch-valid.json'))).toEqual({ ok: true })
+  it('accepts every valid fixture', () => {
+    const names = readdirSync(FIXTURES).filter((f) => f.startsWith('batch-valid'))
+    expect(names).toEqual(expect.arrayContaining(['batch-valid.json', 'batch-valid-channel.json', 'batch-valid-channel-unread.json', 'batch-valid-moved-on.json']))
+    for (const n of names) expect(validateBatch(fixture(n)), n).toEqual({ ok: true })
   })
   it('rejects every invalid fixture', () => {
     const names = readdirSync(FIXTURES).filter((f) => f.startsWith('batch-invalid'))
-    expect(names.length).toBeGreaterThanOrEqual(3)
+    expect(names).toEqual(expect.arrayContaining(['batch-invalid-channel-long.json', 'batch-invalid-channel-null.json', 'batch-invalid-empty.json', 'batch-invalid-moved-on-date.json']))
     for (const n of names) expect(validateBatch(fixture(n)).ok, n).toBe(false)
   })
 })
@@ -34,7 +36,7 @@ function row(showId: string, seq: number): CapturedRow {
   }
 }
 
-function memoryStore(rows: CapturedRow[]): UploadStore & { uploaded: Set<string>; parked: Set<string> } {
+function memoryStore(rows: CapturedRow[], meta: (id: string) => { startedAt: string; url?: string; channel?: string } = (id) => ({ startedAt: id, url: '/live/x' })): UploadStore & { uploaded: Set<string>; parked: Set<string> } {
   const uploaded = new Set<string>()
   const parked = new Set<string>()
   const pending = () => rows.filter((r) => !uploaded.has(r.id) && !parked.has(r.id))
@@ -45,7 +47,7 @@ function memoryStore(rows: CapturedRow[]): UploadStore & { uploaded: Set<string>
     pendingCount: async () => pending().length,
     markUploaded: async (ids) => ids.forEach((id) => uploaded.add(id)),
     markParked: async (ids) => ids.forEach((id) => parked.add(id)),
-    show: async (id) => ({ startedAt: id, url: '/live/x' }),
+    show: async (id) => meta(id),
   }
 }
 
@@ -74,6 +76,42 @@ describe('uploadOnce', () => {
     expect(body.show).toEqual({ id: A, startedAt: A, url: '/live/x' })
     expect(body.rows.map((r: CapturedRow) => r.seq)).toEqual([1, 2])
     expect(store.uploaded.size).toBe(3)
+  })
+
+  it('sends each line with the channel read when it was captured, never one the show learned later', async () => {
+    const A = '2026-10-19T20:00:00.000Z'
+    const B = '2026-10-18T20:00:00.000Z'
+    const own = (id: string, seq: number): CapturedRow => ({ ...row(id, seq), channel: 'maple_cards_demo' })
+    // The verifier's P1: the show's record names another seller (learned after the lines were
+    // captured); the lines themselves were captured with the shop's name, or with none read.
+    const rows = [own(A, 1), row(A, 2), own(A, 3), { ...row(A, 4), channel: 'x'.repeat(81) }, row(B, 1)]
+    const store = memoryStore(rows, (id) => ({ startedAt: id, url: '/live/x', channel: 'birch_breaks_demo' }))
+    const fetchFn = vi.fn(async () => ok())
+    expect(await uploadOnce(store, settings, fetchFn)).toEqual({ status: 'sent', sent: 5, remaining: 0 })
+    const bodies = fetchFn.mock.calls.map((c) => JSON.parse((c as unknown as [string, RequestInit])[1].body as string))
+    // One batch per show and channel, each with its lines' own channel.
+    expect(bodies.map((b) => [b.show.id, b.show.channel, b.rows.map((r: CapturedRow) => r.seq)])).toEqual([
+      [A, 'maple_cards_demo', [1, 3]],
+      [A, undefined, [2, 4]], // none read (or not a name: too long): sent with none, as before channels
+      [B, undefined, [1]],
+    ])
+    expect(bodies.filter((b) => b.show.channel === undefined).every((b) => !('channel' in b.show))).toBe(true)
+    // The contract has no channel on a line: it goes on the batch only.
+    for (const b of bodies) expect(validateBatch(b)).toEqual({ ok: true })
+  })
+
+  it("sets aside only the lines the server refuses as another seller's; the shop's own lines go up", async () => {
+    const A = '2026-10-19T20:00:00.000Z'
+    const store = memoryStore([{ ...row(A, 1), channel: 'birch_breaks_demo' }, row(A, 2)])
+    const fetchFn = vi.fn(async (_u: string, init: RequestInit) =>
+      JSON.parse(String(init.body)).show.channel === 'birch_breaks_demo'
+        ? new Response(JSON.stringify({ error: "These chat lines are from another seller's show" }), { status: 422 })
+        : ok(),
+    )
+    const out = await uploadOnce(store, settings, fetchFn as unknown as typeof fetch)
+    expect(out).toMatchObject({ status: 'sent', sent: 1, remaining: 0, parked: 1 })
+    expect([...store.parked]).toEqual([row(A, 1).id])
+    expect([...store.uploaded]).toEqual([row(A, 2).id])
   })
 
   it('caps a batch and reports what is left', async () => {
@@ -146,6 +184,72 @@ describe('uploadOnce', () => {
     expect(body.rows[0].username).toHaveLength(LIMITS.username)
     expect(body.rows[0].rawText).toHaveLength(LIMITS.rawText)
     expect(body.show.url).toBeUndefined()
+  })
+})
+
+describe('the page moved on to another channel (the show ended)', () => {
+  const A = '2026-11-19T20:00:00.000Z'
+  const MOVED = '2026-11-19T22:41:07.000Z'
+
+  /** `memoryStore` plus the moves the server is owed: one per show, after its lines. */
+  function withMoves(rows: CapturedRow[], moves: Record<string, string>) {
+    const store = memoryStore(rows, (id) => ({ startedAt: id, url: '/live/x', channel: 'maple_cards_demo' }))
+    const sent: Record<string, string> = {}
+    const pending = async (id: string) => (await store.pendingRows(10_000)).some((r) => r.showId === id)
+    return Object.assign(store, {
+      sent,
+      unsentMoves: async () => {
+        const out = []
+        for (const [id, at] of Object.entries(moves)) {
+          if (sent[id] === at || (await pending(id))) continue
+          out.push({ id, startedAt: id, url: '/live/x', channel: 'maple_cards_demo', movedOnAt: at })
+        }
+        return out
+      },
+      markMoveSent: async (id: string, at: string) => void (sent[id] = at),
+    })
+  }
+
+  const bodies = (fetchFn: ReturnType<typeof vi.fn>) => fetchFn.mock.calls.map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)))
+
+  it("is said once, in a batch with no lines, after the show's lines", async () => {
+    const store = withMoves([row(A, 1), row(A, 2)], { [A]: MOVED })
+    const fetchFn = vi.fn(async () => ok())
+    const out = await uploadOnce(store, settings, fetchFn)
+    expect(out).toEqual({ status: 'sent', sent: 2, remaining: 0, moved: 1 })
+    const [lines, move] = bodies(fetchFn)
+    expect(lines.rows).toHaveLength(2)
+    expect('movedOnAt' in lines.show).toBe(false) // never on a batch of lines
+    expect(move).toEqual({ version: 1, show: { id: A, startedAt: A, url: '/live/x', channel: 'maple_cards_demo', movedOnAt: MOVED }, rows: [] })
+    expect(validateBatch(move)).toEqual({ ok: true })
+    expect(store.sent[A]).toBe(MOVED)
+    expect(await uploadOnce(store, settings, fetchFn)).toEqual({ status: 'idle' })
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+  })
+
+  it('waits while the show still has lines to send', async () => {
+    const rows = Array.from({ length: BATCH_MAX + 5 }, (_, i) => row(A, i + 1))
+    const store = withMoves(rows, { [A]: MOVED })
+    const fetchFn = vi.fn(async () => ok())
+    expect(await uploadOnce(store, settings, fetchFn)).toEqual({ status: 'sent', sent: BATCH_MAX, remaining: 5 })
+    expect(bodies(fetchFn).every((b) => b.rows.length > 0)).toBe(true)
+    expect(await uploadOnce(store, settings, fetchFn)).toEqual({ status: 'sent', sent: 5, remaining: 0, moved: 1 })
+    expect(bodies(fetchFn).at(-1).rows).toEqual([])
+  })
+
+  it('a server that refuses it for good is not asked again; one it could not reach is', async () => {
+    const store = withMoves([], { [A]: MOVED })
+    const down = vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(uploadOnce(store, settings, down)).rejects.toMatchObject({ kind: 'offline' })
+    expect(store.sent[A]).toBeUndefined()
+    // An API older than the field answers 400: not sent again, and no line is set aside.
+    const old = vi.fn(async () => new Response(JSON.stringify({ error: 'invalid batch' }), { status: 400 }))
+    expect(await uploadOnce(store, settings, old)).toEqual({ status: 'sent', sent: 0, remaining: 0, moved: 0 })
+    expect(store.sent[A]).toBe(MOVED)
+    expect(store.parked.size).toBe(0)
+    expect(await uploadOnce(store, settings, old)).toEqual({ status: 'idle' })
   })
 })
 

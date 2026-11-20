@@ -692,13 +692,19 @@ export interface WhatnotShowInfo {
   endedAt: string | null
   url: string | null
   ordersReadAt: string | null
+  /**
+   * Only on the show's Payments tab: the app treats the show as over although Whatnot gave no
+   * end time. `time`: 12 hours have passed since it began; `laptop`: the show laptop saw the
+   * page move on to another channel. Null when Whatnot's own word stands.
+   */
+  assumedEnd?: { by: 'time' | 'laptop'; at: string | null } | null
 }
 /** Whatnot's orders for a show next to the app's sales (GET /api/shows/:id/whatnot). */
 export interface WhatnotCompare {
   connected: boolean
   mode?: 'shadow' | 'auto'
   /** Who matched the recording to the Whatnot show: by time, a person, or made from Whatnot's record. */
-  link?: 'auto' | 'manual' | 'made' | null
+  link?: 'auto' | 'manual' | 'made' | 'split' | null
   show?: WhatnotShowInfo | null
   choices?: WhatnotShowInfo[]
   /** The show ended and every order was read since: only then is a sale with no order called out. */
