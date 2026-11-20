@@ -756,7 +756,7 @@ export interface ShippingPackage {
 export interface ShippingBuyer {
   buyer: string | null
   items: number
-  /** Items not in any package on Whatnot yet. */
+  /** Items in no package on Whatnot that ships: none at all, or only one Whatnot cancelled (those are listed under that package). */
   unplaced: number
   packages: ShippingPackage[]
   state: ShippingState

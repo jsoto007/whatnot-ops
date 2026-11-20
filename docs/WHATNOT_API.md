@@ -152,14 +152,31 @@ can differ on its own page):
    - a later win after the label exists is "a later win needs its own label";
    - nobody is ready until the show's final orders and parcels were read after it ended
      ("Read again from Whatnot" reads both), so a last win is never left out of its bundle;
-   - once that read is done, a buyer with a paid item that is in no parcel on Whatnot (none at
-     all, their only parcel cancelled, or one item left out of their parcel) is listed in a
-     group of its own, "No parcel on Whatnot": "Whatnot has no parcel for this buyer yet.
-     Create it in Seller Hub, then press Read again from Whatnot." (Javier's call,
-     2026-11-19). The app never makes a parcel, and that buyer gets no label until the
-     parcel is read (a label would close the bundle without the item). Before that read, or
-     for an order whose payment is still being taken, it stays "not in a package on Whatnot
-     yet": the parcel may just not be read. Two open parcels is still "combine them" first;
+   - once that read is done, a buyer with a paid item that is in no parcel on Whatnot that
+     ships (none at all, their only parcel cancelled, or one item left out of their parcel or
+     only in a parcel Whatnot cancelled, beside an open one) is listed in a group of its own,
+     "No parcel on Whatnot". With no parcel at all: "Whatnot has no parcel for this buyer yet"
+     (or "for N of this buyer's items"). "Create it in Seller Hub, then press Read again from
+     Whatnot." (Javier's call, 2026-11-19). When Whatnot cancelled the item's only parcel,
+     which it also does when a parcel's tracking got stuck (that one may have left): "Whatnot
+     cancelled the parcel for … and made no other. Check that parcel in Seller Hub before
+     packing: it may have left already. If it did not, create a new parcel there, then press
+     Read again from Whatnot." The app never makes a parcel, and that buyer gets no label
+     until the parcel is read (a label would close the bundle without the item), and is never
+     marked shipped by the carrier's news of their other parcel. Before that read, or for an
+     order whose payment is still being taken, an item in no parcel at all stays "not in a
+     package on Whatnot yet" (the parcel may just not be read), and one only in a cancelled
+     parcel leaves the buyer as they were ("the show is live", "waiting for the show's final
+     list"), never ready. Two open parcels is still "combine them" first;
+   - Whatnot may keep listing an item under the parcel it cancelled beside the one that took
+     it: the item belongs to the parcel that ships, whichever is read last, and a parcel
+     that does not ship never takes an item from one that does, as long as that parcel
+     still lists it (asked of Whatnot at that moment, since a parcel's time may not change
+     when an item leaves it). "Read again from Whatnot" reads a buyer's other parcel again when
+     that buyer has an item stored on a cancelled one, so a row written before this rule, or
+     an order read again that names the cancelled parcel, mends itself (a parcel with its
+     label made, or with the carrier, only takes such an item back: nothing else about its
+     stored list changes);
    - a parcel that also holds a win from another show that is live right now waits for
      that show to end; pickups never get a label;
    - a label is asked for once: two people pressing together, or a job run twice, still

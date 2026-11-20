@@ -529,7 +529,14 @@ commands.
     audited) puts it back with the labels to print. Once a show was read in full after it
     ended, a buyer with a PAID item in no parcel on Whatnot is `no_parcel` (computed, never
     stored): the Shipping page lists them apart and says to make the parcel in Seller Hub,
-    then Read again. The app never makes parcels and never labels that buyer.
+    then Read again. The app never makes parcels and never labels that buyer. An item counts
+    as in a parcel only when that parcel ships (`shipping._ships`, read by both `_view` and
+    `_state`): an item only in a parcel Whatnot cancelled (also "tracking stuck") is in none,
+    so no label for the buyer's open parcel and no auto "shipped" from their other one. A
+    cancelled parcel never takes an item from one that ships while Whatnot still lists it
+    there (`_held_by_a_parcel_that_ships` asks Whatnot; the stored pointer is not proof), and
+    `_mend` reads the other parcel again for rows already stranded (a labelled one only
+    takes the item back, `_take_back`; at most `MAX_MENDS` calls a read).
   - **Older-orders backfill** (`whatnot/backfill.py`): the end of Whatnot's list counts as the
     floor only after `STOP_AFTER` older orders in a row or two reads ending on the same order;
     a few old orders before an end never finish a run.

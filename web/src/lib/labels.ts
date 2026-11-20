@@ -209,9 +209,26 @@ const SHIPPING_STATE: Record<string, string> = {
   failed: 'Delivery failed',
 }
 export const shippingStateLabel = (s: string): string => SHIPPING_STATE[s] ?? 'Other'
-/** What to do for a buyer Whatnot has no parcel for: `unplaced` of their `items` are in none (0: their only parcel was cancelled). */
-export const noParcelWords = (unplaced: number, items: number): string =>
-  `Whatnot has no parcel for ${unplaced > 0 && unplaced < items ? `${unplaced} of this buyer's items` : 'this buyer'} yet. Create it in Seller Hub, then press Read again from Whatnot.`
+/**
+ * What to do for a buyer Whatnot has no parcel that ships for: `unplaced` of their `items` are in none (none at all, or only one
+ * Whatnot cancelled), `inCancelled` of those only in a cancelled one. All of them: "this buyer". Whatnot cancels a parcel whose
+ * tracking got stuck too, and that one may have left: so a cancelled parcel is never "missing", it is checked first.
+ */
+export const noParcelWords = (unplaced: number, items: number, inCancelled = 0): string => {
+  const who = (n: number) => (n > 0 && n < items ? `${n} of this buyer's items` : 'this buyer')
+  if (inCancelled <= 0) return `Whatnot has no parcel for ${who(unplaced)} yet. Create it in Seller Hub, then press Read again from Whatnot.`
+  const none = unplaced - inCancelled
+  return (
+    `Whatnot cancelled the parcel for ${who(inCancelled)} and made no other` +
+    (none > 0 ? `, and has no parcel for ${none} more ${none === 1 ? 'item' : 'items'} yet` : '') +
+    '. Check that parcel in Seller Hub before packing: it may have left already. If it did not, create a new parcel there, then press Read again from Whatnot.'
+  )
+}
+/** Whatnot cancelled this package (one of its cancelled statuses, "stuck in tracking" among them). */
+export const isCancelledPackage = (s: string): boolean => s.startsWith('cancelled')
+/** Of a buyer's items, the ones only in a package Whatnot cancelled (the server lists them under it). */
+export const itemsInCancelled = (packages: { status: string; items: number }[]): number =>
+  packages.reduce((n, p) => n + (isCancelledPackage(p.status) ? p.items : 0), 0)
 
 /** A package's own status on Whatnot. */
 const PACKAGE_STATUS: Record<string, string> = {
@@ -222,7 +239,7 @@ const PACKAGE_STATUS: Record<string, string> = {
   delivered: 'Delivered',
   failed: 'Delivery failed',
 }
-export const packageStatusLabel = (s: string): string => PACKAGE_STATUS[s] ?? (s.startsWith('cancelled') ? 'Cancelled' : 'Other')
+export const packageStatusLabel = (s: string): string => PACKAGE_STATUS[s] ?? (isCancelledPackage(s) ? 'Cancelled' : 'Other')
 
 /** Where a shipped order's parcel is: every parcel of the buyer in that show, in one phrase. */
 const PARCEL_STATE: Record<string, string> = {

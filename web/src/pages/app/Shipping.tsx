@@ -6,7 +6,7 @@ import { Icon } from '../../components/Icon'
 import { BuyerFlagChip } from '../../components/BuyerFlag'
 import { ApiError, api, apiFile, apiGet, type Shipping as Doc, type ShippingBuyer, type ShippingPackage } from '../../lib/api'
 import { fmtLongDate, fmtWhen, plural } from '../../lib/format'
-import { labelProblemLabel, noParcelWords, orderStatusLabel, packageHoldLabel, packageStatusLabel, shippingStateLabel } from '../../lib/labels'
+import { itemsInCancelled, labelProblemLabel, noParcelWords, orderStatusLabel, packageHoldLabel, packageStatusLabel, shippingStateLabel } from '../../lib/labels'
 
 const CONFIRM = (n: number) =>
   `Make ${plural(n, 'label', 'labels')}?\n\nEach label closes its buyer's bundle on Whatnot: anything they win afterwards ships, and is charged shipping, separately. It cannot be undone.`
@@ -250,8 +250,8 @@ export function Shipping() {
             <section data-testid="shipping-no-parcel">
               <h3>No parcel on Whatnot ({noParcel.length})</h3>
               <p className="small muted">
-                The show was read in full and Whatnot has no parcel for these paid items, so no label can be made for them. Create the parcel in Seller Hub, then press <b>Read again from Whatnot</b>. Sales
-                Ops never makes parcels.
+                The show was read in full and Whatnot has no parcel that ships for these paid items, so no label can be made for them, and their orders are not marked shipped. Each row says what to
+                check in Seller Hub; then press <b>Read again from Whatnot</b>. Sales Ops never makes parcels.
               </p>
               <div className="card flush">
                 <table className="table">
@@ -286,6 +286,9 @@ type PrintProps = { canPrint: boolean; onPrinted: () => void; onUnprint: (id: nu
 
 function BuyerRow({ b, ...print }: { b: ShippingBuyer } & PrintProps) {
   const warn = b.state === 'split' || b.state === 'hold' || b.state === 'failed' || b.state === 'other' || b.state === 'no_parcel'
+  // `unplaced` counts the items only in a cancelled package too (they are listed under it): said apart.
+  const inCancelled = Math.min(b.unplaced, itemsInCancelled(b.packages))
+  const unplaced = b.unplaced - inCancelled
   return (
     <tr data-testid={`ship-${b.buyer}`} className={b.state === 'shipped' ? 'low' : ''}>
       <td className="c-buyer">
@@ -299,10 +302,13 @@ function BuyerRow({ b, ...print }: { b: ShippingBuyer } & PrintProps) {
         </span>
         {b.state === 'no_parcel' ? (
           <div className="small" data-testid="ship-no-parcel">
-            {noParcelWords(b.unplaced, b.items)}
+            {noParcelWords(b.unplaced, b.items, inCancelled)}
           </div>
         ) : (
-          b.unplaced > 0 && b.packages.length > 0 && <div className="muted small">{plural(b.unplaced, 'item is', 'items are')} not in a package yet</div>
+          <>
+            {unplaced > 0 && b.packages.length > 0 && <div className="muted small">{plural(unplaced, 'item is', 'items are')} not in a package yet</div>}
+            {inCancelled > 0 && <div className="muted small">{plural(inCancelled, 'item is', 'items are')} only in a package Whatnot cancelled</div>}
+          </>
         )}
       </td>
       <td>{b.packages.length === 0 ? <span className="muted">—</span> : b.packages.map((p) => <Package key={p.id} p={p} many={b.packages.length > 1} {...print} />)}</td>
