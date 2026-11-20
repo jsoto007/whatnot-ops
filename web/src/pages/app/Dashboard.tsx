@@ -376,6 +376,7 @@ const REASON_WORDS: Record<string, [string, string]> = {
   closed_after_picking: ['item to take out of a package', 'items to take out of a package'],
   swapped_after_picking: ['item to swap in a package', 'items to swap in a package'],
   orders_left_out: ['show with orders left out', 'shows with orders left out'],
+  recording_two_shows: ['recording through two shows', 'recordings through two shows'],
   won_after_shipping: ['win after its order shipped', 'wins after their order shipped'],
   unmatched_payment: ['payment with no sale', 'payments with no sale'],
   cancel_sale: ['possible cancellation', 'possible cancellations'],

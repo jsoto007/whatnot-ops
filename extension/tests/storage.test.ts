@@ -8,6 +8,7 @@ import {
   hasPending,
   kvGet,
   listShows,
+  markMoveSent,
   markParked,
   markUploaded,
   pendingCount,
@@ -15,6 +16,7 @@ import {
   pruneShows,
   putRows,
   resetDbForTests,
+  unsentMoves,
   uploadedCount,
 } from '../src/storage/db'
 import { legacyToRows, migrateLegacyStorage } from '../src/storage/migrate'
@@ -47,6 +49,69 @@ describe('db', () => {
     expect(meta.date).toBe('2026-10-19')
     expect(meta.url).toBe('/live/x')
     expect((await getRows(show.id)).map((r) => r.seq)).toEqual([1, 2, 3])
+  })
+
+  it("keeps the channel the recording started on: a later save never fills or changes it, only the host's choice fills an empty one", async () => {
+    const id = '2026-11-19T20:00:00.000Z'
+    // Start could not read a name: the show has none.
+    expect((await putRows({ id, startedAt: id, channel: '' }, [])).channel).toBe('')
+    // A later page names someone (Whatnot may have moved the tab to another seller): never taken.
+    expect((await putRows({ id, startedAt: id, channel: 'birch_breaks_demo' }, [])).channel).toBe('')
+    expect((await putRows({ id, startedAt: id }, [])).channel).toBe('')
+    // The host pressed Pick chat on the page and it names the shop: now it is the show's.
+    expect((await putRows({ id, startedAt: id, channel: 'maple_cards_demo' }, [], { chosen: true })).channel).toBe('maple_cards_demo')
+    // Never replaced once set, not even by the host's choice, and never cleared.
+    expect((await putRows({ id, startedAt: id, channel: 'birch_breaks_demo' }, [], { chosen: true })).channel).toBe('maple_cards_demo')
+    expect((await putRows({ id, startedAt: id, channel: 'birch_breaks_demo' }, [])).channel).toBe('maple_cards_demo')
+    expect((await putRows({ id, startedAt: id, channel: '' }, [], { chosen: true })).channel).toBe('maple_cards_demo')
+    expect((await getShow(id))?.channel).toBe('maple_cards_demo')
+    // A show first saved by an older content script (no channel) is not late-filled either.
+    const old = '2026-11-18T20:00:00.000Z'
+    expect((await putRows({ id: old, startedAt: old }, [])).channel).toBeUndefined()
+    expect((await putRows({ id: old, startedAt: old, channel: 'birch_breaks_demo' }, [row(old, 1)])).channel).toBeUndefined()
+  })
+
+  it('keeps the channel each line was captured on, as it was captured', async () => {
+    const id = '2026-11-19T20:00:00.000Z'
+    await putRows({ id, startedAt: id, channel: 'maple_cards_demo' }, [{ ...row(id, 1), channel: 'maple_cards_demo' }, row(id, 2)])
+    expect((await getRows(id)).map((r) => r.channel)).toEqual(['maple_cards_demo', undefined])
+    expect((await pendingRows(10)).map((r) => r.channel)).toEqual(['maple_cards_demo', undefined])
+  })
+
+  it('drops a move the tab came back from and recorded after, before the server was told', async () => {
+    // Offline with lines waiting: the page moved on, came back to its own show, and recorded again.
+    const id = '2026-11-19T20:00:00.000Z'
+    const moved = '2026-11-19T22:40:00.000Z'
+    await putRows({ id, startedAt: id, channel: 'maple_cards_demo' }, [{ ...row(id, 1), capturedAt: '2026-11-19T22:30:00.000Z' }])
+    await putRows({ id, startedAt: id, movedOnAt: moved }, [])
+    await putRows({ id, startedAt: id }, [{ ...row(id, 2), capturedAt: '2026-11-19T22:45:00.000Z' }]) // back, recording
+    await markUploaded([`${id}-1`, `${id}-2`])
+    expect(await unsentMoves()).toEqual([]) // never told: the show did not end there
+    expect(await unsentMoves()).toEqual([])
+    // A later move, with nothing recorded after it, is a new one and is owed.
+    const later = '2026-11-19T23:10:00.000Z'
+    await putRows({ id, startedAt: id, movedOnAt: later }, [])
+    expect((await unsentMoves()).map((m) => m.movedOnAt)).toEqual([later])
+  })
+
+  it('keeps when the page last moved on to another channel, and owes the server that until it has it', async () => {
+    const id = '2026-11-19T20:00:00.000Z'
+    const first = '2026-11-19T22:40:00.000Z'
+    const later = '2026-11-19T23:10:00.000Z'
+    await putRows({ id, startedAt: id, channel: 'maple_cards_demo' }, [row(id, 1)])
+    expect(await unsentMoves()).toEqual([])
+    expect((await putRows({ id, startedAt: id, movedOnAt: first }, [])).movedOnAt).toBe(first)
+    expect((await putRows({ id, startedAt: id }, [])).movedOnAt).toBe(first) // a save that names none keeps it
+    expect(await unsentMoves()).toEqual([]) // its line is not sent yet: the lines go first
+    await markUploaded([`${id}-1`])
+    expect(await unsentMoves()).toEqual([{ id, startedAt: id, channel: 'maple_cards_demo', movedOnAt: first }])
+    await markMoveSent(id, first)
+    expect(await unsentMoves()).toEqual([])
+    // It came back, recorded more, and moved on again: owed again.
+    await putRows({ id, startedAt: id, movedOnAt: later }, [])
+    expect((await unsentMoves()).map((m) => m.movedOnAt)).toEqual([later])
+    await markMoveSent(id, first) // a late answer about the first move does not cover the second
+    expect((await unsentMoves()).map((m) => m.movedOnAt)).toEqual([later])
   })
 
   it('keeps the count by adding the rows that were new, never recounting the show', async () => {

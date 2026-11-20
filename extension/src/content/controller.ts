@@ -1,3 +1,4 @@
+import { channelOfPath, readChannel, sameChannel } from '../capture/channel'
 import { Recorder } from '../capture/recorder'
 import { DeclineWatcher, isDeclineBody, outside } from '../capture/decline'
 import { parseWinBody, WinWatcher } from '../capture/player'
@@ -64,12 +65,36 @@ const sellerPageLine = (needs: ShowNeeds | null): string => (!needs?.winnersFrom
  */
 export const QUIET_MS = 120_000
 const QUIET = "No new chat for 2 minutes. If Whatnot's chat is scrolled up, click its arrow to jump to the latest messages."
+const PAUSED = "Paused: this tab isn't on the show's page. Go back to the show and recording carries on, or press Stop."
+/** The page shows another channel's show: Whatnot moves a viewer on when a show ends (capture/channel.ts). */
+const movedOn = (other: string, own: string) =>
+  `The show ended and Whatnot moved this tab to another channel (${other}). Nothing from that show is recorded. ` +
+  `Recording carries on when the tab is back on ${own}'s show, or press Stop.`
+/**
+ * The page names a seller while the recording has no channel (none could be read when the host
+ * chose the page): it may be the shop's own show whose name showed up late, or another seller's
+ * show Whatnot moved the tab to. A doubt, so it is not said to be another channel; only the host
+ * can say which (Pick chat is the button on screen while a recording is paused).
+ */
+const maybeOther = (seen: string) =>
+  `Paused: the channel ${seen} showed up on this tab after recording started, so it may be another seller's show. ` +
+  `Nothing from it is recorded. Check the tab: if it is your show, click Pick chat, then one chat message. Otherwise go back to your show or press Stop.`
 /** Find buyer refreshes at most this often while new lines arrive. */
 export const FIND_MS = 300
 /** Watch words apply this long after the last keystroke. */
 const WORDS_MS = 250
 
 type State = 'idle' | 'picking' | 'recording' | 'stopped'
+
+/**
+ * Whether the tab shows the recording's show (`here`); else the name it shows instead (`other`,
+ * '' when only the address is wrong). `seen`: the channel the page shows, '' when none can be read.
+ */
+interface PageState {
+  here: boolean
+  other: string
+  seen: string
+}
 
 const timeOf = (iso: string) => new Date(iso).toLocaleTimeString()
 
@@ -98,6 +123,28 @@ export class Controller {
   private pageTimer: ReturnType<typeof setInterval> | null = null
   private uploadTimer: ReturnType<typeof setInterval> | null = null
   private startedAt: string | null = null
+  /**
+   * The channel (seller's handle) this recording is of, fixed only when the host chose the page:
+   * the one shown where they clicked a chat line (Start, Pick chat), or the handle in the channel
+   * page's address the recording started at. Never one a page shows later: Whatnot moves a viewer
+   * on to another seller's show when one ends. Kept with the show by the background so a reload
+   * remembers it. '' when none could be read then.
+   */
+  private channel = ''
+  /**
+   * While paused for it: the name the page shows instead of the recording's channel (another
+   * channel), or, when the recording has none, a name that showed up (maybe another channel).
+   */
+  private away = ''
+  /**
+   * When this tab last saw the show's page move on to another channel (Whatnot does that when a
+   * show ends), as an ISO time; '' if never. Kept with the show; the server is told once.
+   */
+  private movedOnAt = ''
+  /** That move is noted: the next one is noted only after recording carried on here again. */
+  private moveNoted = false
+  /** The page check for the lines of one burst (one render of the chat), cleared after it. */
+  private burst: PageState | null = null
   private recorder: Recorder | null = null
   private wins: WinWatcher | null = null
   /** What the web app says this show needs from the laptop; null until it answers (stock/fetch.ts). */
@@ -194,6 +241,8 @@ export class Controller {
       this.log = []
       this.pending = []
       this.startedAt = null
+      this.channel = this.away = this.movedOnAt = ''
+      this.moveNoted = false
       this.synced = 0
       this.state = 'idle'
       await send({ cmd: 'clearSession' }).catch(() => {})
@@ -228,6 +277,10 @@ export class Controller {
       if (session && (session.rows.length || session.recording)) {
         this.log = session.rows
         this.startedAt = session.show.id
+        this.channel = session.show.channel ?? ''
+        // A reload while the page is still on another channel is the same move, not a new one.
+        this.movedOnAt = session.show.movedOnAt ?? ''
+        this.moveNoted = !!this.movedOnAt
         this.synced = session.rows.length
         this.rebuildFlags()
         this.renderWins()
@@ -312,10 +365,21 @@ export class Controller {
     e.preventDefault()
     e.stopPropagation()
     document.removeEventListener('click', this.onPickBound, true)
-    const target = e.target as Element
+    this.picked(e.target as Element)
+  }
+
+  /** The host clicked `target` to show where the chat is. */
+  private picked(target: Element): void {
     const row = findRow(target, scrollParent(target))
-    if (!row) {
-      this.panel.setStatus("Couldn't recognise that as a chat message. Press Start and click a different message.", 'bad')
+    const other = this.otherChannel(row ? chatContainer(row) : null)
+    if (!row || other) {
+      this.panel.setStatus(
+        other
+          ? `This tab shows another channel (${other}), not ${this.channel}'s show, so nothing here is recorded. ` +
+              `To record that show instead, ${this.spot ? 'press Stop, then ' : ''}choose Clear this show in the ⋯ menu and press Start.`
+          : "Couldn't recognise that as a chat message. Press Start and click a different message.",
+        'bad',
+      )
       this.state = this.spot ? 'recording' : this.log.length ? 'stopped' : 'idle'
       this.render()
       return
@@ -336,41 +400,128 @@ export class Controller {
     this.startedAt ??= new Date().toISOString()
     this.spot = spot
     this.state = 'recording'
-    this.saveSpot()
+    // The recording's channel is fixed only by the host's own choice: the page whose chat line
+    // they just clicked (`box`), or the channel page's address they started at. A recording that
+    // has none keeps none until the host chooses again; a page read later never gives it one.
+    const fromAddress = box ? '' : channelOfPath(spot.page)
+    if (!this.channel) this.channel = box ? this.pageChannel(box) : fromAddress
+    this.saveSpot(!!box || !!fromAddress)
     this.pageTimer ??= setInterval(() => this.checkPage(), PAGE_POLL_MS)
-    if (box || this.onShowPage()) this.capture(box)
+    const { here, other } = box ? { here: true, other: '' } : this.pageState()
+    this.away = other
+    this.noteMoveTo(other)
+    if (here) {
+      this.moveNoted = false
+      this.capture(box)
+    }
     else this.paused()
     this.render()
   }
 
-  /** The background keeps the spot so a reload carries on; it also keeps Chrome from discarding this tab. */
-  private saveSpot(): void {
+  /**
+   * The background keeps the spot so a reload carries on; it also keeps Chrome from discarding this
+   * tab. `chosen`: the host just chose this page, so its channel may become the stored show's.
+   */
+  private saveSpot(chosen = false): void {
     const show = this.showRef()
-    if (show) send({ cmd: 'recording', show, spot: this.spot }).catch(() => {})
-  }
-
-  private onShowPage(): boolean {
-    return !!this.spot && showPage(location.pathname) === this.spot.page
+    if (show) send({ cmd: 'recording', show, spot: this.spot, ...(chosen ? { chosen: true as const } : {}) }).catch(() => {})
   }
 
   /**
-   * Whatnot changes pages without a reload. Off the show's page (another show's chat
-   * must never land in this one) capture pauses; back on it, it carries on by itself.
+   * Whether the tab shows this recording's show: its page, and no other name than the recording's
+   * channel. A name other than it, or any name at all when the recording has none, is `other`:
+   * never taken as the recording's (only the host's choice fixes that, startRecording). A page
+   * whose channel cannot be read is judged by its address alone, as before channels were read:
+   * every doubt reads as "not read", never as another channel.
+   */
+  private pageState(): PageState {
+    if (!this.spot) return { here: false, other: '', seen: '' }
+    const seen = this.pageChannel()
+    if (seen && !sameChannel(seen, this.channel)) return { here: false, other: seen, seen }
+    // Paused for a name: only the recording's own channel, read again (or the host's choice),
+    // ends it. A name that cannot be read (a re-render) leaves the other show's chat on screen.
+    if (!seen && this.away) return { here: false, other: this.away, seen }
+    if (showPage(location.pathname) !== this.spot.page) return { here: false, other: '', seen }
+    return { here: true, other: '', seen }
+  }
+
+  /** The channel the page shows ('' when it cannot tell); never read from the chat or our panel. */
+  private pageChannel(box: Element | null = this.recorder?.box ?? null): string {
+    const selectors = [this.recorder?.currentSelector ?? '', ...(this.spot?.selectors ?? [])]
+    return readChannel(document, location.pathname, outside((n) => this.panel.contains(n), box, selectors))
+  }
+
+  /** The page shows a channel other than this recording's: its name, else ''. */
+  private otherChannel(box: Element | null): string {
+    const seen = this.pageChannel(box)
+    return seen && this.channel && !sameChannel(seen, this.channel) ? seen : ''
+  }
+
+  /**
+   * Checked before each chat line or win is kept, so a moment of another channel's show is
+   * not kept while the page check waits for its timer. The page is read once per burst of
+   * lines (one render of the chat, delivered in one go), not once per line: a big chat's first
+   * scan would otherwise search the page hundreds of times. The answer is forgotten at the
+   * next microtask, before any later change of the page can deliver lines. Returns the channel
+   * the page shows ('' when none can be read), which the burst's lines carry, or null when the
+   * tab is not on the recording's show.
+   */
+  private stillHere(): string | null {
+    if (!this.burst) {
+      this.burst = this.pageState()
+      queueMicrotask(() => (this.burst = null))
+    }
+    if (this.burst.here) return this.burst.seen
+    setTimeout(() => this.checkPage(), 0)
+    return null
+  }
+
+  /**
+   * Whatnot changes pages without a reload, and moves a viewer on to another channel's show
+   * when one ends. Off the show's page or on another channel (another show's chat must never
+   * land in this one) capture pauses; back on it, it carries on by itself.
    */
   private checkPage(): void {
     if (!this.spot) return
-    const here = this.onShowPage()
-    if (here && !this.recorder) this.capture(null)
-    else if (!here && this.recorder) {
-      this.endCapture()
-      void this.flush()
+    const { here, other } = this.pageState()
+    if (here) {
+      if (this.recorder) return
+      this.away = ''
+      this.moveNoted = false // recording carries on here: a later move is a new one
+      this.capture(null)
+    } else {
+      if (!this.recorder && other === this.away) return
+      if (this.recorder) {
+        this.endCapture()
+        void this.flush()
+      }
+      this.noteMoveTo(other)
+      this.away = other
       this.paused()
-    } else return
+    }
     this.render()
   }
 
+  /**
+   * The page shows another channel's show: Whatnot moves a viewer on when a show ends. Noted once
+   * per move with the time, and the background told at once (it tells the server after the
+   * show's lines). Evidence the show ended, for the server's own rule (no more than a hint), so
+   * only when the recording has a channel of its own to tell another from: a name that shows up
+   * on a recording with none is a doubt, not a move.
+   */
+  private noteMoveTo(other: string): void {
+    if (!other || !this.channel || this.moveNoted || !this.spot) return
+    this.moveNoted = true
+    this.movedOnAt = new Date().toISOString()
+    this.saveSpot()
+  }
+
   private paused(): void {
-    this.panel.setStatus("Paused: this tab isn't on the show's page. Go back to the show and recording carries on, or press Stop.", 'info')
+    this.panel.setStatus(!this.away ? PAUSED : this.channel ? movedOn(this.away, this.channel) : maybeOther(this.away), 'info')
+  }
+
+  private watching(): string {
+    return this.channel ? `Watching chat on ${this.channel}'s show.` : 'Watching chat.'
   }
 
   private capture(box: Element | null): void {
@@ -378,9 +529,12 @@ export class Controller {
     this.endCapture()
     const rec = new Recorder(this.startedAt!, { ignore: (n) => this.panel.contains(n) })
     rec.on((ev) => {
+      if (rec !== this.recorder) return // a late line from a reader already stopped
       if (ev.type === 'row') {
+        const seen = this.stillHere()
+        if (seen === null) return // another channel's line, or off the show's page: never kept
         this.chatArrived()
-        return this.onRow(ev.row)
+        return this.onRow(ev.row, seen)
       }
       if (ev.type === 'healed') {
         this.lastChatAt = Date.now() // the chat was away, not quiet
@@ -419,7 +573,7 @@ export class Controller {
     this.checkPlayer(true)
     this.stockTimer = setInterval(() => void this.checkStock(), STOCK_POLL_MS)
     void this.checkStock()
-    if (rec.attached) this.panel.setStatus('Watching chat.', 'good')
+    if (rec.attached) this.panel.setStatus(this.watching(), 'good')
     else this.panel.setStatus('Recording. Waiting for the chat to show on this page.', 'info')
     this.renderWins()
   }
@@ -454,14 +608,17 @@ export class Controller {
     this.watchPlayer()
     const rows: CapturedRow[] = []
     const win = this.wins.check(document)
+    if (win && this.stillHere() === null) return // a win in another channel's player is never kept
     if (win) {
       rows.push(win)
       this.declines?.noteWin(win)
     }
     if (this.declines) rows.push(...this.declines.check(document, this.declineScan(timer)))
     if (!rows.length) return
+    const seen = this.stillHere()
+    if (seen === null) return
     for (const row of rows) {
-      this.onRow(row)
+      this.onRow(row, seen)
       // Each win is also a notice beside the panel or the pill, for a few seconds.
       const notice = winNotice(row)
       if (notice) void this.whoWon(row, this.panel.notify(notice))
@@ -480,7 +637,7 @@ export class Controller {
     if (!this.quiet) return
     this.quiet = false
     // Only take back our own words: another status may have replaced them meanwhile.
-    if (this.panel.el('st').textContent === QUIET) this.panel.setStatus('Watching chat.', 'good')
+    if (this.panel.el('st').textContent === QUIET) this.panel.setStatus(this.watching(), 'good')
   }
 
   /**
@@ -603,9 +760,13 @@ export class Controller {
     )
   }
 
-  private onRow(row: CapturedRow): void {
+  /** `channel`: the one the page showed when the line was captured ('' when none could be read). */
+  private onRow(row: CapturedRow, channel: string): void {
     // One numbering for chat lines and player wins, so they never share a seq.
     row.seq = this.log.length + 1
+    // Fixed now, never later: the line goes up with the channel it was captured on (uploader.ts).
+    if (channel) row.channel = channel
+    else delete row.channel
     this.log.push(row)
     this.pending.push(row)
     if (this.matchWord(row.rawText)) this.addFlag(row)
@@ -628,7 +789,9 @@ export class Controller {
 
   // ---------- persistence (background owns IndexedDB) ----------
   private showRef(): ShowRef | null {
-    return this.startedAt ? { id: this.startedAt, startedAt: this.startedAt, url: location.pathname } : null
+    if (!this.startedAt) return null
+    const ref: ShowRef = { id: this.startedAt, startedAt: this.startedAt, url: location.pathname, channel: this.channel }
+    return this.movedOnAt ? { ...ref, movedOnAt: this.movedOnAt } : ref
   }
 
   /**
@@ -722,6 +885,8 @@ export class Controller {
     this.log = []
     this.pending = []
     this.startedAt = null
+    this.channel = this.away = this.movedOnAt = ''
+    this.moveNoted = false
     this.synced = 0
     send({ cmd: 'clearSession' }).catch(() => {})
     this.state = 'idle'

@@ -100,6 +100,19 @@ def touch(device: Device, extension_version: str | None = None) -> None:
         device.extension_version = v
 
 
+def count_other_channel(device: Device, lines: int) -> None:
+    """Count chat lines refused because they came from another seller's show. One atomic
+    UPDATE, so two batches refused at once both count."""
+    db.session.execute(
+        update(Device)
+        .where(Device.id == device.id)
+        .values(
+            other_channel_lines=Device.other_channel_lines + lines,
+            other_channel_at=func.now(),
+        )
+    )
+
+
 # ---------- pairing codes ----------
 #
 # The portal shows a short code; the laptop's extension sends it to /api/pair

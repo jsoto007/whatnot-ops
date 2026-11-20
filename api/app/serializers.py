@@ -64,6 +64,9 @@ def device(d: Device) -> dict:
         "lastSeenAt": d.last_seen_at.isoformat() if d.last_seen_at else None,
         "revoked": d.revoked_at is not None,
         "extensionVersion": d.extension_version,
+        # Chat lines refused because they came from another seller's show (services/ingest.py).
+        "otherChannelLines": d.other_channel_lines or 0,
+        "otherChannelAt": d.other_channel_at.isoformat() if d.other_channel_at else None,
         # Who made the key; None for keys from before that was recorded (or the CLI).
         "createdBy": d.created_by.name if d.created_by else None,
         # A key made before 0018 by someone already disabled or demoted was not revoked
@@ -421,10 +424,13 @@ def reconcile_row(r) -> dict:
     }
 
 
-def whatnot_show(ws) -> dict:
-    """A show as Whatnot has it. `id` is the app's row id (never Whatnot's own)."""
+def whatnot_show(ws, ending=None) -> dict:
+    """A show as Whatnot has it. `id` is the app's row id (never Whatnot's own). With its
+    `ending` (services/whatnot/showend.py), `assumedEnd` says when the app treats the show as
+    over although Whatnot gave no end time: {by: "time" (12 hours after it began) or
+    "laptop" (the show laptop saw the page move on), at}; None otherwise."""
     start = ws.started_at or ws.scheduled_start_at
-    return {
+    out = {
         "id": ws.id,
         "title": ws.title,
         "status": ws.status,
@@ -433,3 +439,11 @@ def whatnot_show(ws) -> dict:
         "url": ws.url,
         "ordersReadAt": ws.orders_synced_at.isoformat() if ws.orders_synced_at else None,
     }
+    if ending is not None:
+        assumed = ending.over and ending.by in ("time", "laptop")
+        out["assumedEnd"] = (
+            {"by": ending.by, "at": ending.at.isoformat() if ending.at else None}
+            if assumed
+            else None
+        )
+    return out

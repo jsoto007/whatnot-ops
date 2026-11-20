@@ -64,7 +64,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from ...db import db
-from ...models import WhatnotOrder, WhatnotShow, WhatnotSyncState
+from ...models import WhatnotOrder, WhatnotSyncState
 from .. import dashboard, jobs
 from . import connection, sync
 from .client import NotFound, WhatnotClient, WhatnotError, client_for, when
@@ -114,16 +114,9 @@ def complete_since(org_id: int) -> datetime | None:
 
 
 def on_air(org_id: int) -> bool:
-    """A show of the shop is live (or paused) and began within `ON_AIR_AT_MOST`: the timer's
-    own rule for holding back its open-order read. A show left "live" for longer was never
-    closed here and holds nothing back."""
-    now = datetime.now(UTC)
-    shows = db.session.scalars(
-        select(WhatnotShow).where(
-            WhatnotShow.organization_id == org_id, WhatnotShow.status.in_(sync.ACTIVE)
-        )
-    ).all()
-    return any((ws.started_at or ws.begins_at or now) >= now - sync.ON_AIR_AT_MOST for ws in shows)
+    """A show of the shop is on air: the timer's own rule for holding back its open-order
+    read (`sync.on_air_now`; a show left "live" past 12 hours is over, see showend.py)."""
+    return sync.on_air_now(org_id)
 
 
 def retry_wait(counts: dict | None) -> timedelta:

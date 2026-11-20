@@ -158,6 +158,13 @@ export const whatnotSyncLabel = (r: string): string => WHATNOT_SYNC[r] ?? 'Other
 const WHATNOT_SHOW_STATUS: Record<string, string> = { scheduled: 'Scheduled', live: 'Live', stopped: 'Paused', ended: 'Ended', cancelled: 'Cancelled' }
 export const whatnotShowStatusLabel = (s: string): string => WHATNOT_SHOW_STATUS[s] ?? 'Other'
 
+/** Why the app treats a show as over when Whatnot gave no end time. */
+const ASSUMED_END: Record<string, string> = {
+  time: 'treated as over: 12 hours have passed since it began and Whatnot gave no end time',
+  laptop: 'treated as over: the show laptop saw Whatnot move on to another channel',
+}
+export const assumedEndLabel = (by: string): string => ASSUMED_END[by] ?? 'treated as over'
+
 /** What Whatnot says about an order's payment. */
 const WHATNOT_PAYMENT: Record<string, string> = { paid: 'paid', pending: 'payment pending', void: 'cancelled', failed: 'payment failed' }
 export const whatnotPaymentLabel = (s: string): string => WHATNOT_PAYMENT[s] ?? 'other'

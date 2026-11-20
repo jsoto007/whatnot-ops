@@ -43,7 +43,6 @@ from ...models import (
     User,
     WhatnotOrder,
     WhatnotOrderItem,
-    WhatnotShow,
     WhatnotVariant,
 )
 from .. import audit, jobs, rules, text
@@ -63,8 +62,6 @@ log = logging.getLogger(__name__)
 CATALOG_EVERY = timedelta(hours=24)
 MAX_PRODUCTS = 2000  # a catalog larger than this is read up to here, and says so
 COMMIT_EVERY = 25  # products per transaction: a long read holds no lock for long
-LIVE = ("live", "stopped")
-LIVE_WITHIN = timedelta(hours=24)  # a "live" show older than this was never closed here
 RESOURCE = "catalog"
 LEARN_AT_ONCE = 10  # listings read per pass for orders the catalog does not know yet
 
@@ -805,20 +802,11 @@ def schedule(org_id: int) -> None:
 
 
 def _show_live(org_id: int) -> bool:
-    """A show of the shop is on air now. A show still marked live a day after it began
-    was never closed here (its ending was missed) and does not count."""
-    recent = datetime.now(UTC) - LIVE_WITHIN
-    return bool(
-        db.session.scalar(
-            select(func.count())
-            .select_from(WhatnotShow)
-            .where(
-                WhatnotShow.organization_id == org_id,
-                WhatnotShow.status.in_(LIVE),
-                func.coalesce(WhatnotShow.started_at, WhatnotShow.scheduled_start_at) >= recent,
-            )
-        )
-    )
+    """A show of the shop is on air now (`sync.on_air_now`): one still marked live 12 hours
+    after it began was never closed on Whatnot and does not count (showend.py)."""
+    from . import sync
+
+    return sync.on_air_now(org_id)
 
 
 def due(org_id: int) -> bool:

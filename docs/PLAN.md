@@ -34,6 +34,57 @@ Why:
 
 The existing `.txt` download stays as a manual fallback.
 
+**Whose show it is (Chat Scraper 1.10.0).** When a show ends, Whatnot moves a
+viewer on to another channel's show in the same tab. The extension reads the
+channel (the seller's handle) off the page (`extension/src/capture/channel.ts`):
+from a `/user/<handle>` address, else from a small selector table that is NOT
+verified against whatnot.com yet. A recording's channel is fixed only when the
+host chooses the page: the one shown where they click a chat line (Start, Pick
+chat), or the handle in the `/user/<handle>` address they started at. A name a
+page shows later is never taken as the recording's (neither by the panel nor by
+the laptop's store). While the page shows a different one, it keeps nothing (each
+line and win is checked before it is kept, and the page every second). The panel
+says the show ended and Whatnot moved on, and recording carries on by itself back
+on the recording's channel. On a recording with no channel (none could be read at
+Start) a name that shows up later is a doubt, not a move: capture pauses, the
+panel asks the host to check the tab and press Pick chat if it is their show
+(which fixes the channel), and the server is not told the show ended. A page
+whose channel cannot be read is judged by its address alone, as before: every
+doubt reads as "not read". Each line carries the channel the page showed when it
+was captured, and the uploader sends one batch per show and channel with that as
+`show.channel` (absent when none was read, as from older builds; `""` is taken
+the same), never a channel learned later. The API keeps it on the recording
+(`shows.channel`, first one wins). When the shop's Whatnot connection names its
+seller and the batch names another (case-insensitive), it refuses the whole batch
+with a 422 in plain words. Nothing of it is stored, and the laptop sets the lines
+aside. The refused lines are counted on the laptop (`devices.other_channel_lines`,
+shown in the Laptops API, not on screen yet). The move onto another channel is also evidence that
+the show ended: the laptop tells the server once, after the show's lines, and the
+server's own time of hearing it can end a show Whatnot gave no end time for, sooner
+than the 12-hour rule (docs/WHATNOT_API.md, "A show Whatnot never ends").
+
+**One recording, two shows.** The laptop keeps one key from Start until "Clear
+this show", so a host who presses Stop after one show and Start on the next (or
+moves from one show's seller page to the next) records both under one key. At
+each read of Whatnot's shows (`services/show_split.py`, called from
+`sync.sync_shows` and the shows webhook, never inside an order apply) a recent
+recording that holds sure wins of two of the shop's shows, each said while that
+show alone was on air, is split in two: a host/platform or player win line, a
+sale tied to one of the show's Whatnot orders, or two or more of the show's own
+buyers chatting count; pre-show chat, a show Whatnot never ended, two laptops on
+one show, a recording a person matched or whose own address names the later show
+never split. It splits at the longest quiet stretch of the laptop's own chat
+between the two shows' wins. Everything after it moves to a new show by
+re-pointing (chat lines, parsed lines, sales, each buyer's Order, questions,
+Whatnot's lots and parcels; a sale made from a Whatnot order goes where the order
+says), never by cancelling, so not a unit moves in stock. Both halves are tied to
+their Whatnot shows for good (`whatnot_link` "split") and a show the app made for
+either folds into its half. The new show carries the laptop's key in
+`shows.recording_key`; ingest stores each later line in the half its capture time
+falls in and never stores a line any half already holds. A buyer's box being
+picked, packed or shipped with a win from the second show stops it, and a person
+is told once in Review ("One recording, two shows").
+
 ### One repo, four parts
 
 `~/Development/code/web-apps/whatnot-ops/` (name to confirm):
@@ -63,6 +114,9 @@ api/           Flask + SQLAlchemy + Alembic + Postgres (REST API, jobs, exports)
 - **Background jobs:** a Postgres-backed job table consumed by a Render
   background worker (`SELECT … FOR UPDATE SKIP LOCKED`). No Redis to run or
   pay for; AI calls, re-parses, exports and the show audit all go through it.
+  A running job's worker beats (`jobs.heartbeat_at`, every 15 s, also during a
+  long job). Any worker's poll gives back a job silent for 90 s, so a dead
+  worker's job returns in under two minutes (`docs/RUNBOOK.md` → Operations).
 - **Email:** Mailgun REST API via `requests`; unset key = log to console.
 - **Deploy:** Render Blueprint (`render.yaml`): web service, background
   worker, Postgres (paid plan, not the 30-day free tier). `.python-version`
