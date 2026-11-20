@@ -779,6 +779,40 @@ def test_an_item_an_open_parcel_and_a_delivered_one_both_list_goes_to_the_open_o
     assert view(app, shop)["toMarkShipped"] == 0
 
 
+@pytest.mark.parametrize("delivered_is_newer", [True, False])
+def test_an_item_two_parcels_with_a_label_both_list_ends_where_a_full_read_puts_it(
+    app, shop, delivered_is_newer
+):
+    """One item listed under a delivered parcel and a labelled one, stored on a cancelled
+    one: the mend gives it to the older parcel, as the full read does (newest first, the last
+    read keeps it). First-come marked an order shipped that a never-stranded buyer's was
+    not (PR 80 second review, probe C)."""
+    a = order(shop, "lani808", "Red bundle")
+    b = order(shop, "lani808", "Blue bundle", 900)
+    c = order(shop, "lani808", LOT, 700)
+    can = parcel(
+        shop, "lani808", [], status="cancelled", created=shop["now"] - timedelta(minutes=58)
+    )
+    ages = (40, 50) if delivered_is_newer else (50, 40)
+    gone_out = parcel(
+        shop, "lani808", [b], status="delivered", created=shop["now"] - timedelta(minutes=ages[0])
+    )
+    parcel(
+        shop,
+        "lani808",
+        [a, c],
+        status="label_generated",
+        created=shop["now"] - timedelta(minutes=ages[1]),
+    )
+    still_lists(shop["fake"], gone_out["id"], a["id"])  # Whatnot lists Red under both
+    read(app, shop)
+    read_shipments(app, shop)
+    never_stranded = (summary(view(app, shop)), view(app, shop)["toMarkShipped"])
+    strand(app, shop, "Red bundle", can["id"])
+    read_shipments(app, shop)
+    assert (summary(view(app, shop)), view(app, shop)["toMarkShipped"]) == never_stranded
+
+
 def lots(app):
     with app.app_context():
         return sorted(

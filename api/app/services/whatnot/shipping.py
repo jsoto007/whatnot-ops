@@ -516,7 +516,9 @@ def _mend(
         if (buyer or "").lower() in stranded:
             store_shipment(org_id, client, data, items=client.shipment_items(whatnot_id))
             n += 1
-    for whatnot_id, buyer in closed_unread.items():
+    # Oldest first: the full read takes parcels newest first, so of two that list one item
+    # the older is read last and keeps it. The mend must end where that read would.
+    for whatnot_id, buyer in reversed(closed_unread.items()):
         if n >= MAX_MENDS:
             return n
         wanted = stranded.get((buyer or "").lower())
