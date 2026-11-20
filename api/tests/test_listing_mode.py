@@ -483,3 +483,146 @@ def test_a_page_of_waiting_wins_asks_for_their_listings_once_not_once_each(
         assert len(waiting) == n
         counts.append(len(seen))
     assert counts[0] == counts[1]  # six waiting wins cost what two do
+
+
+# ---------- a listing that says the winner chooses (Javier's call, 2026-11-19) ----------
+
+CHOICE = "CHOOSE ANY PRODUCT YOU WANT"
+
+
+def waiting(app):
+    """Each sale, oldest first: (buyer, status, product, open "which product is that?"
+    questions, whether Whatnot says it is paid with its product still to pick)."""
+    from app.services import orders
+
+    with app.app_context():
+        found = db.session.scalars(select(Sale).order_by(Sale.id)).all()
+        to_pick = orders.to_pick_ids(s.id for s in found)
+        return [
+            (
+                s.buyer_username,
+                s.status.value,
+                s.sku_id,
+                db.session.scalar(
+                    select(func.count())
+                    .select_from(ReviewItem)
+                    .where(
+                        ReviewItem.sale_id == s.id,
+                        ReviewItem.status == ReviewStatus.open,
+                        ReviewItem.reason == "unmatched_item",
+                    )
+                ),
+                s.id in to_pick,
+            )
+            for s in found
+        ]
+
+
+def test_a_choose_any_listing_linked_to_a_product_names_none_of_its_wins_in_listing_mode(
+    app, client, no_laptop, sign_in
+):
+    s = no_laptop
+    # One "choose any" listing a person linked to Blue, one whose Whatnot SKU is Green's code.
+    by_person, by_code = listing(s, CHOICE), listing(s, f"{CHOICE} #8", sku="GREEN")
+    h = sign_in(s["org"], "manager")
+    assert client.post("/api/whatnot/catalog/read", headers=h).status_code in (200, 202)
+    with app.app_context():
+        row = db.session.scalar(select(WhatnotVariant.id).where(WhatnotVariant.title == CHOICE))
+        coded = db.session.scalar(
+            select(WhatnotVariant).where(WhatnotVariant.title == f"{CHOICE} #8")
+        )
+        assert (coded.sku_id, coded.link) == (s["green"], "code")
+    r = client.patch(f"/api/whatnot/catalog/{row}/link", json={"skuId": s["blue"]}, headers=h)
+    assert r.status_code == 200
+    bought(s, s["live"], "made_up_moe", by_person, minutes=20)
+    bought(s, s["live"], "made_up_nia", by_code, minutes=15)
+    read_show(app, s, s["live"])
+    # Neither link names the win: each waits in Review for the winner's pick, paid on
+    # Whatnot, and no stock moved.
+    expected = [
+        ("made_up_moe", "detected", None, 1, True),
+        ("made_up_nia", "detected", None, 1, True),
+    ]
+    assert waiting(app) == expected
+    assert (level(app, s["blue"]), level(app, s["green"])) == ((5, 0), (4, 0))
+    # Reading the orders again names nothing either.
+    read_show(app, s, s["live"])
+    assert waiting(app) == expected
+    assert (level(app, s["blue"]), level(app, s["green"])) == ((5, 0), (4, 0))
+
+
+def test_a_waiting_choose_any_win_is_not_named_when_its_listing_is_linked_afterwards(
+    app, client, no_laptop, sign_in
+):
+    s = no_laptop
+    lot = listing(s, CHOICE)
+    bought(s, s["live"], "made_up_moe", lot, minutes=20)
+    read_show(app, s, s["live"])
+    assert waiting(app) == [("made_up_moe", "detected", None, 1, True)]
+    h = sign_in(s["org"], "manager")
+    with app.app_context():
+        row = db.session.scalar(select(WhatnotVariant.id))
+    r = client.patch(f"/api/whatnot/catalog/{row}/link", json={"skuId": s["blue"]}, headers=h)
+    assert r.status_code == 200
+    read_show(app, s, s["live"])
+    assert waiting(app) == [("made_up_moe", "detected", None, 1, True)]
+    assert level(app, s["blue"]) == (5, 0)
+
+
+def test_always_use_this_product_is_refused_for_a_choose_any_win_in_listing_mode(
+    app, client, no_laptop, sign_in
+):
+    s = no_laptop
+    lot = listing(s, CHOICE)
+    bought(s, s["live"], "made_up_moe", lot, minutes=19)
+    bought(s, s["live"], "made_up_nia", lot, minutes=17)
+    read_show(app, s, s["live"])
+    h = sign_in(s["org"], "manager")
+    with app.app_context():
+        moe = db.session.scalar(
+            select(ReviewItem.id)
+            .where(ReviewItem.status == ReviewStatus.open)
+            .order_by(ReviewItem.id)
+            .limit(1)
+        )
+    body = {"action": "assign_sku", "skuId": s["green"], "linkListing": True}
+    r = client.post(f"/api/review/{moe}/resolve", json=body, headers=h)
+    assert r.status_code == 200, r.get_json()
+    # Only this winner's pick is named: the other winner picks their own.
+    assert (r.get_json()["listingLinked"], r.get_json()["alsoResolved"]) == (False, 0)
+    assert [w[:3] for w in waiting(app)] == [
+        ("made_up_moe", "paid", s["green"]),
+        ("made_up_nia", "detected", None),
+    ]
+    with app.app_context():
+        assert db.session.scalar(select(WhatnotVariant.sku_id)) is None
+    assert level(app, s["green"]) == (3, 0)
+
+
+def test_the_listing_paths_refuse_a_choose_any_title_whatever_product_they_are_handed(
+    app, no_laptop
+):
+    """`create_sale_from_order` and `name_from_listing` check the win's own title too, so a
+    product handed to them for a "choose any" lot (by any caller) names nothing."""
+    from app.models import SaleStatus
+    from app.services import pipeline
+
+    s = no_laptop
+    with app.app_context():
+        show = db.session.get(Show, s["show"])
+        sale = pipeline.create_sale_from_order(
+            show,
+            buyer="made_up_ola",
+            item_text=f"{CHOICE} #12",
+            quantity=1,
+            price_cents=900,
+            external_order_id="made-up-order-1",
+            ordered_at=datetime.now(UTC),
+            settled=True,
+            sku_id=s["blue"],
+        )
+        assert (sale.sku_id, sale.status) == (None, SaleStatus.detected)
+        assert pipeline.name_from_listing(sale, s["blue"], price_cents=900) is False
+        assert sale.sku_id is None
+        db.session.commit()
+    assert level(app, s["blue"]) == (5, 0)

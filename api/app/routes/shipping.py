@@ -211,3 +211,25 @@ def label(shipment_id: int):
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@bp.post("/shipments/<int:shipment_id>/not-printed")
+@require("orders.fulfill")  # whoever may print a label may say it did not come out
+def not_printed(shipment_id: int):
+    """Put a label back with the ones still to print (the printer jammed, the tab was closed
+    first). Printing it again marks it printed again. Nothing is asked of Whatnot."""
+    row = db.session.get(WhatnotShipment, shipment_id)
+    if row is None or row.organization_id != g.u.organization_id:
+        return jsonify({"error": "package not found"}), 404
+    changed = shipping.mark_not_printed(row.organization_id, row.id)
+    if changed:
+        audit.record(
+            g.u.organization_id,
+            "label.unprinted",
+            user=g.u,
+            target_type="shipment",
+            target_id=row.id,
+            details={"buyer": row.recipient},
+        )
+    db.session.commit()
+    return jsonify({"id": row.id, "changed": changed})

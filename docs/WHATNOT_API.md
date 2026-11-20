@@ -79,7 +79,9 @@ can differ on its own page):
      payment file (unless picking had begun: then a person decides);
    - a failed order followed by a paid one for the same win is a card that was retried
      (Whatnot keeps each attempt as an order: 10 of 20 lots on the 2026-11-13 show): the
-     paid order is the win's payment and the failed one is left out;
+     paid order is the win's payment and the failed one is left out. Their prices may
+     differ by a discount one of them carries ($25.00 declined, $23.70 paid after $1.30
+     off); a payment at exactly the declined price is still taken first;
    - an order and a sale are the same win only when the lot matches by title (or both name
      the same known product), the price agrees when the sale knows what was paid, and the
      order was placed within half an hour of the win line. An order never takes "the
@@ -130,8 +132,9 @@ can differ on its own page):
      still stands. Whatnot's paid order clears it; a failed one closes the sale. A person
      who is sure can close the sale at once. The buyer's order cannot be picked meanwhile.
    - "Payment declined": Whatnot's order (or the stream, in Compare only) closed the sale.
-     "They paid after all" restores it by hand; with orders applied as they arrive, the
-     paid order restores it by itself.
+     "They paid after all" restores it by hand, but not while Whatnot's order for it says
+     the payment failed: Whatnot decides, and when its order says paid, applying the orders
+     restores the sale (with orders applied as they arrive, by itself).
    - "Payment declined: nothing recorded": Whatnot declined a payment for a win the app
      has no sale for. Nothing to undo; if they pay, the paid order records the sale.
 2. **Order slips.** With Whatnot's parcels read, the slips are the final pick list (one row
@@ -150,6 +153,31 @@ can differ on its own page):
    - a later win after the label exists is "a later win needs its own label";
    - nobody is ready until the show's final orders and parcels were read after it ended
      ("Read again from Whatnot" reads both), so a last win is never left out of its bundle;
+   - once that read is done, a buyer with a paid item that is in no parcel on Whatnot that
+     ships (none at all, their only parcel cancelled, or one item left out of their parcel or
+     only in a parcel Whatnot cancelled, beside an open one) is listed in a group of its own,
+     "No parcel on Whatnot". With no parcel at all: "Whatnot has no parcel for this buyer yet"
+     (or "for N of this buyer's items"). "Create it in Seller Hub, then press Read again from
+     Whatnot." (Javier's call, 2026-11-19). When Whatnot cancelled the item's only parcel,
+     which it also does when a parcel's tracking got stuck (that one may have left): "Whatnot
+     cancelled the parcel for … and made no other. Check that parcel in Seller Hub before
+     packing: it may have left already. If it did not, create a new parcel there, then press
+     Read again from Whatnot." The app never makes a parcel, and that buyer gets no label
+     until the parcel is read (a label would close the bundle without the item), and is never
+     marked shipped by the carrier's news of their other parcel. Before that read, or for an
+     order whose payment is still being taken, an item in no parcel at all stays "not in a
+     package on Whatnot yet" (the parcel may just not be read), and one only in a cancelled
+     parcel leaves the buyer as they were ("the show is live", "waiting for the show's final
+     list"), never ready. Two open parcels is still "combine them" first;
+   - Whatnot may keep listing an item under the parcel it cancelled beside the one that took
+     it: the item belongs to the parcel that ships, whichever is read last, and a parcel
+     that does not ship never takes an item from one that does, as long as that parcel
+     still lists it (asked of Whatnot at that moment, since a parcel's time may not change
+     when an item leaves it). "Read again from Whatnot" reads a buyer's other parcel again when
+     that buyer has an item stored on a cancelled one, so a row written before this rule, or
+     an order read again that names the cancelled parcel, mends itself (a parcel with its
+     label made, or with the carrier, only takes such an item back: nothing else about its
+     stored list changes);
    - a parcel that also holds a win from another show that is live right now waits for
      that show to end; pickups never get a label;
    - a label is asked for once: two people pressing together, or a job run twice, still
@@ -163,7 +191,12 @@ can differ on its own page):
      is fetched at that moment and the pages are joined in memory: nothing of them is stored,
      only the time each was printed, so a second press skips it. A label Whatnot does not
      hand over is left out, stays to print, and the others still print. One label can be
-     printed again from its row at any time. Whatnot's packing slips can be left out;
+     printed again from its row at any time. Whatnot's packing slips can be left out.
+     Opening the PDF is what marks a label printed (the app cannot see the printer); a label
+     that did not come out (a jam, the tab closed first) is put back with the ones to print
+     by "Not printed" on its row, one click, for whoever may print (Javier's call,
+     2026-11-19). The next print fetches it from Whatnot again and marks it again; the
+     activity log says who did it;
    - when the carrier has every parcel of a buyer, the order can be marked shipped in one
      press (or is, in "Apply as they arrive") with its tracking number, without clicking
      through picking and packing;
@@ -197,13 +230,23 @@ can differ on its own page):
 - **The dashboard** (same people): when the shop is connected, its money card, the
   Shows table's sales and Top buyers are Whatnot's for the last 7, 30 or 90 days: item
   subtotals of paid orders (no shipping or tax, giveaways counted but never added in),
+  with the shipping buyers paid on those same orders said beside them, and the two
+  together ("Sales with shipping": what Whatnot's own screens read; no tax, and no
+  giveaway's shipping, in it), never added into Sales;
   split by new and returning customers (returning: a paid order from the same Whatnot
   account before the period, as far back as the orders the app has read go), and payment
   pending; failed payments are left out (a failed order is not a sale); the net
   payout and Whatnot's fees from the ledger as above, dated by the ledger's own lines;
   top buyers by what they paid, one row per Whatnot account under the name they use now.
   The packing role, the show pages, the live band and the Excel workbook keep the app's
-  own counts.
+  own counts. In those, a win's money is what Whatnot charged for it (the owner's call,
+  2026-11-19; `dashboard.charged`): its line in the Whatnot order it is tied to, after any
+  discount, whichever arrived first, the win line or the order ($25.00 on the player,
+  $1.25 off: $23.75), else the win's own price. That is the tiles (paid, payment awaited,
+  to pick, sold), the Revenue and Customers sheets, the Buyers page and the top buyers. The
+  sale's own price is never rewritten (a decline and a second laptop's copy of the win are
+  looked up by the price the player showed), so the Sales and Products sheets, the order's
+  total on Orders and the products' money still read it.
 
 **Buyers** (the Buyers page; every role reads it, owners, managers and the packing table
 write the flag and the note):
@@ -256,12 +299,43 @@ link):
   is named the same way when its order arrives (the decision a person would make in
   Review, recorded as made by Whatnot's record), at the price the order says was paid.
   "Choose any" lots are not linked to a product, so the winner still names it in chat; a
-  listing marked "not one of ours" never names a product, not even by its title.
+  listing marked "not one of ours" never names a product, not even by its title. A listing
+  whose title says the winner chooses ("CHOOSE ANY…", `rules.is_choice_title`) names no
+  product even when it is linked to one, by a person or by its SKU, in a show sold either
+  way (Javier's call, 2026-11-19): each of its wins waits in Review for the winner's pick.
+  Only a winner's-pick show reads that pick from chat by itself; in a show sold one
+  product per listing a person names it.
 - **Linking while naming a win.** In a show sold as one product per listing, an unnamed
   win reads "listing not linked". Naming it offers "Always use this product for this
   listing": the listing is linked, the show's other waiting wins of it are named at once,
   and later orders name themselves. Not offered in a winner's-pick show (there the listing
-  is a "choose any" lot) or for a listing marked "not one of ours".
+  is a "choose any" lot), for a win whose title says the winner chooses, or for a listing
+  marked "not one of ours".
+- **A paid win on a listing "not one of ours", its question ignored, is settled**
+  (`orders.settled_unnamed_sales`). When Whatnot says the win is paid, its listing is marked
+  "not one of ours" (and its title is not a "choose any" lot, which must still be named),
+  and a person pressed "Ignore" on its "which product is that?" question with nothing else
+  about it open in Review, it no longer holds the buyer's order back: the order is Ready to
+  pick, also when that win is its only item, and goes through picking, packing and shipping
+  by hand or when the carrier has the parcel. The win itself stays without a product: it
+  holds no stock, is never marked paid or shipped here and is never on the pick list. Its
+  money counts in "Paid revenue" (the tiles, the Revenue and Customers sheets, the Buyers
+  page, the top buyers) at what Whatnot charged for it, its order line after any discount (the owner's
+  call, 2026-11-19; `dashboard._settled_charged`); it is never a win "to pick". Its
+  buyer's order slip is ready to print, its row as it always was (its title, or "No
+  Pick"). The Orders page says "Paid on Whatnot · not one of our products". Linking that
+  listing to a product asks the question again at once and the order waits for it (the
+  next orders read names it by the listing, and the stock moves then); an order already
+  being picked or packed keeps its step and waits there. Once the order has shipped with
+  the win in it, linking the listing changes nothing: it is not asked again, never named
+  from the listing, and stays settled. Cancelled or declined on Whatnot while its order is
+  being picked, packed or shipped (and it was on the order when picking began), it opens
+  the same "take it out of the package" note as a named item; nothing goes back on the
+  shelf (paid after all on a retried card, the note is settled and the win waits for its
+  product again). An order whose only item that was then stays where it is, exactly like an order
+  whose only named item was cancelled after picking began (neither can be packed or sent
+  back a step today). Deleting a laptop's recording keeps a person's "Ignore" of a win
+  that stays (one tied to a Whatnot order).
 - **A listing made during a show** is read when its first order is: the daily read pauses
   while a show is on air. A listing Whatnot no longer has is kept as it was sold, so a
   person can still say which product it was.
@@ -353,9 +427,18 @@ The probe, then the first connection in "Compare only" (reads only; one show com
   only replaced by newer GENERATED ones, never by "still working", "will not be calculated"
   or an answer with nothing readable in it.
 - **Late orders.** A card declined at the win and retried is a new order, placed after the
-  show ended. The ended show's orders are listed again at 1, 6 and 24 hours after the end
-  (`sync.LATE_READS`), not while a show is on air. An order first stored by a parcel read is
-  queued for apply like any other (`sync.queue_apply`). The parcels of a show that ended are
+  show ended. The ended show's orders are listed again at 1, 6 and 24 hours after the end,
+  then at two and three days (`sync.LATE_READS`), not while a show is on air. Each of these
+  reads queues the show's apply, so a COMPLETED order Whatnot cancels days later closes its
+  sale by the usual rules (restocked; a "closed after picking" note instead once picking
+  began), even when another read (the backfill's daily top-up, which applies nothing) stored
+  the cancel first. The open-order re-read only asks orders Whatnot had not settled. The
+  three days are `sync.PARCELS_AFTER`, the days a show's parcels are read while it is packed,
+  and as long as its results are asked again; a later cancel comes only by webhook. Listing
+  costs a call per 50 orders (some 10 to 13 calls a read at this shop's 6,000 orders a
+  month), where asking each completed order by id would cost a call each. An order first
+  stored by a parcel read is queued for apply like any other (`sync.queue_apply`). The
+  parcels of a show that ended are
   asked for once its orders are read in full after the end (`sync._parcels_owed`), not while
   another show is on air: nothing is marked asked meanwhile, so the first pass after that
   show asks for them.
@@ -376,7 +459,14 @@ The probe, then the first connection in "Compare only" (reads only; one show com
   same win, placed AFTER the failed orders, and one such payment holds back the attempts of
   ONE buyer's win (a card declined twice, then paid), the buyer whose attempt is the closest
   before it (`orders._hold_for_nameless`); the other buyers' are declines. A payment with no
-  order time holds them only when they are all one buyer's.
+  order time holds them only when they are all one buyer's. An order with an item naming no
+  listing or in a state the app does not know, and an order the app holds no items for
+  (Whatnot answered it before its items; `sync.repair_items` asks again, except for a
+  cancelled or failed one), is counted too (`unreadable` items, `noItems` orders) and the
+  same `orders_left_out` item names the first three by Seller Hub's order number and buyer
+  (`#… from …`) and counts the rest; the Payments tab says the same. The names keep the
+  orders' own order, so applying the same orders again rewrites the one item with the same
+  words and a notice a person dismissed is not opened again for them.
 - **Unverified.** Whether Whatnot's results `orders_count` includes giveaway orders, and
   whether real orders ever come back with no buyer, are not known; the repair above does not
   rely on the first.

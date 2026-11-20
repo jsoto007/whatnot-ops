@@ -430,6 +430,9 @@ def apply_proposal(item: ReviewItem, *, actor: Actor, user=None) -> ReviewItem:
         pipeline.refuse_ignoring(item)  # a paid win to pick is named, never ignored
         item.status = ReviewStatus.dismissed
         item.resolution = {"action": "dismiss", "by": actor.type}
+        # Ignoring a paid win's question on a listing "Not one of ours" settles it: its
+        # order is derived again (`orders.settled_unnamed_sales`), as for a person's Ignore.
+        pipeline.refresh_order(item.sale)
     else:
         raise pipeline.ReviewError(f"nothing to apply for {action!r}")
     item.resolved_at = datetime.now(UTC)

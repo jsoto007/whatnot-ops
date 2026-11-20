@@ -23,6 +23,8 @@ from ..models import (
     Show,
     Sku,
     WhatnotConnection,
+    WhatnotOrder,
+    WhatnotOrderItem,
 )
 
 STANDING = (SaleStatus.detected, SaleStatus.reserved, SaleStatus.paid, SaleStatus.fulfilled)
@@ -38,19 +40,91 @@ def _qty(status_filter):
     )
 
 
-def _rev(status_filter):
-    return func.coalesce(
-        func.sum(
+def charged():
+    """SQL, per sale: what Whatnot charged for the win, in cents. That is its line in its
+    own Whatnot order (the order it is tied to, `external_order_id`, and the line tied to
+    it, `WhatnotOrderItem.sale_id`): units × Whatnot's unit price, which is after any
+    discount. Else, or when Whatnot gave the line no price, the win's own quantity × price.
+
+    The owner's call (2026-11-19): the app's own money (the tiles, the Revenue and Customers
+    sheets, the Buyers page, the top buyers) is what Whatnot charged, the same whichever
+    arrived first, the win line ($25.00 on the player) or the order ($23.75 after $1.25
+    off). The sale's stored price is never rewritten for it: a decline and a second
+    laptop's copy of the win are looked up by the price the player showed. A declined
+    attempt's line can name the sale too; only the order the sale is tied to counts.
+    A correlated subquery on the sale's own lines (`ix_whatnot_order_items_sale`), so any
+    query that sums sales takes it with no query of its own."""
+    line = (
+        select(
             case(
                 (
-                    Sale.status.in_(status_filter),
-                    Sale.quantity * func.coalesce(Sale.price_cents, 0),
+                    func.count() == func.count(WhatnotOrderItem.unit_price_cents),
+                    func.sum(WhatnotOrderItem.quantity * WhatnotOrderItem.unit_price_cents),
                 ),
-                else_=0,
+                else_=None,
             )
-        ),
+        )
+        .select_from(WhatnotOrderItem)
+        .join(WhatnotOrder, WhatnotOrder.id == WhatnotOrderItem.order_id)
+        .where(
+            WhatnotOrderItem.sale_id == Sale.id,
+            WhatnotOrder.organization_id == Sale.organization_id,
+            WhatnotOrder.whatnot_id == Sale.external_order_id,
+        )
+        .correlate(Sale)
+        .scalar_subquery()
+    )
+    return func.coalesce(line, Sale.quantity * func.coalesce(Sale.price_cents, 0))
+
+
+def charged_cents(sale_ids) -> dict[int, int]:
+    """sale id → what Whatnot charged for it (`charged`), for sums made outside SQL. One
+    query; none for no sales."""
+    ids = list(sale_ids)
+    if not ids:
+        return {}
+    return {
+        sid: int(cents)
+        for sid, cents in db.session.execute(select(Sale.id, charged()).where(Sale.id.in_(ids)))
+    }
+
+
+def paid_by_sale(sales: list[Sale]) -> dict[int, int]:
+    """sale id → the money of it that counts as paid, for these sales: a paid one, and a
+    win settled with no product (`_settled_charged`), each at what Whatnot charged
+    (`charged`). What the tiles' "Paid revenue" adds up, for the workbook's per-buyer sheet.
+    At most three queries."""
+    paid = [s.id for s in sales if s.status in PAID]
+    out = charged_cents(paid)
+    waiting = [s.id for s in sales if s.status is SaleStatus.detected and s.sku_id is None]
+    if waiting:
+        out |= {s.id: cents for s, cents in _settled_charged(Sale.id.in_(waiting))}
+    return out
+
+
+def _rev(status_filter):
+    return func.coalesce(
+        func.sum(case((Sale.status.in_(status_filter), charged()), else_=0)),
         0,
     )
+
+
+def _settled_charged(*where) -> list[tuple[Sale, int]]:
+    """The wins settled with no product (`orders.settled_unnamed_sales`, narrowed by
+    `where`), each with what Whatnot charged for it (`charged`: its line in Whatnot's paid
+    order, units × the unit price after any discount, else the win's own price).
+
+    The owner's call (2026-11-19): that money counts in "Paid revenue" (the tiles, the
+    Revenue sheet, the Buyers page, the top buyers), though the win is never paid here,
+    holds no stock and is no win to pick. Added only here. At most two queries."""
+    from .orders import settled_unnamed_sales
+
+    sales = settled_unnamed_sales(*where)
+    if not sales:
+        return []
+    # A settled win's order is paid on Whatnot by its rule (`orders._paid_unnamed`).
+    cents = charged_cents(s.id for s in sales)
+    return [(s, cents[s.id]) for s in sales]
 
 
 def show_tiles(show: Show) -> dict:
@@ -69,12 +143,21 @@ def tiles_for(shows: list[Show]) -> list[dict]:
     # A win Whatnot says is paid whose product is still to pick (the winner picks in chat):
     # not paid here yet, but its money is in. Shown apart, never added to "paid" (every
     # screen, the sheet, the average per buyer and the Buyers page read that); only "sold"
-    # counts it. One query for every show (`orders.to_pick_sales` holds the rule).
+    # counts it. One query for every show (`orders.to_pick_sales` holds the rule), and one
+    # for what Whatnot charged for them (`charged`), so naming one moves it to "paid" at the
+    # same money.
     to_pick_n: Counter = Counter()
     to_pick_cents: Counter = Counter()
-    for sale in to_pick_sales(Sale.show_id.in_(ids)):
+    waiting = to_pick_sales(Sale.show_id.in_(ids))
+    to_pick_charged = charged_cents(s.id for s in waiting)
+    for sale in waiting:
         to_pick_n[sale.show_id] += 1
-        to_pick_cents[sale.show_id] += sale.quantity * (sale.price_cents or 0)
+        to_pick_cents[sale.show_id] += to_pick_charged[sale.id]
+    # A win settled with no product (paid on Whatnot, its listing "Not one of ours", its
+    # question ignored): its money IS paid, at what Whatnot charged (`_settled_charged`).
+    settled_cents: Counter = Counter()
+    for sale, cents in _settled_charged(Sale.show_id.in_(ids)):
+        settled_cents[sale.show_id] += cents
     sale_rows = {
         r.show_id: r
         for r in db.session.execute(
@@ -162,6 +245,7 @@ def tiles_for(shows: list[Show]) -> list[dict]:
             return int(getattr(row, name)) if row is not None else 0
 
         ev, od = events[show.id], orders[show.id]
+        paid = n("paid") + settled_cents[show.id]
         out.append(
             {
                 "showId": show.id,
@@ -183,14 +267,14 @@ def tiles_for(shows: list[Show]) -> list[dict]:
                 "noPicks": int(no_picks.get(show.id, 0)),
                 "noWinner": int(ev.get(EventKind.no_pick, 0)),
                 "cancelled": n("lost"),
-                "revenuePaidCents": n("paid"),
+                "revenuePaidCents": paid,
                 "revenuePendingCents": n("pending"),
                 # Paid on Whatnot, product to pick: how many such wins, and their money.
                 "toPick": to_pick_n[show.id],
                 "revenueToPickCents": to_pick_cents[show.id],
                 # Everything sold so far (the live band): paid, awaiting the payment file,
                 # and paid on Whatnot with a product to pick. Added here, never on a screen.
-                "revenueSoldCents": n("paid") + n("pending") + to_pick_cents[show.id],
+                "revenueSoldCents": paid + n("pending") + to_pick_cents[show.id],
                 "orders": {k.value: int(v) for k, v in od.items()},
                 "toFulfil": int(
                     sum(
@@ -221,10 +305,14 @@ def _whatnot_giveaways_for(shows: list[Show]) -> dict[int, int]:
     types it; on 2026-11-13 nobody did (0 here against Whatnot's 8). Like the order slips,
     Whatnot's count replaces the chat's when it has one, and it belongs to the first of the
     Whatnot show's app shows only: a second laptop's recording of the same show counts
-    none (0, not its chat's), so the show's giveaways are never counted twice."""
+    none (0, not its chat's), so the show's giveaways are never counted twice.
+
+    A show whose orders were all read after it ended (`whatnot.orders._complete`, the rule
+    that lets a sale with no order mean something) and that lists no giveaway has 0, not
+    its chat's count: "read, none" is Whatnot's answer, unlike "not read yet"."""
     from ..models import WhatnotOrder, WhatnotShow
     from .whatnot import sync
-    from .whatnot.orders import GIVEAWAY
+    from .whatnot.orders import GIVEAWAY, _complete
 
     linked = {s.id: s.whatnot_show_id for s in shows if s.whatnot_show_id}
     if not linked:
@@ -246,13 +334,20 @@ def _whatnot_giveaways_for(shows: list[Show]) -> dict[int, int]:
             .group_by(WhatnotShow.id)
         ).all()
     )
+    read_in_full = {
+        ws.id
+        for ws in db.session.scalars(
+            select(WhatnotShow).where(WhatnotShow.id.in_(set(linked.values())))
+        )
+        if _complete(ws)
+    }
     first: dict[int, int] = {}
     for org_id in {s.organization_id for s in shows if s.id in linked}:
         first |= sync.first_recordings(org_id, set(linked.values()))
     out = {}
     for sid, ws in linked.items():
         n = int(per_ws.get(ws, 0))
-        if n:
+        if n or ws in read_in_full:
             out[sid] = n if first.get(ws) == sid else 0
     return out
 
@@ -356,10 +451,21 @@ def top_buyers(org_id: int, *, show_id: int | None = None, limit: int = 10) -> l
     )
     if show_id:
         q = q.where(Sale.show_id == show_id)
-    return [
+    out = [
         {"buyer": b, "items": int(n), "paidCents": int(r), "shows": int(s)}
         for b, n, r, s in db.session.execute(q).all()
     ]
+    # A win settled with no product is paid, at what Whatnot charged (`_settled_charged`).
+    rows = {r["buyer"]: r for r in out}
+    if rows:
+        for sale, cents in _settled_charged(
+            Sale.organization_id == org_id,
+            Sale.buyer_username.in_(list(rows)),
+            *([Sale.show_id == show_id] if show_id else []),
+        ):
+            if sale.buyer_username in rows:
+                rows[sale.buyer_username]["paidCents"] += cents
+    return out
 
 
 def held_since(org_id: int, name_col, date_col):
@@ -411,7 +517,7 @@ def buyer_figures(
         q = q.where(name.in_(names))
     if before is not None:
         q = q.where(Show.show_date < before)
-    return {
+    out = {
         key: {
             "username": written,
             "items": int(items),
@@ -422,6 +528,28 @@ def buyer_figures(
         }
         for key, written, items, paid, dates, cancelled, failed in db.session.execute(q).all()
     }
+    # A win settled with no product is paid, at what Whatnot charged (`_settled_charged`),
+    # under the same rules as the rest: whoever holds the name now, shows before `before`.
+    if out:
+        kept = (
+            select(Show.id)
+            .where(
+                Show.id == Sale.show_id,
+                held_since(org_id, Sale.buyer_username, Show.show_date),
+                *([Show.show_date < before] if before is not None else []),
+            )
+            .exists()
+        )
+        for sale, cents in _settled_charged(
+            Sale.organization_id == org_id,
+            Sale.buyer_username != "",
+            kept,
+            *([name.in_(names)] if names is not None else []),
+        ):
+            row = out.get(sale.buyer_username.lower())
+            if row is not None:
+                row["paidCents"] += cents
+    return out
 
 
 def buyer_gifts(org_id: int, names: list[str]) -> int:
@@ -792,6 +920,8 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
 
     Whatnot decides what was sold and whether it was paid, so nothing here is the app's
     own count of sales. Sales are the orders' item subtotals (no shipping, no tax);
+    the shipping buyers paid on those same orders is said beside them, with the two
+    together (what Whatnot's own screens read: sales plus shipping), never added into Sales;
     giveaways are counted, never added in. Failed payments are left out (Javier's call,
     2026-11-14): a failed order is not a sale. Only the shop's currency is added up: orders
     in any other are counted and said. The net is the ledger's (`results.figures`), never
@@ -820,7 +950,7 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
     (
         paid_n, paid_cents, priced_n, pending_n, pending_cents,
         cancelled_n, cancelled_cents, giveaways, other,
-        paid_discount, cancelled_discount,
+        paid_discount, cancelled_discount, shipping,
     ) = db.session.execute(
         select(
             *bucket(paid),
@@ -834,6 +964,9 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
             # item subtotals are already after it, its "Gross Sales" is before it.
             func.coalesce(func.sum(o.discount_cents).filter(mine & sale & o.status.in_(paid)), 0),
             func.coalesce(func.sum(o.discount_cents).filter(mine & sale & o.status.in_(void)), 0),
+            # The shipping the same paid orders charged their buyers (an order Whatnot gave
+            # none for adds nothing): beside the sales, never in them.
+            func.coalesce(func.sum(o.shipping_cents).filter(mine & sale & o.status.in_(paid)), 0),
         ).where(*in_period)
     ).one()  # fmt: skip
     items = db.session.scalar(
@@ -902,6 +1035,11 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
             + int(cancelled_discount),
             "giveaways": int(giveaways),
             "otherCurrencyOrders": int(other),
+            # What Whatnot's own screens add to the item prices: the shipping buyers paid on
+            # the same paid orders (no giveaway's, no other currency's), and the two together,
+            # so the client can find the figure he reads there. Sales itself stays the items.
+            "shippingCents": int(shipping),
+            "withShippingCents": int(paid_cents) + int(shipping),
         },
         "customers": customers,
         "ledger": ledger,

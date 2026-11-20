@@ -11,8 +11,9 @@ const nameOf = (s: { productName: string; name: string }) => `${s.productName} $
 /**
  * Change one of a standing sale's products, or give the sale one more ("two for one"). The
  * old product goes back to stock and the new one leaves it; the price the buyer paid stays.
- * Once the order is being picked nothing is put back by itself: the answer says so, and
- * Review gets a note for the packer.
+ * Once the order is being picked the old product is still put back in stock at once: the
+ * answer says so, and Review gets a note for the packer to swap the unit and put the old one
+ * back on the shelf (never to count it in again).
  */
 export function ChangeProduct({
   sale,
@@ -52,7 +53,7 @@ export function ChangeProduct({
         await onDone(r.picked ? `${quantity} × ${to} added to ${buyer}'s ${lotText(sale)}. Picking had begun: add it to the package.` : `${quantity} × ${to} added to ${buyer}'s ${lotText(sale)}.`)
       } else {
         const r = await api<{ picked: boolean }>('PATCH', `/api/orders/sales/${sale.id}/product`, { skuId: Number(skuId), ...(product?.rowId ? { rowId: product.rowId } : {}) })
-        await onDone(r.picked ? `${buyer}'s ${lotText(sale)} is now ${to}. Picking had begun: swap it in the package and count the ${now} back in.` : `${buyer}'s ${lotText(sale)} is now ${to}. The ${now} is back in stock.`)
+        await onDone(r.picked ? `${buyer}'s ${lotText(sale)} is now ${to}. Picking had begun: swap it in the package and put the ${now} back on the shelf. It is already back in stock.` : `${buyer}'s ${lotText(sale)} is now ${to}. The ${now} is back in stock.`)
       }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Could not save that. Try again.')

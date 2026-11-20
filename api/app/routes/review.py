@@ -200,12 +200,14 @@ def resolve(item_id: int):
             }
         ), 400
     # "Always use this product for this listing": only where each listing is one product
-    # (in a winner's-pick show the listing is a "choose any" lot), and only for someone who
-    # may link listings.
+    # (in a winner's-pick show the listing is a "choose any" lot), never for a title that
+    # says the winner chooses, in either mode (one winner's pick is no product for the
+    # listing), and only for someone who may link listings.
     link_listing = (
         action == "assign_sku"
         and bool(body.get("linkListing"))
         and item.sale is not None
+        and not rules.is_choice_title(item.sale.item_text or "")
         and allowed(g.u.role, "inventory.write")
         and sale_mode.of_show_id(item.sale.show_id) == sale_mode.LISTING
     )

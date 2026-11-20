@@ -134,13 +134,16 @@ commands.
   Postgres enums, drop the enum types too (see 0004).
 - **Orders** derive `open / paid / cancelled` from their sales
   (`services/orders.refresh()`), and only `advance()` moves them through
-  fulfilment, which requires every item paid. Whatnot charges the winner at
+  fulfilment, which requires every item paid or settled with no product (see "Settled
+  wins" below). Whatnot charges the winner at
   the win, so `pipeline.autopay()` marks every won sale paid at once (orders
   never wait for payment). A decline — read by the extension from Whatnot's
   player / Sold tab (`extension/src/capture/decline.ts`, unverified against a
   real decline), said by the host/platform, or in the Seller Hub CSV — closes
   it `payment_failed` and restocks unless picking began; a person may restore
-  it once in Review. A viewer's chat line never pays or declines anything.
+  it once in Review, except while Whatnot's own order for it says failed
+  (`pipeline.refuse_restoring`, Javier's call 2026-11-20: Whatnot decides; its paid
+  order restores the sale). A viewer's chat line never pays or declines anything.
   **Where Whatnot's orders are applied as they arrive** (`whatnot/orders.decides(show)`:
   mode "auto", the recording matched to a followed show, a token that can read orders
   with their buyers), only Whatnot's order or a person declines a sale: a decline read
@@ -202,9 +205,14 @@ commands.
   ledger ("sale" / "sale_repaid", the sale's id), a row opened later is keyed
   "<sale id>:<row id>" (`sale_items.key`), so `pipeline.set_sale_status`, `_repay` and
   `units_out` loop over `sale_items.rows(sale)`. Only `sale_items` makes or closes rows
-  (`change`, `add`, `remove`: order locked, then the sale; once the order is being picked
-  nothing is put back by itself and Review gets a `swapped_after_picking` note that no
-  decline or cancel sweeps away). `Sale.sku_id` is the first open row's product. Anything
+  (`change`, `add`, `remove`: order locked, then the sale). **Changing a product**
+  (`change`) puts the old one back in stock at the change, at any step short of shipped
+  (Javier's call, 2026-11-19, replacing "nothing is put back by itself"), under the cancel's
+  own ledger key (row round + row key), so once only; a shipped order's sale cannot be
+  changed. After picking began the sale is flagged and Review gets a `swapped_after_picking`
+  note that no decline or cancel sweeps away: swap the unit in the package and put the old
+  one back on the shelf, never "count it in again". Taking a product off (`remove`) after
+  picking still leaves the count-back to a person. `Sale.sku_id` is the first open row's product. Anything
   that counts units or money per product reads `sale_items.lines()` (SQL) or
   `sale_items.products(sale)` (Python), never `Sale.sku_id`/`Sale.quantity`: a win's price
   is split evenly in whole cents over its products, the odd cents to the first
@@ -349,21 +357,32 @@ commands.
     it are never starved by it. The pass finishes first; a failed orders read is raised at
     its END (so the job is retried), never in the middle of it. Never let one failing read
     stop the reads behind it.
-  - An ended show's orders are listed again at 1, 6 and 24 hours after the end
-    (`LATE_READS`), because a declined card's retry is a NEW order; whoever stores an order the
+  - An ended show's orders are listed again at 1, 6 and 24 hours and at two and three days
+    after the end (`LATE_READS`, ending at `PARCELS_AFTER`), because a declined card's retry
+    is a NEW order and Whatnot can cancel a completed order days later. Each late read queues
+    the show's apply even when nothing looks changed (another read, the backfill's top-up, may
+    have stored the cancel first). After three days only the `orders.updated` webhook brings
+    a cancel. Whoever stores an order the
     app had not seen (a list read, a webhook, a parcel) queues its apply through
     `sync.queue_apply`. Whatnot's GENERATED show results are asked again until 3 days after the
     show (`results.results_due`) and are only replaced by newer GENERATED figures, never by
     "still working", "will not be calculated" or an empty answer.
-  - None of these re-reads runs while a show is on air (`sync.on_air`): the live show's
-    orders need the 8 req/s budget.
+  - None of these re-reads is started by the timer while a show is on air (`sync.on_air`):
+    the live show's orders need the 8 req/s budget. A show-ended webhook or a person's
+    "Read again" still reads at once.
   - **An order the app cannot read never stops the show** (no buyer, no listing, a state it
     does not know): it is left out, counted in `info`, and Review says so in words
     (`orders_left_out`); only a show where more than one order in five has no buyer is "blind"
-    and applies nothing. Never word that as the token's fault. While a paid order has no buyer,
+    and applies nothing. Never word that as the token's fault. While a paid order has no buyer
+    or no items yet (`whatnot/orders._may_hide`),
     no sale is called out as unpaid, none gives way to another win, **and a failed order is
     not a decline when a paid order with no buyer could be its retry** (`MAYBE_RETRIED`):
-    undoing a sale a buyer paid is worse than leaving a decline for a person.
+    undoing a sale a buyer paid is worse than leaving a decline for a person. That hold is
+    for ONE buyer's attempts only (`_hold_for_nameless`: the closest failed attempt before
+    the payment, plus that buyer's other attempts at the same win), never several buyers'.
+    An order held with no items yet is counted too (`info.noItems`), and the show's one
+    `orders_left_out` item names the first three left-out orders by Seller Hub order number
+    and buyer and counts the rest; it clears itself once the items come.
 - **Whatnot listings** (`services/whatnot/catalog.py`, `/app/inventory/whatnot`). The
   shop's Whatnot inventory is mirrored (`whatnot_variants`) and each listing linked to a
   SKU: by an exact code match, or by a person ("off" = none of ours, never re-linked).
@@ -471,6 +490,59 @@ commands.
   `pipeline.priced_before_discount` (one-item orders only). An order is one per buyer per
   show whatever the case of the name (`orders.attach`). A win added to an order that already
   shipped opens a `won_after_shipping` note.
+- **Settled wins, and the owner's calls of 2026-11-19.**
+  - **Settled wins.** A paid win on a Whatnot listing a person marked "Not one of ours",
+    whose "which product" question a person ignored, is settled
+    (`orders.settled_unnamed_sales`, derived on every read, never stored). It holds no order
+    open, holds no stock, is never on the pick list or in "to pick", and its slip is ready.
+    Its money counts in Paid revenue. Once it has left in its buyer's parcel
+    (`orders._left_in_parcel`) it stays settled: linking the listing never asks about it or
+    names it again. Cancelled or declined on Whatnot after picking began, it opens the same
+    "take it out of the package" note as a named item (nothing goes back on the shelf).
+    Deleting a laptop recording keeps the person's Ignore of a win that stays
+    (`recordings._kept_decision`). A person cannot cancel a paid win that is waiting to be
+    named, and neither can the AI (`refuse_cancelling`).
+  - **A decline lands only on the same lot** (`pipeline._declined_win`, `_same_lot`: same
+    title, lot number aside; two different lot numbers never match; a discounted match only
+    inside the win window) and never on a sale whose own Whatnot order is paid; one settled
+    and one open sale of the lot is put to a person. A failed order and a later paid one are
+    one retried win when their prices agree after each order's own discount
+    (`whatnot/orders._retry_key`); an exact price is the surer pair and two listings never
+    pair.
+  - **A win's money is what Whatnot charged** (`dashboard.charged()`): its line in the Whatnot
+    order it is tied to (`external_order_id` and the line's `sale_id`), after any discount,
+    else quantity x its own price. Tiles, the Revenue and Customers sheets, the Buyers page
+    and top buyers all use it, the same whichever arrived first. Never rewrite
+    `Sale.price_cents` to make figures agree, and never sum `price_cents x quantity` inline:
+    use `_rev` / `charged()` / `charged_cents()`. The workbook's per-line Price columns and an
+    order's total on the Orders page still show the player's price.
+  - **The dashboard's Whatnot card**: Sales is the paid orders' item subtotals; the shipping
+    buyers paid on those same orders and "Sales with shipping" are shown beside it and never
+    added into Sales (no giveaway's shipping, no tax). The Gifts tile and the Excel sheet use
+    Whatnot's giveaway count, 0 included, once the show's orders were read in full after it
+    ended; the chat's count only before that.
+  - **"CHOOSE ANY…" always waits for the winner**, in either selling mode
+    (`rules.is_choice_title`): neither the listing's link nor its SKU code names a product
+    (`catalog.resolver`, `pipeline.name_from_listing`, `create_sale_from_order`), and "Always
+    use this product for this listing" is refused for it. Only a winner's-pick show reads the
+    pick from chat (`picks.run`); in a listing show a person names it.
+  - **Labels.** Opening a label's PDF marks it printed; "Not printed" on its row
+    (`POST /api/shipping/shipments/:id/not-printed`, `orders.fulfill`, a conditional UPDATE,
+    audited) puts it back with the labels to print. Once a show was read in full after it
+    ended, a buyer with a PAID item in no parcel on Whatnot is `no_parcel` (computed, never
+    stored): the Shipping page lists them apart and says to make the parcel in Seller Hub,
+    then Read again. The app never makes parcels and never labels that buyer. An item counts
+    as in a parcel only when that parcel ships (`shipping._ships`, read by both `_view` and
+    `_state`): an item only in a parcel Whatnot cancelled (also "tracking stuck") is in none,
+    so no label for the buyer's open parcel and no auto "shipped" from their other one. A
+    cancelled parcel never takes an item from one that ships while Whatnot still lists it
+    there (`_held_by_a_parcel_that_ships` asks Whatnot; the stored pointer is not proof), and
+    `_mend` reads the other parcel again for rows already stranded (a labelled one only
+    takes back what is still stranded, moving its existing lot, `_take_back`; at most
+    `MAX_MENDS` calls a read; a Whatnot error there ends the mending, never the read).
+  - **Older-orders backfill** (`whatnot/backfill.py`): the end of Whatnot's list counts as the
+    floor only after `STOP_AFTER` older orders in a row or two reads ending on the same order;
+    a few old orders before an end never finish a run.
 - **Query cost.** A page or job must not cost a statement per row: eager-load what the
   serializer reads (`selectinload`), and batch-load what a loop reads
   (`reconcile.load_sales`) instead of `session.get` per row. `tests/test_query_counts.py`

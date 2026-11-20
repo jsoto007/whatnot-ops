@@ -15,6 +15,7 @@ from app.models import (
     ReviewItem,
     ReviewStatus,
     Sale,
+    SaleStatus,
     Show,
     WhatnotConnection,
     WhatnotOrder,
@@ -27,6 +28,7 @@ from app.services.whatnot import client_for, results, sync
 from app.services.whatnot import orders as whatnot_orders
 from app.services.whatnot.client import Forbidden, Invalid, Unavailable, WhatnotClient
 from tests import test_whatnot_orders as wo
+from tests.test_pipeline import level
 from tests.test_whatnot_orders import apply, compare, order, read, reviews, win
 from tests.test_whatnot_results import GENERATED, set_results
 from tests.test_whatnot_shipping import parcel, read_shipments
@@ -271,6 +273,162 @@ def test_the_late_reads_come_once_each_and_not_while_a_show_is_on_air(app, shop)
         ws.orders_synced_at = end - timedelta(minutes=1)  # never read since it ended
         db.session.commit()
         assert [w.whatnot_id for w in sync._unread_shows(shop["org"], [live])] == [shop["wshow"]]
+
+
+# ---------- A33: a completed order Whatnot cancels after the 24-hour read ----------
+
+
+def followed_since_before(app):
+    """The shop applies orders as they arrive, and has since well before the show."""
+    with app.app_context():
+        conn = db.session.scalar(select(WhatnotConnection))
+        conn.orders_mode = "auto"
+        conn.connected_at = conn.auto_since = datetime.now(UTC) - timedelta(days=10)
+        db.session.commit()
+
+
+def one_time_reads_behind(app, shop, end, read_at):
+    """Only the timer's regular reads are left: the show's orders were last read at
+    `read_at`, the repair of capped reads is older than that, the show's parcels were read
+    after it ended, and the backfill's daily top-up is not due."""
+    now = datetime.now(UTC)
+    with app.app_context():
+        ws = ws_of(shop)
+        ws.orders_synced_at = read_at
+        sync.connection.sync_state(shop["org"], "repair:capped-reads").last_ok_at = end
+        parcels = sync.connection.sync_state(shop["org"], f"shipments:{ws.id}")
+        parcels.last_started_at = parcels.last_ok_at = end + HOUR
+        topup = sync.connection.sync_state(shop["org"], "orders_backfill")
+        topup.counts = {
+            "completeSince": (now - timedelta(days=90)).isoformat(),
+            "completeUntil": now.isoformat(),
+        }
+        topup.cursor, topup.last_started_at = None, now
+        db.session.query(Job).delete()
+        db.session.commit()
+
+
+def timer_pass_and_its_jobs(app, shop):
+    """One timer pass, then every job it queued, the apply too (it waits a few seconds)."""
+    slot_free(app, shop, "shows", "open_orders")
+    with app.app_context():
+        sync.schedule_all()
+    drain(app)
+    with app.app_context():
+        db.session.execute(
+            Job.__table__.update()
+            .where(Job.status == "queued")
+            .values(run_at=datetime.now(UTC) - timedelta(seconds=1))
+        )
+        db.session.commit()
+    drain(app)
+
+
+def completed_sale(app, shop, ago: timedelta):
+    """A show that ended `ago` ago whose one order, completed on Whatnot, made a paid sale
+    of a red bundle here (one unit committed)."""
+    end = ended(app, shop, ago)
+    o = order(shop, "lani808", "Red bundle", status="completed", created=end - HOUR)
+    read(app, shop)
+    with app.app_context():
+        whatnot_orders.apply_show_job({"org_id": shop["org"], "whatnot_show_id": shop["wshow"]})
+        assert db.session.scalar(select(Sale.status)) is SaleStatus.paid
+    assert level(app, shop["red"]) == (2, 0)
+    return end, o
+
+
+def open_notes(app):
+    with app.app_context():
+        return [
+            r.reason
+            for r in db.session.scalars(
+                select(ReviewItem).where(ReviewItem.status == ReviewStatus.open)
+            )
+        ]
+
+
+@pytest.mark.parametrize("stage", ["paid", "picking"])
+def test_a_completed_order_cancelled_after_the_24_hour_read_is_read_again_and_applied(
+    app, shop, timer, stage
+):
+    """Nothing re-read a completed order: the open-order re-read asks only orders Whatnot
+    had not settled, and the late reads ended at 24 hours. Two days after the show the
+    order is listed once more, and its cancel closes the sale by the usual rules."""
+    from app.models import Order, OrderStatus
+
+    followed_since_before(app)
+    end, o = completed_sale(app, shop, timedelta(hours=49))
+    one_time_reads_behind(app, shop, end, read_at=end + 25 * HOUR)  # the 24-hour read
+    if stage == "picking":
+        with app.app_context():
+            box = db.session.scalar(select(Order))
+            box.status, box.picked_at = OrderStatus.picking, datetime.now(UTC)
+            for s in box.sales:
+                s.paid_at = datetime.now(UTC) - timedelta(minutes=5)
+            db.session.commit()
+    shop["fake"].set_order_status(o["id"], "cancelled")
+    timer_pass_and_its_jobs(app, shop)
+    with app.app_context():
+        assert db.session.scalar(select(WhatnotOrder.status)) == "cancelled"
+        sale = db.session.scalar(select(Sale))
+        assert (sale.status, sale.status_reason) == (SaleStatus.cancelled, "cancelled on Whatnot")
+    if stage == "paid":
+        assert level(app, shop["red"]) == (3, 0)  # back on the shelf
+        assert open_notes(app) == []
+    else:
+        assert level(app, shop["red"]) == (2, 0)  # the unit may be in a box: a person counts it
+        assert open_notes(app) == ["closed_after_picking"]
+
+
+def test_a_cancel_another_read_stored_first_is_still_applied_by_the_late_read(app, shop, timer):
+    """The backfill's daily top-up stores what it lists and applies nothing. A late read
+    queues the apply of the show it lists whatever it found changed, so a cancel stored
+    first by another read is applied all the same."""
+    followed_since_before(app)
+    end, o = completed_sale(app, shop, timedelta(hours=73))
+    one_time_reads_behind(app, shop, end, read_at=end + 49 * HOUR)  # the two-day read
+    cancelled = shop["fake"].set_order_status(o["id"], "cancelled")
+    with app.app_context():
+        sync.upsert_order(shop["org"], cancelled)  # stored as a top-up stores it: no apply
+        db.session.commit()
+    timer_pass_and_its_jobs(app, shop)
+    with app.app_context():
+        assert db.session.scalar(select(Sale.status)) is SaleStatus.cancelled
+    assert level(app, shop["red"]) == (3, 0)
+
+
+def test_the_later_late_reads_come_once_each_wait_for_a_show_on_air_and_end_at_three_days(
+    app, shop
+):
+    now = datetime.now(UTC)
+    with app.app_context():
+        ws = ws_of(shop) or WhatnotShow(organization_id=shop["org"], whatnot_id=shop["wshow"])
+        db.session.add(ws)
+        ws.status, ws.ended_at, ws.started_at = "ended", now - 49 * HOUR, now - 52 * HOUR
+        ws.orders_synced_at = ws.ended_at + 25 * HOUR  # read after the 24-hour mark only
+        db.session.commit()
+        assert sync._unread_shows(shop["org"], []) == [ws]  # the two-day read is owed
+        live = WhatnotShow(
+            organization_id=shop["org"],
+            whatnot_id="on-air",
+            status="live",
+            started_at=now - timedelta(minutes=5),
+        )
+        assert sync._unread_shows(shop["org"], [live]) == []  # it waits for the show
+        ws.orders_synced_at = ws.ended_at + 48 * HOUR + timedelta(minutes=1)
+        db.session.commit()
+        assert sync._unread_shows(shop["org"], []) == []  # once: three days not reached yet
+        ws.ended_at = now - 73 * HOUR
+        ws.orders_synced_at = ws.ended_at + 49 * HOUR
+        db.session.commit()
+        assert sync._unread_shows(shop["org"], []) == [ws]  # the three-day read is owed
+        ws.orders_synced_at = ws.ended_at + 72 * HOUR + timedelta(minutes=1)
+        db.session.commit()
+        assert sync._unread_shows(shop["org"], []) == []  # the last one
+        ws.ended_at = now - timedelta(days=5)
+        ws.orders_synced_at = ws.ended_at + 2 * HOUR
+        db.session.commit()
+        assert sync._unread_shows(shop["org"], []) == []  # past the window: not read again
 
 
 # ---------- A31 / V8 / A59: the catch-up limit ----------
@@ -686,6 +844,104 @@ def test_an_order_naming_no_listing_is_counted_and_told_not_dropped_silently(app
         db.session.commit()
         assert result["info"]["unreadable"] == 1
     assert any("named no listing" in s for r, s in reviews(app) if r == "orders_left_out")
+
+
+def left_out_notes(app):
+    return [s for r, s in reviews(app) if r == "orders_left_out"]
+
+
+def test_an_order_held_with_no_items_is_counted_named_and_cleared_once_its_items_come(app, shop):
+    """It gave no row at all: nothing counted it and Review said nothing, while the sale it
+    may be stayed unrecorded. Now it is counted, named, said once however often the show is
+    applied, and the notice clears once Whatnot lists its items (the repair reads them)."""
+    order(shop, "lani808", "Red bundle")
+    bare = order(shop, "kat.c", "Blue bundle", 900)
+    items = shop["fake"].items_of(bare["id"])
+    for it in items:
+        del shop["fake"].order_items[it["id"]]  # Whatnot answers the order before its items
+    read(app, shop)
+    with app.app_context():
+        result = whatnot_orders.apply(db.session.get(Show, shop["show"]))
+        db.session.commit()
+        assert (result["info"]["noItems"], result["info"]["leftOut"]) == (1, 1)
+        assert result["info"]["leftOutOrders"] == [f"#{bare['id']} from kat.c"]
+    _, _, compared = compare(app, shop)
+    assert compared["info"]["noItems"] == 1  # the Payments tab is told too
+    notes = left_out_notes(app)
+    assert len(notes) == 1
+    assert "Whatnot listed no items for 1 order" in notes[0]
+    assert f"#{bare['id']} from kat.c" in notes[0]
+    apply(app, shop)  # applied again (a replay): the same one notice, not a second
+    assert left_out_notes(app) == notes
+    for it in items:
+        shop["fake"].order_items[it["id"]] = it
+    read(app, shop)
+    assert apply(app, shop).get("recorded") == 1  # kat.c's order is a sale now
+    assert left_out_notes(app) == []
+
+
+def test_a_sale_with_no_order_is_not_called_out_while_a_paid_order_has_no_items_yet(app, shop):
+    """Whatnot answered a paid order before its items: it may be the one that pays the sale.
+    Say nothing about the sale until the items come; then the two are tied."""
+    shop["say"](app, [win("ghost", "Red bundle")])
+    run(app, shop["show"])
+    order(shop, "other_buyer", "Blue bundle")
+    bare = order(shop, "ghost", "Red bundle")
+    items = shop["fake"].items_of(bare["id"])
+    for it in items:
+        del shop["fake"].order_items[it["id"]]
+    read(app, shop)
+    with app.app_context():
+        result = whatnot_orders.apply(db.session.get(Show, shop["show"]))
+        db.session.commit()
+        assert (result["info"]["noItems"], result["info"]["noItemsPaid"]) == (1, 1)
+        assert "uncovered" not in result["summary"]
+    assert [r for r, _ in reviews(app) if r == "no_payment_record"] == []
+    texts = left_out_notes(app)
+    assert len(texts) == 1 and "sales with no order are not called out" in texts[0]
+    for it in items:
+        shop["fake"].order_items[it["id"]] = it
+    read(app, shop)
+    apply(app, shop)
+    assert [r for r, _ in reviews(app) if r == "no_payment_record"] == []
+    assert left_out_notes(app) == []
+
+
+def test_a_cancelled_order_with_no_items_hides_no_payment(app, shop):
+    """Only an order that may be paid can be a sale's payment: a cancelled one with no items
+    is counted and named, and the sale with no order is still called out."""
+    shop["say"](app, [win("ghost", "Red bundle")])
+    run(app, shop["show"])
+    order(shop, "other_buyer", "Blue bundle")
+    bare = order(shop, "ghost", "Red bundle", status="cancelled")
+    for it in shop["fake"].items_of(bare["id"]):
+        del shop["fake"].order_items[it["id"]]
+    read(app, shop)
+    with app.app_context():
+        result = whatnot_orders.apply(db.session.get(Show, shop["show"]))
+        db.session.commit()
+        assert (result["info"]["noItems"], result["info"]["noItemsPaid"]) == (1, 0)
+    assert len([r for r, _ in reviews(app) if r == "no_payment_record"]) == 1
+
+
+def test_orders_left_out_name_the_first_few_and_count_the_rest_one_notice_per_show(app, shop):
+    order(shop, "lani808", "Red bundle")
+    odd = [order(shop, f"odd_buyer_{i}", "Blue bundle", status="refunded") for i in range(3)]
+    untitled = order(shop, "kat.c", "")  # names no listing
+    read(app, shop)
+    with app.app_context():
+        result = whatnot_orders.apply(db.session.get(Show, shop["show"]))
+        db.session.commit()
+        info = result["info"]
+    assert (info["unreadable"], info["noItems"], info["leftOut"]) == (4, 0, 4)
+    named = [f"#{o['id']} from {o['buyer']['username']}" for o in [*odd, untitled]]
+    assert info["leftOutOrders"] == named[:3]  # oldest first, as they are applied
+    notes = left_out_notes(app)
+    assert len(notes) == 1
+    assert ", ".join(named[:3]) + " and 1 more" in notes[0]
+    assert named[3] not in notes[0]
+    apply(app, shop)
+    assert left_out_notes(app) == notes  # rewritten in place, never a second notice
 
 
 def test_a_left_out_notice_a_person_dismissed_is_not_opened_again_for_the_same_figures(

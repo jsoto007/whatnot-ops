@@ -7,8 +7,10 @@ recording's laptop data removes exactly that and nothing that came from Whatnot 
 its shows, orders, payments, shipments, ledger and the giveaways' products all stay, and
 so does every sale tied to a Whatnot order (`external_order_id`): one the app made from
 an order, or a win line that an order (or a payment file) has since vouched for. Such a
-sale only loses its chat line. A recording that still holds one, or a question about a
-Whatnot order or a payment file, stays too, as a show with no laptop recording.
+sale only loses its chat line; a person's "Ignore" of its "which product is that?"
+question stays with it (it may settle the win, `orders.settled_unnamed_sales`). A
+recording that still holds one, or a question about a Whatnot order or a payment file,
+stays too, as a show with no laptop recording.
 
 A win the laptop recorded that another laptop's recording of the same stream also saw is
 not lost: when the other recording surely has the same win (the same buyer, the same lot
@@ -294,6 +296,19 @@ def _laptop_question(show: Show, laptop_ids: list[int]):
     )
 
 
+def _kept_decision(laptop_ids: list[int]):
+    """A person's "Ignore" of the "which product is that?" question about a sale that stays
+    (one tied to a Whatnot order). It may have been made from this recording's chat line,
+    but it is the sale's decision, and whether that win is settled with no product reads it
+    (`orders.settled_unnamed_sales`): it stays, detached from the line that goes."""
+    return (
+        ReviewItem.sale_id.is_not(None)
+        & ReviewItem.sale_id.not_in(laptop_ids)
+        & (ReviewItem.reason == "unmatched_item")
+        & (ReviewItem.status == ReviewStatus.dismissed)
+    )
+
+
 def _messages(show: Show) -> int:
     return (
         db.session.scalar(
@@ -346,6 +361,7 @@ def preview(show: Show) -> dict:
                     & (ReviewItem.status == ReviewStatus.open)
                     & ReviewItem.sale_id.in_(laptop_ids or [0])
                 ),
+                ~_kept_decision(laptop_ids),  # a kept sale's "Ignore" stays with it
             )
         )
         or 0
@@ -467,6 +483,15 @@ def delete_laptop_data(org_id: int, show_id: int, *, user) -> dict:
             )
             .values(sale_id=None)
         )
+    # A kept sale's "Ignore" stays with the sale, on its show, without the line that goes.
+    for item in db.session.scalars(
+        select(ReviewItem)
+        .where(_laptop_question(show, laptop_ids), _kept_decision(laptop_ids))
+        .options(selectinload(ReviewItem.sale))
+    ):
+        item.event_id = item.message_id = None
+        item.show_id = item.sale.show_id
+    db.session.flush()
     gone = delete(ReviewItem).where(_laptop_question(show, laptop_ids))
     reviews = db.session.execute(gone).rowcount
     if laptop_ids:

@@ -103,6 +103,8 @@ test('the link is not offered for a listing marked not ours or already linked, i
     [{ ...sale('Green drop', true), saleMode: 'winners_pick', listing: LISTING }, all],
     [{ ...sale('Green drop', true), saleMode: 'listing', listing: null }, all],
     [{ ...sale('Green drop', true), saleMode: 'listing', listing: LISTING }, ['review.act']],
+    // A listing whose title says the winner chooses never names a product, in either mode.
+    [{ ...sale('CHOOSE ANY PRODUCT YOU WANT #7', false), saleMode: 'listing', listing: LISTING, choiceTitle: true }, all],
   ] as [Sale, string[]][]) {
     const view = render(<div />)
     mount(s, permissions)

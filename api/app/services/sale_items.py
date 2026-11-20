@@ -133,12 +133,18 @@ def _usable(sale: Sale, sku: Sku) -> None:
         raise ChangeError("That product is not in use.", 400)
 
 
-def _put_back(sale: Sale, row: SaleItem, *, picked: bool, actor: Actor, why: str) -> None:
+def _put_back(sale: Sale, row: SaleItem, *, picked: bool, actor: Actor, why: str) -> int:
     """Return a row's stock as a cancel would: held → released; sold and still on the shelf →
-    restocked. Picked: nothing moves, a person counts the unit back."""
+    restocked. `picked` (`remove` once the order is being picked): nothing moves, a person
+    counts the unit back. Returns how many units were restocked.
+
+    The restock is keyed as a cancel's is (the row's payment round, the row's key), so the
+    unit goes back once whichever path puts it back; the row is closed, and nothing reads a
+    closed row's stock again (a later cancel, decline or change moves the open rows only)."""
     from . import pipeline
 
     round_ = pipeline._row_round(row)
+    restocked = 0
     if sale.status is SaleStatus.reserved:
         inventory.release(
             row.sku_id,
@@ -158,7 +164,9 @@ def _put_back(sale: Sale, row: SaleItem, *, picked: bool, actor: Actor, why: str
             actor=actor,
             reason=why,
         )
+        restocked = row.quantity
     row.closed_at = datetime.now(UTC)
+    return restocked
 
 
 def _take(sale: Sale, sku: Sku, quantity: int, *, actor: Actor, why: str) -> SaleItem:
@@ -221,10 +229,18 @@ def change(
     price the buyer paid does not change. `row_id` says which product, for a sale that
     holds several.
 
-    Once the buyer's order is being picked the old unit may already be in a box, so nothing
-    is put back by itself: the sale is flagged and the result says so (`picked`), for a
-    note to the packer. A shipped, cancelled or declined sale cannot be changed, and a sale
-    with no product yet is named in Review, not here."""
+    Once the buyer's order is being picked or packed the old unit may already be in a box.
+    It is put back on the shelf count at the change all the same (Javier's call, 2026-11-19;
+    before, a person counted it back): the sale is flagged and the result says so
+    (`picked`), for a note telling the packer to swap the unit and put the old one back on
+    the shelf, never to count it in again. `restocked` is how many units went back. The
+    restock is keyed as a cancel's (`_put_back`), so it happens once: a repeated request
+    finds the product already changed and moves nothing, and stepping the order back to
+    paid and changing again (or cancelling) moves only the product the sale holds now.
+
+    A shipped, cancelled or declined sale cannot be changed (a shipped unit left in its
+    parcel: nothing is put back), and a sale with no product yet is named in Review, not
+    here."""
     from . import pipeline
 
     _lock(sale)
@@ -233,13 +249,19 @@ def change(
     row = _row(sale, row_id)
     before = row.sku_id
     if sku.id == before:
-        return {"changed": False, "from": before, "to": before, "picked": False}
+        return {"changed": False, "from": before, "to": before, "picked": False, "restocked": 0}
     picked = sale.status is SaleStatus.paid and pipeline._in_fulfilment(sale)
     why = reason or "product changed"
-    _put_back(sale, row, picked=picked, actor=actor, why=why)
+    restocked = _put_back(sale, row, picked=False, actor=actor, why=why)
     _take(sale, sku, row.quantity, actor=actor, why=why)
     _settle(sale, picked=picked)
-    return {"changed": True, "from": before, "to": sku.id, "picked": picked}
+    return {
+        "changed": True,
+        "from": before,
+        "to": sku.id,
+        "picked": picked,
+        "restocked": restocked,
+    }
 
 
 def add(
