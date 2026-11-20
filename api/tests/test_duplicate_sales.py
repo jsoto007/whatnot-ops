@@ -391,3 +391,24 @@ def test_an_old_twin_does_not_hide_a_new_copy(app, world):
     assert len(sale_rows(app, world["show"])) == 2
     assert sale_rows(app, other) == []
     assert reasons(app) == ["possible_duplicate", "possible_duplicate"]
+
+
+def test_a_person_confirming_a_sale_line_takes_the_buyers_lock_first(app, world, monkeypatch):
+    """Orders are one per buyer per show whatever the case of the name, and the check for that
+    order and its insert are one step only under the buyer's lock: a person's (or the AI's)
+    confirm goes through `record_sale_from_event`, so the lock is taken there, in the name's
+    lower case."""
+    now = datetime.now(UTC)
+    chat(app, world["show"], 1, LINE, at=now)
+    chat(app, world["show"], 2, LINE, at=now + timedelta(minutes=2))
+    run(app, world["show"])
+    taken = []
+    real = pipeline._lock_buyer
+    monkeypatch.setattr(
+        pipeline, "_lock_buyer", lambda org, buyer: (taken.append((org, buyer)), real(org, buyer))
+    )
+    with app.app_context():
+        item = db.session.scalar(select(ReviewItem))
+        pipeline.resolve(item, "confirm_sale", {}, user=_owner(world["org"]))
+        db.session.commit()
+    assert taken and taken[0] == (world["org"], "lani808")

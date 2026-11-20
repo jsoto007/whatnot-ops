@@ -41,7 +41,15 @@ from ...models import (
 )
 from .. import audit, jobs, rules, text
 from . import connection, webhooks
-from .client import Forbidden, NotFound, WhatnotClient, WhatnotError, client_for, price_cents
+from .client import (
+    Forbidden,
+    NotFound,
+    WhatnotClient,
+    WhatnotError,
+    client_for,
+    price_cents,
+    worked,
+)
 
 log = logging.getLogger(__name__)
 
@@ -693,12 +701,13 @@ def _run(org_id: int, fn):
     state = connection.sync_state(org_id, RESOURCE)
     state.last_started_at = datetime.now(UTC)
     db.session.commit()
+    answered = worked()
     try:
         counts = fn()
     except WhatnotError as e:
         db.session.rollback()
         if not isinstance(e, Forbidden):
-            connection.note_failure(org_id, e)
+            connection.note_failure(org_id, e, RESOURCE)
         state = connection.sync_state(org_id, RESOURCE)
         state.last_error = f"{type(e).__name__} {e.problem}".strip()[:240]
         db.session.commit()
@@ -706,9 +715,11 @@ def _run(org_id: int, fn):
             return None
         raise
     state = connection.sync_state(org_id, RESOURCE)
+    before = state.last_error
     state.last_ok_at, state.last_error = datetime.now(UTC), None
     if isinstance(counts, dict):
         state.counts = counts
+    connection.settle(org_id, RESOURCE, before, worked=worked() > answered)
     db.session.commit()
     return counts
 

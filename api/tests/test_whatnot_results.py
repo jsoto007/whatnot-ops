@@ -115,10 +115,16 @@ def test_results_that_are_not_ready_or_not_numbers_are_left_out_not_guessed(app,
         }
         assert results.store_results(ws, odd) == "GENERATED"
         assert ws.analytics == {"max_concurrent_viewers": 9}
+        # Figures Whatnot generated are never wiped by a later "will not be calculated".
         assert results.store_results(ws, {"calculation_status": "WILL_NOT_BE_CALCULATED"}) == (
             "WILL_NOT_BE_CALCULATED"
         )
-        assert ws.analytics is None
+        assert ws.analytics == {"max_concurrent_viewers": 9} and ws.analytics_status == "GENERATED"
+        ws.analytics, ws.analytics_status = None, "PENDING"  # but with none held, it is kept
+        assert results.store_results(ws, {"calculation_status": "WILL_NOT_BE_CALCULATED"}) == (
+            "WILL_NOT_BE_CALCULATED"
+        )
+        assert ws.analytics is None and ws.analytics_status == "WILL_NOT_BE_CALCULATED"
 
 
 def test_results_are_asked_for_when_a_show_is_read_and_again_until_whatnot_has_them(

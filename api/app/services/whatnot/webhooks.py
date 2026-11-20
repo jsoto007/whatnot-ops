@@ -169,6 +169,21 @@ def accept(body, webhook_id: str) -> str:
     return "queued"
 
 
+# The kind of reading each topic's handler does (`WhatnotSyncState.resource`), for the
+# bookkeeping of what failed (`connection.note_failure`). A topic not listed is no reading
+# in particular.
+_RESOURCE_OF = {
+    "orders": "orders",
+    "shows": "shows",
+    "shipments": "shipments",
+    "products": "catalog",
+}
+
+
+def _resource_of(topic: str) -> str | None:
+    return _RESOURCE_OF.get(topic.split(".", 1)[0])
+
+
 @jobs.handler("whatnot_event")
 def handle_event(payload: dict) -> None:
     """Act on one stored delivery. An error that a retry cannot fix (the shop
@@ -184,10 +199,12 @@ def handle_event(payload: dict) -> None:
         try:
             fn(event)
             event.status = "done"
+            # A handler that returned is no proof the token works: many return before any call
+            # to Whatnot. The reads that do call it (`sync._run`) are what end a problem.
         except (NotConnected, NotConfigured, Unauthorized) as e:
             org_id = event.organization_id
             db.session.rollback()
-            connection.note_failure(org_id, e)
+            connection.note_failure(org_id, e, _resource_of(event.topic))
             event = db.session.get(WhatnotEvent, payload.get("event_id"))
             event.status, event.error = "failed", type(e).__name__
     event.processed_at = datetime.now(UTC)

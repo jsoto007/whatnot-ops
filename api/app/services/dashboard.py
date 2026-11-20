@@ -1,5 +1,6 @@
 """Numbers for the dashboard and the reports, in one place so tiles and spreadsheets agree."""
 
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import String, case, func, select
@@ -63,6 +64,17 @@ def tiles_for(shows: list[Show]) -> list[dict]:
     ids = [s.id for s in shows]
     if not ids:
         return []
+    from .orders import to_pick_sales
+
+    # A win Whatnot says is paid whose product is still to pick (the winner picks in chat):
+    # not paid here yet, but its money is in. Shown apart, never added to "paid" (every
+    # screen, the sheet, the average per buyer and the Buyers page read that); only "sold"
+    # counts it. One query for every show (`orders.to_pick_sales` holds the rule).
+    to_pick_n: Counter = Counter()
+    to_pick_cents: Counter = Counter()
+    for sale in to_pick_sales(Sale.show_id.in_(ids)):
+        to_pick_n[sale.show_id] += 1
+        to_pick_cents[sale.show_id] += sale.quantity * (sale.price_cents or 0)
     sale_rows = {
         r.show_id: r
         for r in db.session.execute(
@@ -165,12 +177,20 @@ def tiles_for(shows: list[Show]) -> list[dict]:
                 "ultra": n("ultra"),
                 "mega": n("mega"),
                 "quickHit": n("quick_hit"),
-                "gifts": giveaways.get(show.id, 0) or int(ev.get(EventKind.gift, 0)),
+                "gifts": (
+                    giveaways[show.id] if show.id in giveaways else int(ev.get(EventKind.gift, 0))
+                ),
                 "noPicks": int(no_picks.get(show.id, 0)),
                 "noWinner": int(ev.get(EventKind.no_pick, 0)),
                 "cancelled": n("lost"),
                 "revenuePaidCents": n("paid"),
                 "revenuePendingCents": n("pending"),
+                # Paid on Whatnot, product to pick: how many such wins, and their money.
+                "toPick": to_pick_n[show.id],
+                "revenueToPickCents": to_pick_cents[show.id],
+                # Everything sold so far (the live band): paid, awaiting the payment file,
+                # and paid on Whatnot with a product to pick. Added here, never on a screen.
+                "revenueSoldCents": n("paid") + n("pending") + to_pick_cents[show.id],
                 "orders": {k.value: int(v) for k, v in od.items()},
                 "toFulfil": int(
                     sum(
@@ -196,11 +216,14 @@ WALKAWAY = {
 
 
 def _whatnot_giveaways_for(shows: list[Show]) -> dict[int, int]:
-    """show id → giveaways Whatnot's own orders list for it (missing: 0 until they are read).
-    The chat names a giveaway winner only when the host or Whatnot types it; on 2026-11-13
-    nobody did (0 here against Whatnot's 8). Like the order slips, Whatnot's count replaces
-    the chat's when it has one."""
+    """show id → giveaways Whatnot's own orders list for it (missing: none read yet, so the
+    chat's count is used). The chat names a giveaway winner only when the host or Whatnot
+    types it; on 2026-11-13 nobody did (0 here against Whatnot's 8). Like the order slips,
+    Whatnot's count replaces the chat's when it has one, and it belongs to the first of the
+    Whatnot show's app shows only: a second laptop's recording of the same show counts
+    none (0, not its chat's), so the show's giveaways are never counted twice."""
     from ..models import WhatnotOrder, WhatnotShow
+    from .whatnot import sync
     from .whatnot.orders import GIVEAWAY
 
     linked = {s.id: s.whatnot_show_id for s in shows if s.whatnot_show_id}
@@ -223,7 +246,15 @@ def _whatnot_giveaways_for(shows: list[Show]) -> dict[int, int]:
             .group_by(WhatnotShow.id)
         ).all()
     )
-    return {sid: int(per_ws.get(ws, 0)) for sid, ws in linked.items()}
+    first: dict[int, int] = {}
+    for org_id in {s.organization_id for s in shows if s.id in linked}:
+        first |= sync.first_recordings(org_id, set(linked.values()))
+    out = {}
+    for sid, ws in linked.items():
+        n = int(per_ws.get(ws, 0))
+        if n:
+            out[sid] = n if first.get(ws) == sid else 0
+    return out
 
 
 def winners_without_purchase(show: Show) -> list[dict]:
@@ -483,6 +514,9 @@ def totals(rows: list[dict]) -> dict:
         "cancelled",
         "revenuePaidCents",
         "revenuePendingCents",
+        "toPick",
+        "revenueToPickCents",
+        "revenueSoldCents",
         "toFulfil",
         "openReviews",
     )
@@ -510,6 +544,8 @@ def overview(org_id: int) -> dict:
     if live is not None:
         live = {**live, "pace": chat_pace(live["showId"])}
     fulfil_items, fulfil_oldest = fulfil_summary(org_id)
+    from .whatnot import watch
+
     return {
         "shows": rows,
         "totals": totals(rows),
@@ -526,6 +562,8 @@ def overview(org_id: int) -> dict:
             "oversold": [s for s in low if s["short"]],
             "unreconciledShows": unreconciled,
             "live": live,
+            # Whatnot says a show is live and no laptop is recording it (well).
+            "liveGaps": watch.live_gaps(org_id),
         },
     }
 
@@ -550,20 +588,27 @@ def counts(org_id: int) -> dict:
     )
     # The Whatnot connection stopped working (a rejected token, a missing permission):
     # every page says so, because sales and shipments then stop arriving on their own.
+    from .whatnot.orders import BLIND
+
     whatnot_problem = db.session.scalar(
         select(func.count())
         .select_from(WhatnotConnection)
         .where(
             WhatnotConnection.organization_id == org_id,
             WhatnotConnection.disconnected_at.is_(None),
-            WhatnotConnection.problem.in_(("token_rejected", "no_permission")),
+            WhatnotConnection.problem.in_(BLIND),
         )
     )
+    from .whatnot import watch
+
     return {
         "openReviews": reviews or 0,
         "toFulfil": to_fulfil or 0,
         "live": bool(live),
         "whatnotProblem": bool(whatnot_problem),
+        # Reads that keep failing, or orders behind a show (`whatnot.watch.notice`): words
+        # on every page, for every role.
+        "whatnotNotice": watch.notice(org_id),
     }
 
 
@@ -753,7 +798,7 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
     worked out from the fee columns. {"connected": False} without a working connection:
     the page then shows the app's own numbers."""
     from ..models import WhatnotOrder, WhatnotOrderItem, WhatnotShow, WhatnotSyncState
-    from .whatnot import connection, results
+    from .whatnot import backfill, connection, results
     from .whatnot.orders import GIVEAWAY, PAYMENT
 
     conn = connection.active(org_id)
@@ -763,6 +808,7 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
     currency = conn.currency or "USD"
     since = datetime.now(UTC) - timedelta(days=days)
     paid = tuple(s for s, meaning in PAYMENT.items() if meaning == "paid")
+    void = ("cancelled",)
     mine = o.currency.is_(None) | (o.currency == currency)
     sale = func.coalesce(o.transaction_type, "") != GIVEAWAY
     in_period = (o.organization_id == org_id, o.ordered_at >= since)
@@ -774,15 +820,20 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
     (
         paid_n, paid_cents, priced_n, pending_n, pending_cents,
         cancelled_n, cancelled_cents, giveaways, other,
+        paid_discount, cancelled_discount,
     ) = db.session.execute(
         select(
             *bucket(paid),
             # An order Whatnot gave no amount for adds nothing: it must not lower the average.
             func.count().filter(mine & sale & o.status.in_(paid) & o.subtotal_cents.is_not(None)),
             *bucket(("pending",)),
-            *bucket(("cancelled",)),
+            *bucket(void),
             func.count().filter(~sale & o.status.not_in(("cancelled", "failed"))),
             func.count().filter(~mine),
+            # What Whatnot took off before it stated these prices (`applied_discount`): the
+            # item subtotals are already after it, its "Gross Sales" is before it.
+            func.coalesce(func.sum(o.discount_cents).filter(mine & sale & o.status.in_(paid)), 0),
+            func.coalesce(func.sum(o.discount_cents).filter(mine & sale & o.status.in_(void)), 0),
         ).where(*in_period)
     ).one()  # fmt: skip
     items = db.session.scalar(
@@ -790,15 +841,25 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
         .join(o, o.id == WhatnotOrderItem.order_id)
         .where(*in_period, mine, sale, o.status.in_(paid))
     )
-    customers, returning = _customers(org_id, in_period, mine, sale, paid, since)
-    ledger = results.figures(org_id, since=since)
-    # When Whatnot's orders were last read: the timer's read, or a show's own read.
-    reads = [
-        db.session.scalar(
-            select(WhatnotSyncState.last_ok_at).where(
-                WhatnotSyncState.organization_id == org_id, WhatnotSyncState.resource == "orders"
+    # When Whatnot's orders were last read (the timer's read, or a show's own read), and
+    # which days the app has proved it holds every order of (the older-orders backfill; None
+    # until it has run to its end once).
+    states = {
+        resource: (ok, counts)
+        for resource, ok, counts in db.session.execute(
+            select(
+                WhatnotSyncState.resource, WhatnotSyncState.last_ok_at, WhatnotSyncState.counts
+            ).where(
+                WhatnotSyncState.organization_id == org_id,
+                WhatnotSyncState.resource.in_(("orders", backfill.RESOURCE)),
             )
-        ),
+        )
+    }
+    complete_since, complete_until = backfill.claim(states.get(backfill.RESOURCE, (None, None))[1])
+    customers, returning = _customers(org_id, in_period, mine, sale, paid, since, complete_since)
+    ledger = results.figures(org_id, since=since)
+    reads = [
+        states.get("orders", (None, None))[0],
         db.session.scalar(
             select(func.max(WhatnotShow.orders_synced_at)).where(
                 WhatnotShow.organization_id == org_id
@@ -811,6 +872,11 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
         "days": days,
         "currency": currency,
         "ordersReadAt": orders_read.isoformat() if orders_read else None,
+        # The days the app has proved it holds every order Whatnot has for the shop, from the
+        # first to the second (the daily top-up moves the second forward); both None while
+        # the older-orders backfill has not finished, when the earlier days may be short.
+        "ordersCompleteSince": complete_since,
+        "ordersCompleteUntil": complete_until,
         "sales": {
             "paidCents": int(paid_cents),
             "orders": int(paid_n),
@@ -821,6 +887,19 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
             "pendingOrders": int(pending_n),
             "cancelledCents": int(cancelled_cents),
             "cancelledOrders": int(cancelled_n),
+            # Discounts Whatnot took off the paid orders: Sales is after them.
+            "discountCents": int(paid_discount),
+            # What Whatnot took off the cancelled orders: they are part of the gross, and the
+            # words say a cancelled order at the price it had before its discount.
+            "cancelledDiscountCents": int(cancelled_discount),
+            # Sales before discounts and before cancellations, the way Whatnot's own
+            # "Gross Sales" reads: paid + its discounts + cancelled (+ its discounts). Pending
+            # and failed orders are not in it, and no failed payment is said anywhere (Javier's
+            # call 2026-11-14).
+            "grossCents": int(paid_cents)
+            + int(paid_discount)
+            + int(cancelled_cents)
+            + int(cancelled_discount),
             "giveaways": int(giveaways),
             "otherCurrencyOrders": int(other),
         },
@@ -834,13 +913,17 @@ def whatnot_money(org_id: int, *, days: int = 30) -> dict:
     }
 
 
-def _customers(org_id: int, in_period, mine, sale, paid, since) -> tuple[dict, set[str]]:
+def _customers(
+    org_id: int, in_period, mine, sale, paid, since, complete_since: str | None = None
+) -> tuple[dict, set[str]]:
     """The period's paid sales split by customer, and the buyers who are returning ones.
 
     A customer is RETURNING when their Whatnot account has a paid order with the shop from
     before the period, NEW when the first paid order the app holds from them is in it. The
-    app holds Whatnot's orders only since the shop connected (`knownSince`, the oldest one
-    it read), so a customer whose earlier orders are older than that counts as new. A
+    app holds every Whatnot order only back to `knownSince` (where the older-orders backfill
+    read to; until it has finished, the oldest order stored), so a customer whose earlier
+    orders are older than that counts as new: once the backfill has finished, an order from
+    before that day is not looked at at all, so the sentence on screen stays true. A
     giveaway is not a purchase and makes nobody a customer; an earlier order in another
     currency still does."""
     from ..models import WhatnotOrder as o
@@ -852,12 +935,14 @@ def _customers(org_id: int, in_period, mine, sale, paid, since) -> tuple[dict, s
         .where(*in_period, mine, sale, is_paid, who.is_not(None))
         .group_by(who)
     ).all()
+    from_day = [o.ordered_at >= datetime.fromisoformat(complete_since)] if complete_since else []
     earlier = set(
         db.session.scalars(
             select(who)
             .where(
                 o.organization_id == org_id,
                 o.ordered_at < since,
+                *from_day,
                 sale,
                 is_paid,
                 who.is_not(None),
@@ -874,7 +959,12 @@ def _customers(org_id: int, in_period, mine, sale, paid, since) -> tuple[dict, s
         split[side]["buyers"] += 1
         split[side]["orders"] += int(n)
         split[side]["paidCents"] += int(cents)
-    # How far back the app read Whatnot's orders: its oldest order of any kind.
+    # How far back "returning" can see. Once the older-orders backfill has finished, that is
+    # where the orders are complete: the oldest stored order says nothing (a stray old row
+    # made it Oct 21 while three weeks after it were missing). Until then it is the oldest
+    # order the app holds, of any kind.
+    if complete_since:
+        return {**split, "knownSince": complete_since}, returning
     known = db.session.scalar(select(func.min(o.ordered_at)).where(o.organization_id == org_id))
     return {**split, "knownSince": known.isoformat() if known else None}, returning
 

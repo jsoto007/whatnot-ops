@@ -9,7 +9,8 @@ import logging
 from datetime import UTC, datetime
 
 from flask import current_app
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert
 
 from ...db import db
 from ...models import Organization, User, WhatnotConnection, WhatnotEvent, WhatnotSyncState
@@ -65,35 +66,113 @@ def _problem_code(e: WhatnotError) -> str:
     return "unreachable"
 
 
+# The token works, but for another Whatnot account than the shop's. No read can end this
+# (the reads of that other account succeed): only a check that finds the right account does.
+WRONG_ACCOUNT = "wrong_account"
+
+
+def _forget_rejections(org_id: int) -> None:
+    """The token was just accepted: a read that failed because it was not is over too, and
+    must not keep saying "cannot read Whatnot" until that kind of read happens to run (the
+    daily ledger would hold it all night)."""
+    db.session.execute(
+        update(WhatnotSyncState)
+        .where(
+            WhatnotSyncState.organization_id == org_id,
+            WhatnotSyncState.last_error.startswith("Unauthorized"),
+        )
+        .values(last_error=None)
+    )
+
+
 def note_ok(conn: WhatnotConnection) -> None:
     now = datetime.now(UTC)
     conn.last_checked_at = conn.last_ok_at = now
     conn.problem = conn.problem_at = None
+    _forget_rejections(conn.organization_id)
 
 
-def note_problem(conn: WhatnotConnection, e: WhatnotError) -> None:
+def note_problem(
+    conn: WhatnotConnection, e: WhatnotError | None = None, *, code: str | None = None
+):
+    """Remember why a check failed. A wrong account is never swapped for another problem:
+    reads that work (for the other account) would then clear it."""
     now = datetime.now(UTC)
     conn.last_checked_at = now
-    code = _problem_code(e)
+    if conn.problem == WRONG_ACCOUNT:
+        return
+    code = code or _problem_code(e)
     if conn.problem != code:
         conn.problem, conn.problem_at = code, now
 
 
-def note_failure(org_id: int, e: WhatnotError) -> None:
+def note_failure(org_id: int, e: WhatnotError, resource: str | None = None) -> None:
     """A sync hit an error that people must act on (a rejected token, a missing
     permission): remember it so every page can say so. Its own small transaction, because
-    the caller is about to roll its work back."""
+    the caller is about to roll its work back. `resource` (a kind of reading, as in
+    `WhatnotSyncState`) is the one that failed: it is what later clears the problem, when a
+    read of that kind works again (`settle`)."""
     if not isinstance(e, Unauthorized | Forbidden):
         return
     with db.engine.begin() as c:
-        from sqlalchemy import update
-
         c.execute(
             update(WhatnotConnection)
             .where(WhatnotConnection.organization_id == org_id)
             .where(WhatnotConnection.problem.is_distinct_from(_problem_code(e)))
+            .where(WhatnotConnection.problem.is_distinct_from(WRONG_ACCOUNT))
             .values(problem=_problem_code(e), problem_at=datetime.now(UTC))
         )
+        if resource:
+            why = f"{type(e).__name__} {e.problem}".strip()[:240]
+            c.execute(
+                insert(WhatnotSyncState)
+                .values(organization_id=org_id, resource=resource, last_error=why)
+                .on_conflict_do_update(
+                    constraint="uq_whatnot_sync_org_resource", set_={"last_error": why}
+                )
+            )
+
+
+# The readings whose missing permission flags the connection (a show's results, the fee
+# ledger and the catalog swallow one), and the error a permission problem comes from.
+FLAGGING = ("shows", "orders", "open_orders", "shipments")
+_ERROR_OF = {"no_permission": "Forbidden"}
+
+
+def settle(org_id: int, resource: str, previous_error: str | None, *, worked: bool = False) -> None:
+    """A read of `resource` just worked. Only when it really had an answer from Whatnot
+    (`worked`: some reads, say the refresh of open orders with none open, make no call at
+    all and so show nothing). A rejected token is the whole token's, so any read
+    that works shows it is not rejected: clear the problem and every old rejection the other
+    readings still hold (a rarely run one would keep it for hours), so the banner goes and the
+    orders Whatnot sends decide again. The same for "could not be reached". A missing
+    permission is one kind of read's: it ends when a read of the kind that hit it works and no
+    other flagging reading still hits it. A token that belongs to another account stays until a
+    check finds the right one."""
+    conn = active(org_id)
+    if not worked or conn is None or conn.problem is None or conn.problem == WRONG_ACCOUNT:
+        return
+    if conn.problem in ("token_rejected", "unreachable"):
+        conn.problem = conn.problem_at = None
+        _forget_rejections(org_id)
+        return
+    kind = _ERROR_OF.get(conn.problem)
+    if kind is None or not (previous_error or "").startswith(kind):
+        return
+    if resource not in FLAGGING:
+        return  # a reading that never flags says nothing about one that did
+    elsewhere = db.session.scalar(
+        select(db.func.count())
+        .select_from(WhatnotSyncState)
+        .where(
+            WhatnotSyncState.organization_id == org_id,
+            WhatnotSyncState.resource != resource,
+            WhatnotSyncState.last_error.startswith(kind),
+            WhatnotSyncState.resource.in_(FLAGGING),
+        )
+    )
+    if not elsewhere:
+        conn.problem = conn.problem_at = None
 
 
 def _who(org_id: int) -> dict:
@@ -189,8 +268,9 @@ def check(org_id: int) -> WhatnotConnection | None:
         note_problem(conn, e)
         return conn
     if who["seller_id"] != conn.seller_id:
-        # The token was replaced with another account's: treat it as rejected for this shop.
-        note_problem(conn, Unauthorized())
+        # The token was replaced with another account's: its reads would work, for the wrong
+        # seller. Blind for this shop until a check finds the right account.
+        note_problem(conn, code=WRONG_ACCOUNT)
         return conn
     conn.username, conn.currency = who["username"] or conn.username, who["currency"]
     note_ok(conn)

@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Icon } from '../../../components/Icon'
-import { ApiError, api, apiGet, type WhatnotStatus } from '../../../lib/api'
+import { ApiError, api, apiGet, type WhatnotNotice, type WhatnotStatus } from '../../../lib/api'
 import { fmtWhen } from '../../../lib/format'
-import { whatnotProblemLabel, whatnotSyncLabel } from '../../../lib/labels'
+import { whatnotNoticeWords, whatnotProblemLabel, whatnotSyncLabel } from '../../../lib/labels'
 
 /** Settings → Whatnot: link the shop to its Whatnot seller account and see that it is working.
  * The access token itself is never typed here or shown: the developer sets it on the server. */
@@ -158,9 +158,14 @@ export function WhatnotConnection({ manage }: { manage: boolean }) {
   )
 }
 
-/** One line on every page when the connection needs a person (a rejected token, a missing permission). */
-export function WhatnotBanner({ show }: { show: boolean }) {
-  if (!show) return null
+/**
+ * One banner on every page when Whatnot needs a person (a rejected token, a missing permission)
+ * or reading it has gone quiet (reads that keep failing, orders behind a show). Every role sees
+ * it; `manager` is whether this person may open Settings → Whatnot, which only changes the advice.
+ */
+export function WhatnotBanner({ show, notice = null, manager = true }: { show: boolean; notice?: WhatnotNotice | null; manager?: boolean }) {
+  const words = !show && notice ? whatnotNoticeWords(notice.code, notice.minutes, manager) : null
+  if (!show && !words) return null
   return (
     <section className="banner" role="alert" data-testid="whatnot-banner">
       <div className="banner-main">
@@ -168,8 +173,20 @@ export function WhatnotBanner({ show }: { show: boolean }) {
           <Icon name="help" size={20} />
         </span>
         <div>
-          <b>The Whatnot connection stopped working.</b>
-          <div className="small">Orders and shipments are not arriving on their own. The account owner needs to make a new access token; Settings has the details.</div>
+          {words ? (
+            <>
+              <b>{words.title}</b>
+              <div className="small">{words.detail}</div>
+            </>
+          ) : (
+            <>
+              <b>The Whatnot connection stopped working.</b>
+              <div className="small">
+                Orders and shipments are not arriving on their own.{' '}
+                {manager ? 'The account owner needs to make a new access token; Settings has the details.' : "Tell the shop's owner or a manager."}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </section>

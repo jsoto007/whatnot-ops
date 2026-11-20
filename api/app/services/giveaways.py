@@ -228,6 +228,24 @@ def for_show(show: Show) -> list[dict]:
     return out
 
 
+def on_another_show(show: Show) -> bool:
+    """Whatnot lists giveaways for this show and they print with another of its app shows
+    (the first, `for_show`): a second laptop's recording. Its slips then print no gift read
+    from its own chat either, or the same giveaway prints twice."""
+    if not show.whatnot_show_id:
+        return False
+    ws = db.session.get(WhatnotShow, show.whatnot_show_id)
+    if ws is None:
+        return False
+    recordings = sync.recordings_of(ws)
+    if not recordings or recordings[0].id == show.id:
+        return False
+    return any(
+        order.status not in GONE
+        for _, order in _items(show.organization_id, WhatnotOrder.whatnot_show_id == ws.whatnot_id)
+    )
+
+
 def listing(org_id: int) -> dict:
     """ "Giveaways to assign": the recent giveaways of the shows the app follows, the ones
     still waiting for a product first (newest show first), then the ones a person named.

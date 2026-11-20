@@ -45,7 +45,10 @@ export interface PickerTarget {
  * alone unless the person ticks the box for the other lots of the show with the same title.
  */
 export function ProductPicker({ target, onClose, onDone }: { target: PickerTarget; onClose: () => void; onDone: (msg: string) => void | Promise<void> }) {
-  const { sale, buyer, showDate, reviewId, similar } = target
+  const { sale, buyer, showDate, reviewId } = target
+  // A lot whose title says the winner chooses ("CHOOSE ANY…") is a different product for every
+  // winner: one product for all of them is never offered (the server refuses it too).
+  const similar = sale.choiceTitle ? [] : target.similar
   const products = useQuery({ queryKey: ['products'], queryFn: () => apiGet<{ products: Product[] }>('/api/products') })
   const skus: PickerSku[] = (products.data?.products ?? []).flatMap((p) => p.skus.map((s) => ({ ...s, productName: p.name })))
   const [skuId, setSkuId] = useState('')

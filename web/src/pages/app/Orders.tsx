@@ -7,9 +7,9 @@ import { ChangeProduct } from '../../components/ChangeProduct'
 import { DeclineDialog } from '../../components/DeclineDialog'
 import { Icon } from '../../components/Icon'
 import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
-import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleProduct, type SaleStatus, type Show } from '../../lib/api'
+import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleProduct, type SaleStatus, type Show, type ToPick } from '../../lib/api'
 import { SHOP_TZ, fmtDate, fmtLongDate, fmtWhen, plural } from '../../lib/format'
-import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
+import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, pickStateWords, saleStatusLabel, unknownWords } from '../../lib/labels'
 import { invalidateSales } from '../../lib/invalidate'
 
 const NEXT = ORDER_NEXT_STEP
@@ -103,10 +103,12 @@ export function Orders() {
   }, [orders])
 
   // Lots nobody has named yet, grouped by show and title: "$1 BEAUTY PULLS #520" and "#521" are one group.
+  // Never a lot whose title says the winner chooses ("CHOOSE ANY…"): every one is another product.
   const { groups, biggest } = useMemo(() => {
     const g = new Map<string, Sale[]>()
     for (const o of orders)
       for (const s of unknown(o)) {
+        if (s.choiceTitle) continue
         const key = groupKey(s)
         if (!key) continue
         const list = g.get(key)
@@ -348,6 +350,11 @@ function Status({ o }: { o: Order }) {
   return (
     <>
       <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
+      {o.status === 'open' && (o.toPick ?? 0) > 0 && (
+        <div className="small sub" data-testid={`to-pick-${o.buyer}`}>
+          paid on Whatnot · {plural(o.toPick ?? 0, 'product', 'products')} to pick
+        </div>
+      )}
       {o.status === 'open' && <div className="small sub unknown">{unk.length ? unknownWords(unk) : 'older sale, waiting for the payment file'}</div>}
       {o.status === 'paid' && won > 0 && <div className="small faint sub">won {time(new Date(won).toISOString())}</div>}
       {(o.sales ?? []).some((s) => s.review?.reason === 'lot_won_twice') && (
@@ -921,14 +928,15 @@ function GiveawaysLink() {
 
 export function PickList() {
   const { showId = '' } = useParams()
-  const q = useQuery({ queryKey: ['pick-list', showId], queryFn: () => apiGet<{ items: PickItem[] }>(`/api/orders/shows/${showId}/pick-list`) })
+  const q = useQuery({ queryKey: ['pick-list', showId], queryFn: () => apiGet<{ items: PickItem[]; toPick?: ToPick[] }>(`/api/orders/shows/${showId}/pick-list`) })
+  const toPick = q.data?.toPick ?? []
   return (
     <section>
       <p>
         <Link to={`/app/orders?view=queue&show=${showId}`}>← Orders</Link>
       </p>
       <h2>Pick list</h2>
-      <p className="muted small">Quantities to pull for every paid order of this show that has not shipped.</p>
+      <p className="muted small">Quantities to pull for every paid item of this show that has not shipped, product by product.</p>
       {q.data && (
         <table className="table" data-testid="pick-list">
           <thead>
@@ -956,6 +964,34 @@ export function PickList() {
             ))}
           </tbody>
         </table>
+      )}
+      {toPick.length > 0 && (
+        <>
+          <h3>Paid on Whatnot, product to pick</h3>
+          <p className="muted small">
+            {plural(toPick.length, 'win is', 'wins are')} paid on Whatnot with no product named yet: the winner picks it. Name each one in Review to add it to the list above.
+          </p>
+          <table className="table" data-testid="to-pick">
+            <thead>
+              <tr>
+                <th>Buyer</th>
+                <th>Lot</th>
+                <th>Winner's pick</th>
+                <th className="num">Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              {toPick.map((w) => (
+                <tr key={w.saleId}>
+                  <td>{w.buyer}</td>
+                  <td>{w.lot}</td>
+                  <td>{w.pick ? (w.pick.state === 'product' ? `${w.pick.spot ?? ''} ${w.pick.name ?? ''}`.trim() : pickStateWords(w.pick.state)) : 'not read yet'}</td>
+                  <td className="num">{w.priceCents == null ? '' : money(w.priceCents * w.quantity)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
       <button className="btn small" onClick={() => window.print()}>
         Print

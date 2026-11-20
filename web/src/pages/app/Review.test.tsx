@@ -39,12 +39,13 @@ const products: Product[] = [
   { id: 2, name: 'Holo slab', notes: null, active: true, skus: [sku(4, 2, 'HOLO', 'Charizard', ['charizard slab'])] },
 ]
 
-function mount(items: ReviewItem[], path: string) {
+function mount(items: ReviewItem[], path: string, extra: Record<string, unknown> = {}, perShow: Record<string, unknown> = {}) {
   const posts: { url: string; body: unknown }[] = []
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === '/api/review') return new Response(JSON.stringify({ items }), { status: 200 })
+      if (url === '/api/review') return new Response(JSON.stringify({ items, ...extra }), { status: 200 })
+      if (url.startsWith('/api/review?showId=')) return new Response(JSON.stringify(perShow), { status: 200 })
       if (url === '/api/products') return new Response(JSON.stringify({ products }), { status: 200 })
       if (url === '/api/auth/csrf') return new Response(JSON.stringify({ token: 't' }), { status: 200 })
       if (init?.method === 'POST') {
@@ -95,6 +96,32 @@ test('the queue is listed by show, newest first, and a show opens only its own d
   expect(screen.getByRole('link', { name: 'Open the show' })).toHaveAttribute('href', '/app/shows/3')
   fireEvent.click(screen.getByRole('link', { name: '← All shows' }))
   expect(await screen.findAllByTestId(/^review-show-/)).toHaveLength(2)
+})
+
+test('more decisions than the page lists: the true count is said, and every show is listed with its own count', async () => {
+  // The page holds only the oldest show's decisions; the server counts the newest show too.
+  const shows = [
+    { showId: 5, showDate: '2026-11-13', count: 3, byReason: { price_mismatch: 3 } },
+    { showId: 3, showDate: '2026-10-25', count: 204, byReason: { unmatched_item: 204 } },
+  ]
+  mount([item, { ...item, id: 9 }], '/app/review', { total: 207, more: true, shows })
+  expect(await screen.findByText(/207 decisions waiting across 2 shows/)).toBeInTheDocument()
+  expect(screen.getByTestId('review-more')).toBeInTheDocument()
+  expect(screen.getByTestId('review-show-5')).toHaveTextContent('Price differs from the payment file (3)')
+  expect(screen.getByTestId('review-show-5')).toHaveTextContent('3 decisions')
+  expect(screen.getByTestId('review-show-3')).toHaveTextContent('204 decisions')
+})
+
+test('a show past the page opens on its own decisions, asked for by show', async () => {
+  const newer = { ...item, id: 31, showId: 5, showDate: '2026-11-13', reason: 'price_mismatch' }
+  mount([item], '/app/review/5', { total: 207, more: true, shows: [] }, { items: [newer], total: 1, more: false })
+  expect(await screen.findByTestId('review-31')).toBeInTheDocument()
+  expect(screen.queryByTestId('review-hidden')).toBeNull()
+})
+
+test('a show with more decisions than a page says how many are not listed yet', async () => {
+  mount([item], '/app/review/3', { total: 400, more: true, shows: [] }, { items: [item], total: 250, more: true })
+  expect(await screen.findByTestId('review-hidden')).toHaveTextContent('249 more decisions are waiting in this show')
 })
 
 test('a show whose queue is clear says so and points at the other shows', async () => {
@@ -243,4 +270,41 @@ test('a two for one says both spots, and when the winner picked fewer than the w
   )
   expect(await screen.findByTestId('review-21')).toHaveTextContent('Typed B4 and C3 in chat: Red bundle + Blue bundle.')
   expect(screen.getByTestId('review-22')).toHaveTextContent('this win may hold 2 products and the winner picked 1')
+})
+
+test('only a win Whatnot says is paid with its product to pick loses "Ignore"; nothing offers to cancel', async () => {
+  const waiting = (id: number, over: Partial<Sale>): ReviewItem => ({
+    ...item,
+    id,
+    sale: { id: 50 + id, showId: 3, showDate: '2026-10-24', buyer: `made_up_${id}`, sku: null, item: 'mystery box', quantity: 1, priceCents: 1200, auctionType: '', status: 'detected', statusReason: null, flagged: true, giftCount: 0, orderId: 1, externalOrderId: null, paidAt: null, seq: 3, rawText: null, source: 'chat', wonAt: null, createdAt: '2026-10-25T01:38:06Z', ...over } as Sale,
+  })
+  const posts = mount(
+    [
+      // Read from chat only (Compare only, not connected, or not applied yet): Ignore, as before.
+      waiting(31, { toPick: false }),
+      // Paid on Whatnot, product to pick: named here or nowhere.
+      waiting(32, { externalOrderId: '9000', source: 'whatnot', toPick: true }),
+      // Paid on Whatnot, but its listing is "not one of ours": the server says it is not to pick.
+      waiting(33, { externalOrderId: '9001', source: 'whatnot', toPick: false }),
+    ],
+    '/app/review/3',
+  )
+  const chat = await screen.findByTestId('review-31')
+  const paid = screen.getByTestId('review-32')
+  const off = screen.getByTestId('review-33')
+  const labels = (card: HTMLElement) => Array.from(card.querySelectorAll('button')).map((b) => b.textContent)
+  expect(labels(chat)).toContain('Ignore')
+  expect(labels(off)).toContain('Ignore')
+  expect(labels(paid)).not.toContain('Ignore')
+  for (const card of [chat, paid, off]) expect(card.querySelector('[data-testid="not-a-sale"]')).toBeNull()
+  fireEvent.click(Array.from(chat.querySelectorAll('button')).find((b) => b.textContent === 'Ignore')!)
+  await waitFor(() => expect(posts).toHaveLength(1))
+  expect(posts[0]).toEqual({ url: '/api/review/31/resolve', body: { action: 'dismiss' } })
+})
+
+test('a win made before the laptop recorded any chat is not read as "did not pick"', async () => {
+  mount([{ ...item, id: 41, proposal: { action: 'none', pick: { state: 'not_recorded' } } }], '/app/review/3')
+  const card = await screen.findByTestId('review-41')
+  expect(card).toHaveTextContent('No laptop was recording the chat yet when this lot was won')
+  expect(card).not.toHaveTextContent('Did not pick')
 })

@@ -1,14 +1,14 @@
 from collections import defaultdict
 
 from flask import Blueprint, g, jsonify, request
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import ChatMessage, ParsedEvent, ReviewItem, ReviewStatus, Sale, Show, Sku
-from ..services import audit, pipeline, sale_mode, shelves
+from ..services import audit, orders, pipeline, rules, sale_mode, shelves
 from ..services.catalog import CatalogError
 from ..services.inventory import InventoryError
 from ..services.permissions import allowed
@@ -16,6 +16,9 @@ from ..services.pipeline import ReviewError
 from ..services.whatnot import catalog as whatnot_catalog
 
 bp = Blueprint("review", __name__)
+
+# How many decisions one reply lists (oldest first). The reply always says how many match.
+REVIEW_PAGE = 200
 
 
 @bp.errorhandler(ReviewError)
@@ -88,6 +91,16 @@ def list_review():
             q = q.where(ReviewItem.status == ReviewStatus(status))
         except ValueError:
             return jsonify({"error": f"unknown status {status!r}"}), 400
+    # One show's decisions (`showId=<id>`, or `none` for those tied to no show): the list is
+    # the oldest page of everything, so a newer show is opened by asking for it.
+    show_arg = request.args.get("showId")
+    if show_arg == "none":
+        q = q.where(ReviewItem.show_id.is_(None))
+    elif show_arg is not None:
+        try:
+            q = q.where(ReviewItem.show_id == int(show_arg))
+        except ValueError:
+            return jsonify({"error": "unknown show"}), 400
     items = db.session.scalars(
         q.options(
             selectinload(ReviewItem.message),
@@ -98,8 +111,15 @@ def list_review():
             .selectinload(ParsedEvent.message),
         )
         .order_by(ReviewItem.id)
-        .limit(200)
+        .limit(REVIEW_PAGE)
     ).all()
+    # The true count, so a queue longer than the page is never reported as the page's size.
+    total = len(items)
+    if total == REVIEW_PAGE:
+        total = db.session.scalar(select(func.count()).select_from(q.subquery())) or total
+    # Past the page, the shows are summed up over the whole queue (not only the oldest page),
+    # so a newer show is listed with its own count and can be opened.
+    shows = _show_summaries(q) if total > len(items) and show_arg is None else []
     # A win waiting for its product: the shelf spot its winner typed, on a show laid out.
     waiting = [
         i.sale for i in items if i.reason == "unmatched_item" and i.sale and not i.sale.sku_id
@@ -108,9 +128,49 @@ def list_review():
     sale_mode.prime({i.show_id for i in items if i.sale is not None})
     whatnot_catalog.prime_listings([s for s in waiting if s.external_order_id])
     context = _contexts(items)
+    # Paid on Whatnot with no product yet: the screen hides "Ignore" for these (the server
+    # refuses it, `pipeline.must_name`). One query for the page.
+    to_pick = orders.to_pick_ids(s.id for s in waiting)
     return jsonify(
-        {"items": [serializers.review_item(i, context[i.id], spots.get(i.sale_id)) for i in items]}
+        {
+            "items": [
+                serializers.review_item(i, context[i.id], spots.get(i.sale_id), to_pick=to_pick)
+                for i in items
+            ],
+            "total": total,
+            "more": total > len(items),
+            "shows": shows,
+        }
     )
+
+
+def _show_summaries(q) -> list[dict]:
+    """Per show (newest first, those tied to no show last): how many decisions wait, by reason."""
+    sub = q.subquery()
+    rows = db.session.execute(
+        select(sub.c.show_id, Show.show_date, sub.c.reason, func.count())
+        .outerjoin(Show, Show.id == sub.c.show_id)
+        .group_by(sub.c.show_id, Show.show_date, sub.c.reason)
+    ).all()
+    out: dict[int | None, dict] = {}
+    for show_id, show_date, reason, n in rows:
+        one = out.setdefault(
+            show_id,
+            {
+                "showId": show_id,
+                "showDate": show_date.isoformat() if show_date else None,
+                "count": 0,
+                "byReason": {},
+            },
+        )
+        one["count"] += int(n)
+        one["byReason"][reason] = int(n)
+    shown = sorted(
+        (s for s in out.values() if s["showId"] is not None),
+        key=lambda s: (s["showDate"] or "", s["showId"]),
+        reverse=True,
+    )
+    return shown + ([out[None]] if None in out else [])
 
 
 @bp.post("/<int:item_id>/resolve")
@@ -130,6 +190,15 @@ def resolve(item_id: int):
             return jsonify({"error": "applyTo must be a short list of review item ids"}), 400
         only = set(ids)
     widen = action == "assign_sku" and (only is not None or bool(body.get("applyToSimilar")))
+    if widen and item.sale is not None and rules.is_choice_title(item.sale.item_text or ""):
+        # "CHOOSE ANY PRODUCT YOU WANT #73": each winner picks their own product, so one
+        # product for every such lot is wrong for all but one buyer (and holds stock for all).
+        return jsonify(
+            {
+                "error": "Each winner picks their own product in this kind of lot, "
+                "so name each one on its own."
+            }
+        ), 400
     # "Always use this product for this listing": only where each listing is one product
     # (in a winner's-pick show the listing is a "choose any" lot), and only for someone who
     # may link listings.

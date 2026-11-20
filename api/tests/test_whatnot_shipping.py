@@ -732,7 +732,12 @@ def test_a_label_job_run_again_sends_nothing_a_second_time(app, shop):
     a, b = ready(app, shop), ready(app, shop, "kat.c")
     with app.app_context():
         ids = list(db.session.scalars(select(WhatnotShipment.id).order_by(WhatnotShipment.id)))
-        payload = {"org_id": shop["org"], "shipment_ids": ids, "user_id": None}
+        payload = {
+            "org_id": shop["org"],
+            "shipment_ids": ids,
+            "user_id": None,
+            "show_id": shop["show"],
+        }
         shipping.labels_job(payload)
         shipping.labels_job(payload)
         shipping.labels_job({**payload, "shipment_ids": list(reversed(ids))})

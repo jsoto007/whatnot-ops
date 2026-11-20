@@ -238,3 +238,27 @@ test('nothing ready to pick: the page says so and the print button waits', async
   expect(screen.getByRole('button', { name: 'Print order slips' })).toBeDisabled()
   expect(screen.getByRole('tab', { name: /Everyone/ })).toHaveTextContent('2')
 })
+
+test('the slips say whether Whatnot\'s orders were read in full, and packing is told whom to ask', async () => {
+  const at = new Date(Date.now() - 30 * 60_000).toISOString()
+  mount(['orders.view', 'orders.fulfill'], { ...doc, ordersRead: { at, final: false, live: false } })
+  const strip = await screen.findByTestId('orders-read')
+  expect(strip).toHaveTextContent('These slips may be missing orders.')
+  expect(strip).toHaveTextContent('have not been read since it ended')
+  // Fulfilment cannot open Review: the line says who can, and links nowhere it cannot go.
+  expect(screen.getByTestId('slips-review')).toHaveTextContent('A manager names it in Review')
+  expect(screen.queryByRole('link', { name: 'Open Review' })).toBeNull()
+})
+
+test('a live show and a fully read show each get their own plain line; a manager can open Review', async () => {
+  const at = new Date(Date.now() - 2 * 60_000).toISOString()
+  mount(['orders.view', 'review.act'], { ...doc, ordersRead: { at, final: false, live: true } })
+  expect(await screen.findByTestId('orders-read')).toHaveTextContent('still on air')
+  expect(screen.getByRole('link', { name: 'Open Review' })).toBeInTheDocument()
+})
+
+test('a show read in full after it ended says nothing is missing', async () => {
+  const at = new Date(Date.now() - 5 * 60_000).toISOString()
+  mount(['orders.view'], { ...doc, ordersRead: { at, final: true, live: false } })
+  expect(await screen.findByTestId('orders-read')).toHaveTextContent('read in full after the show ended')
+})

@@ -122,7 +122,7 @@ export interface Organization {
 }
 /** What the pick worker found for a win still waiting for its product, once the show was over. */
 export interface PickFound {
-  state: 'product' | 'none' | 'unknown_code' | 'several' | 'unread' | 'no_layout'
+  state: 'product' | 'none' | 'unknown_code' | 'several' | 'unread' | 'no_layout' | 'not_recorded'
   spot?: string
   spots?: string[]
   skuId?: number
@@ -320,6 +320,9 @@ export interface Sale {
   /** False when the title names one lot of one show ("… #520", "CHOOSE ANY…"): the server
    * never learns it as a product's name, so "remember this name" is not offered. */
   rememberName?: boolean
+  /** The title says the winner chooses ("CHOOSE ANY…"): each such lot is its own product, so
+   * "name it once" for the similar lots is never offered (the server refuses it too). */
+  choiceTitle?: boolean
   /** How the sale's show sells. In a winner's-pick show the product a person chooses is that
    * winner's pick, so "remember this name" starts unticked. */
   saleMode?: SaleMode
@@ -327,6 +330,9 @@ export interface Sale {
   priceCents: number | null
   auctionType: string
   status: SaleStatus
+  /** Whatnot says it is paid while its product is still to pick (the winner's pick): the sale
+   * still waits here, but it is not unpaid. Null where the server did not look. */
+  toPick?: boolean | null
   statusReason: string | null
   flagged: boolean
   /** Free gifts packed with this lot ("Gift 2" on the order slips); set by a person. */
@@ -424,6 +430,8 @@ export interface Order {
   buyer: string
   status: OrderStatus
   verified: boolean
+  /** Wins of this order Whatnot says are paid whose product is still to pick. */
+  toPick?: number
   items: number
   totalCents: number
   notes: string | null
@@ -504,6 +512,8 @@ export interface OrderSlips {
   } | null
   /** The shop is connected to Whatnot: the app reads the show's parcels itself. */
   parcelsFromWhatnot?: boolean
+  /** When Whatnot's orders for this show were last read, and whether that read began after it ended (nothing can be missing). Null: no Whatnot show is tied to it. */
+  ordersRead?: { at: string | null; final: boolean; live: boolean } | null
 }
 export interface PickItem {
   skuId: number
@@ -512,6 +522,19 @@ export interface PickItem {
   variant: string
   quantity: number
   orders: number
+}
+/** A win Whatnot says is paid whose product is still to pick: a row of the pick list to settle. */
+export interface ToPick {
+  saleId: number
+  orderId: number | null
+  buyer: string
+  lot: string
+  item: string
+  quantity: number
+  priceCents: number | null
+  reviewId: number | null
+  /** What the winner typed, as the pick worker read it once the show was over. */
+  pick: { state: PickFound['state']; spot?: string; name?: string } | null
 }
 export interface ReconcileRow {
   buyer: string
@@ -548,6 +571,12 @@ export interface ShowTiles {
   cancelled: number
   revenuePaidCents: number
   revenuePendingCents: number
+  /** Wins Whatnot says are paid whose product is still to pick, and their money: shown apart,
+   * never part of revenuePaidCents. */
+  toPick?: number
+  revenueToPickCents?: number
+  /** Everything sold so far (paid, awaiting, and to pick), added up by the server. */
+  revenueSoldCents?: number
   orders: Record<string, number>
   toFulfil: number
   openReviews: number
@@ -600,6 +629,20 @@ export interface Attention {
   oversold: LowStockItem[]
   unreconciledShows: { showId: number; date: string; pendingCents: number; openSales: number }[]
   live: (ShowTiles & { pace: number[] }) | null
+  /** Whatnot says a show is live while no laptop is recording it (well). */
+  liveGaps?: LiveGap[]
+}
+/** A live show with no laptop recording it, one that began late, or one whose chat stopped. `showId`: the app's show to open, when it has one. */
+export interface LiveGap {
+  showId: number | null
+  title: string
+  code: 'no_recording' | 'late_recording' | 'no_chat'
+  minutes: number
+}
+/** What a person should know about reading Whatnot: reads that keep failing, or orders behind a show. */
+export interface WhatnotNotice {
+  code: 'reads_failing' | 'orders_behind'
+  minutes: number
 }
 export interface NavCounts {
   openReviews: number
@@ -607,11 +650,13 @@ export interface NavCounts {
   live: boolean
   /** The Whatnot connection needs a person (rejected token, missing permission). */
   whatnotProblem?: boolean
+  /** Whatnot reads that keep failing, or orders behind a show (shown to every role). */
+  whatnotNotice?: WhatnotNotice | null
 }
 
 // ---------- Whatnot Seller API connection ----------
 /** Why calls to Whatnot are failing, as a code the page turns into words (labels.ts). */
-export type WhatnotProblem = 'token_rejected' | 'no_permission' | 'unreachable'
+export type WhatnotProblem = 'token_rejected' | 'no_permission' | 'wrong_account' | 'unreachable'
 export interface WhatnotStatus {
   /** The server has an access token at all (the developer sets it; it is never shown). */
   configured: boolean
@@ -654,7 +699,8 @@ export interface WhatnotCompare {
   choices?: WhatnotShowInfo[]
   /** The show ended and every order was read since: only then is a sale with no order called out. */
   complete?: boolean
-  info?: { orders: number; giveaways: number; noBuyer: number } | null
+  /** noBuyer / unreadable: items left out; blind: most orders name no buyer, so none can be matched. */
+  info?: { orders: number; giveaways: number; noBuyer: number; noBuyerPaid?: number; unreadable?: number; blind?: boolean } | null
   summary?: Record<string, number>
   rows?: ReconcileRow[]
   uncovered?: { saleId: number; buyer: string; item: string; quantity: number; priceCents: number | null; status: string }[]
@@ -688,6 +734,8 @@ export interface ShippingPackage {
   askable: boolean
   /** When its label was last opened to print from here; "Print labels" skips it then. */
   printedAt?: string | null
+  /** Items of cancelled orders still listed in this labelled package: its label may list them. */
+  cancelledItems?: number
 }
 export interface ShippingBuyer {
   buyer: string | null
@@ -778,6 +826,12 @@ export interface WhatnotSales {
   pendingOrders: number
   cancelledCents: number
   cancelledOrders: number
+  /** What Whatnot took off the paid orders (sales are after it). */
+  discountCents: number
+  /** What Whatnot took off the cancelled orders (their price above is after it). */
+  cancelledDiscountCents: number
+  /** Sales before discounts and cancellations: Whatnot's own "Gross Sales" reading. */
+  grossCents: number
   giveaways: number
   /** Orders in a currency other than the shop's: counted, never added in. */
   otherCurrencyOrders: number
@@ -812,7 +866,8 @@ export interface WhatnotCustomerSide {
 export interface WhatnotCustomers {
   new: WhatnotCustomerSide
   returning: WhatnotCustomerSide
-  /** The oldest Whatnot order the app holds: how far back "returning" can see. */
+  /** How far back "returning" can see: where every order is read once the older orders are
+   * (`ordersCompleteSince`), else the oldest Whatnot order the app holds. */
   knownSince: string | null
 }
 export interface WhatnotMoneyData {
@@ -820,6 +875,11 @@ export interface WhatnotMoneyData {
   days: number
   currency: string
   ordersReadAt: string | null
+  /** The days the app has proved it holds every order Whatnot has for the shop: from this
+   * one to `ordersCompleteUntil` (a daily top-up moves that one forward). Null while the
+   * older orders are still being read (the earlier days may then be short). */
+  ordersCompleteSince: string | null
+  ordersCompleteUntil?: string | null
   sales: WhatnotSales
   /** Paid sales split by customer: returning = a paid order with the shop before the period. */
   customers: WhatnotCustomers
@@ -863,6 +923,38 @@ export interface LaptopDataDeleted {
   orders: number
   reviews: number
   kept: boolean
+}
+
+/** GET /api/shows/:id → split: the shows here that are one show on Whatnot (more than one). */
+export interface ShowSplit {
+  /** The show that stays when they are merged (the laptop's recording). */
+  keeper: number
+  shows: number[]
+}
+/** GET /api/shows/:id/merge (owner): what merging the shows of one Whatnot show would move. */
+export interface ShowMergePreview {
+  keeper: number | null
+  /** Shows with no laptop chat that fold into the keeper and are then gone. */
+  folded: number[]
+  /** Other laptop recordings of the show: they stay as they are. */
+  laptops: number[]
+  sales: number
+  orders: number
+  /** Buyers whose two orders become one. */
+  joined: number
+  reviews: number
+  /** Whatnot's parcel lines read for the show. */
+  lots: number
+  /** Why it cannot be done now, in words; empty when it can. */
+  blockers: string[]
+}
+/** POST /api/shows/:id/merge */
+export interface ShowMerged {
+  showId: number
+  shows: number
+  sales: number
+  orders: number
+  joined: number
 }
 
 /** What the team says about a buyer: someone to look after, or someone to keep an eye on. */

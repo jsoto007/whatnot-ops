@@ -71,6 +71,14 @@ RATES = ("show_clickthrough_rate", "average_rating")
 RESULTS_TRIES = 36  # every 10 minutes for six hours after the show
 RESULTS_EVERY_S = 600
 RESULTS_WINDOW = timedelta(days=7)
+# Whatnot calls a show's results GENERATED while it is still counting (a read 25 minutes after
+# one show held 94 of its 217 orders and stayed that way). GENERATED is therefore asked again:
+# every hour while the last read is early (within EARLY of the show's end), then every
+# REFRESH_EVERY, until REFRESH_WINDOW after the show ended. One call each, never while a show
+# is on air.
+RESULTS_EARLY = timedelta(hours=6)
+RESULTS_REFRESH_EVERY = timedelta(hours=6)
+RESULTS_REFRESH_WINDOW = timedelta(days=3)
 
 
 def _count(value) -> int | None:
@@ -99,6 +107,10 @@ def store_results(ws: WhatnotShow, data: dict) -> str:
     for key in RATES:
         if (v := _rate(data.get(key))) is not None:
             out[key] = v
+    if ws.analytics_status == "GENERATED" and ws.analytics and (status != "GENERATED" or not out):
+        # Figures Whatnot already generated are only replaced by newer ones: never by "still
+        # working on it", "will not be calculated" or an answer with nothing readable in it.
+        return status
     ws.analytics_status = status
     ws.analytics_at = datetime.now(UTC)
     if out or status in FINAL:
@@ -133,29 +145,43 @@ def show_results_job(payload: dict) -> None:
     ws = sync._show_row(org_id, payload.get("whatnot_show_id"))
     if ws is None:
         return
+    refresh = ws.analytics_status in FINAL  # figures held already: this is the re-read
+    if refresh and sync.on_air_now(org_id):
+        return
     status = sync._run(
         org_id, "analytics", lambda: read_results(org_id, client_for(org_id), ws), flag=False
     )
     db.session.commit()
-    if status in (None, *FINAL) or tries + 1 >= RESULTS_TRIES or jobs.inline():
+    if refresh or status in (None, *FINAL) or tries + 1 >= RESULTS_TRIES or jobs.inline():
         return
     schedule_results(org_id, ws.whatnot_id, tries=tries + 1, delay_s=RESULTS_EVERY_S)
 
 
 def results_due(org_id: int) -> list[str]:
-    """Recently ended shows whose results Whatnot had not finished when we last asked."""
+    """Recently ended shows to ask Whatnot about: those whose results it had not finished
+    when we last asked, and (`RESULTS_REFRESH_WINDOW`) those it had called GENERATED, which
+    it can still change. Hourly at most for the shop; the re-reads wait while a show is
+    on air."""
     if not sync._due(org_id, "analytics", timedelta(hours=1)):
         return []
-    return list(
-        db.session.scalars(
-            select(WhatnotShow.whatnot_id).where(
-                WhatnotShow.organization_id == org_id,
-                WhatnotShow.status == "ended",
-                WhatnotShow.ended_at >= datetime.now(UTC) - RESULTS_WINDOW,
-                WhatnotShow.analytics_status.is_(None) | WhatnotShow.analytics_status.not_in(FINAL),
-            )
+    now = datetime.now(UTC)
+    shows = db.session.scalars(
+        select(WhatnotShow).where(
+            WhatnotShow.organization_id == org_id,
+            WhatnotShow.status == "ended",
+            WhatnotShow.ended_at >= now - RESULTS_WINDOW,
         )
-    )
+    ).all()
+    pending, refresh = [], []
+    for ws in shows:
+        if ws.analytics_status not in FINAL:
+            pending.append(ws.whatnot_id)
+        elif ws.analytics_status == "GENERATED" and ws.ended_at >= now - RESULTS_REFRESH_WINDOW:
+            at = ws.analytics_at
+            early = at is None or at < ws.ended_at + RESULTS_EARLY
+            if at is None or now - at >= (timedelta(hours=1) if early else RESULTS_REFRESH_EVERY):
+                refresh.append(ws.whatnot_id)
+    return pending + ([] if not refresh or sync.on_air_now(org_id) else refresh)
 
 
 # ---------- the financial ledger ----------

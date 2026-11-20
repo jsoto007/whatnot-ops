@@ -409,6 +409,10 @@ def apply_proposal(item: ReviewItem, *, actor: Actor, user=None) -> ReviewItem:
         if sale is None or sale.organization_id != item.organization_id:
             raise pipeline.ReviewError("sale not found", 404)
         status = SaleStatus.payment_failed if action == "payment_failed" else SaleStatus.cancelled
+        if status is SaleStatus.cancelled:
+            # A paid win still to name is named, never cancelled: by a person applying the
+            # AI's suggestion here as in Review's "set status", and never by the AI itself.
+            pipeline.refuse_cancelling(sale)
         pipeline.set_sale_status(
             sale,
             status,
@@ -423,6 +427,7 @@ def apply_proposal(item: ReviewItem, *, actor: Actor, user=None) -> ReviewItem:
         _apply_classify_sale(item)
         return item
     elif action == "dismiss":
+        pipeline.refuse_ignoring(item)  # a paid win to pick is named, never ignored
         item.status = ReviewStatus.dismissed
         item.resolution = {"action": "dismiss", "by": actor.type}
     else:
@@ -535,6 +540,9 @@ def audit_show(show_id: int) -> dict:
                 and not pipeline._in_fulfilment(sale)
                 and _after_the_win(sale, f.get("seq"))
                 and _corroborated(show, f.get("seq"), sale.buyer_username)
+                # Paid on Whatnot with its product still to name: a person decides
+                # (`apply_proposal` refuses a cancel of it).
+                and not (kind == "cancel_sale" and pipeline.must_name(sale))
             ):
                 apply_proposal(item, actor=AI_ACTOR)
                 applied += 1
@@ -604,9 +612,16 @@ def _ai_audit_show_job(payload: dict) -> None:
 def schedule_review(item: ReviewItem) -> None:
     if provider_name() in ("", "none", "off"):
         return
-    if item.reason == "unmatched_item" and item.event_id is not None:
-        ev = db.session.get(ParsedEvent, item.event_id)
-        if ev is not None and rules.is_choice_title(ev.item_text):
+    if item.reason == "unmatched_item":
+        # The lot's title: from its chat line, or, for a sale Whatnot's order made (no chat
+        # line), the order's listing title kept on the sale.
+        if item.event_id is not None:
+            ev = db.session.get(ParsedEvent, item.event_id)
+            title = ev.item_text if ev is not None else None
+        else:
+            sale = db.session.get(Sale, item.sale_id) if item.sale_id else None
+            title = sale.item_text if sale is not None else None
+        if title and rules.is_choice_title(title):
             # "CHOOSE ANY PRODUCT YOU WANT #73": the winner picks in chat, which the AI is
             # not shown, so a call could only cost. ("Red bundle 3" may still be a product.)
             return

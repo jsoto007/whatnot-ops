@@ -165,6 +165,7 @@ def create_app(config: Config | None = None) -> Flask:
 
     from . import models  # noqa: F401 - register tables with SQLAlchemy/Alembic
     from .services import picks, pipeline, supervisor  # noqa: F401 - registers job handlers
+    from .services.whatnot import backfill as _whatnot_backfill  # noqa: F401
     from .services.whatnot import catalog as _whatnot_catalog  # noqa: F401
     from .services.whatnot import (  # noqa: F401 - register their jobs and webhook topics
         orders as _whatnot_orders,

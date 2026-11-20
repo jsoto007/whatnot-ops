@@ -3,7 +3,9 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { DeleteLaptopData } from '../../components/DeleteLaptopData'
-import { api, apiGet, money, type ChatMessage, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleMode, type SaleStatus, type Shelf, type Show, type ShowTiles, type TopBuyer, type TopSku, type WalkAway, type WhatnotRecap as WhatnotRecapData } from '../../lib/api'
+import { MergeShows } from '../../components/MergeShows'
+import { LiveGaps } from '../../components/LiveGaps'
+import { api, apiGet, money, type ChatMessage, type LiveGap, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleMode, type SaleStatus, type Shelf, type Show, type ShowSplit, type ShowTiles, type TopBuyer, type TopSku, type WalkAway, type WhatnotRecap as WhatnotRecapData } from '../../lib/api'
 import { fmtLongDate, fmtShopClock, fmtShopTime, plural } from '../../lib/format'
 import { SALE_MODE_LABEL, lotLabel, saleModeHelp, saleModeLabel, saleStatusLabel } from '../../lib/labels'
 import { useDebounced } from '../../lib/useDebounced'
@@ -18,12 +20,36 @@ const TABS = ['sales', 'walkaways', 'payments', 'shelves', 'events', 'messages',
 type Tab = (typeof TABS)[number]
 const TAB_LABEL: Record<Tab, string> = { sales: 'Sales', walkaways: 'Walked away', payments: 'Payments', shelves: 'Shelves', events: 'Parsed lines', messages: 'Chat', analytics: 'Analytics' }
 
+/** One show on Whatnot is more than one show here: say so, link the others, offer the merge. */
+function SplitWarning({ split, showId, canMerge, onMerge }: { split: ShowSplit; showId: string; canMerge: boolean; onMerge: () => void }) {
+  const others = split.shows.filter((x) => String(x) !== showId)
+  return (
+    <div className="card small warn-card" role="status" data-testid="show-split">
+      <b>This show on Whatnot is {plural(split.shows.length, 'show', 'shows')} here</b>, so its sales and a buyer's orders can be split between them.{' '}
+      {others.map((x, i) => (
+        <Fragment key={x}>
+          {i > 0 && ' · '}
+          <Link to={`/app/shows/${x}`}>{others.length > 1 ? `Other show ${i + 1}` : 'Open the other show'}</Link>
+        </Fragment>
+      ))}{' '}
+      {canMerge ? (
+        <button type="button" className="link" onClick={onMerge} data-testid="show-merge-open">
+          Merge into one show…
+        </button>
+      ) : (
+        <span className="muted">The owner can merge them into one.</span>
+      )}
+    </div>
+  )
+}
+
 export function ShowDetail() {
   const { id = '' } = useParams()
   const { can, me } = useAuth()
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [deleting, setDeleting] = useState(false)
+  const [merging, setMerging] = useState(false)
   const [notice, setNotice] = useState('')
   const [params, setParams] = useSearchParams()
   const asked = (TABS as readonly string[]).includes(params.get('tab') ?? '') ? (params.get('tab') as Tab) : 'sales'
@@ -32,7 +58,7 @@ export function ShowDetail() {
     next.set('tab', t)
     setParams(next, { replace: true })
   }
-  const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats; clockProblems?: ClockProblem[]; noShelves?: boolean; laptopNeeded?: boolean }>(`/api/shows/${id}`) })
+  const show = useQuery({ queryKey: ['show', id], queryFn: () => apiGet<{ show: Show; stats: ParseStats; clockProblems?: ClockProblem[]; noShelves?: boolean; laptopNeeded?: boolean; liveGaps?: LiveGap[]; split?: ShowSplit | null }>(`/api/shows/${id}`) })
   const dash = useQuery({ queryKey: ['show-dashboard', id], queryFn: () => apiGet<{ tiles: ShowTiles; topBuyers: TopBuyer[]; topSkus: TopSku[]; winnersWithoutPurchase: WalkAway[]; whatnot?: WhatnotRecapData | null }>(`/api/dashboard/shows/${id}`) })
   const sales = useQuery({ queryKey: ['sales', id], queryFn: () => apiGet<{ sales: Sale[] }>(`/api/shows/${id}/sales`) })
   const parse = useMutation({ mutationFn: () => api<ParseStats>('POST', `/api/shows/${id}/parse`), onSuccess: () => invalidateSales(qc) })
@@ -126,12 +152,26 @@ export function ShowDetail() {
           }}
         />
       )}
+      {merging && s && (
+        <MergeShows
+          showId={id}
+          label={`${fmtLongDate(s.date)}${s.title ? ` · ${s.title}` : ''}`}
+          onClose={() => setMerging(false)}
+          onDone={(r) => {
+            setMerging(false)
+            setNotice(`Merged into one show: ${plural(r.sales, 'sale', 'sales')} and ${plural(r.orders, 'order', 'orders')} moved. Nothing changed in stock.`)
+            if (String(r.showId) !== id) navigate(`/app/shows/${r.showId}`)
+          }}
+        />
+      )}
+      {show.data?.split && !merging && <SplitWarning split={show.data.split} showId={id} canMerge={can('shows.merge')} onMerge={() => setMerging(true)} />}
       {notice && (
         <div className="card small" role="status" data-testid="laptop-data-notice">
           {notice}
         </div>
       )}
 
+      <LiveGaps gaps={show.data?.liveGaps ?? []} />
       {!!show.data?.clockProblems?.length && <ClockWarning problems={show.data.clockProblems} />}
       {show.data?.noShelves && tab !== 'shelves' && (
         <div className="card small warn-card" role="status" data-testid="no-shelves">

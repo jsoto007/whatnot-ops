@@ -100,7 +100,13 @@ can differ on its own page):
    follows: a declined card the laptop sees on the stream, or a host's line about it,
    closes nothing. Where the order cannot say (the recording is not matched to a show on
    Whatnot yet, Whatnot rejects the token, or the orders do not say who bought them), the
-   stream's decline closes the sale as before.
+   stream's decline closes the sale as before. Either way a decline from the stream lands
+   only on the same win (`pipeline._declined_win`): the buyer's sale of the same lot by
+   title at the price the player showed, or a sale an order made at the price after its
+   discount and won within half an hour of the decline; never a sale whose own Whatnot
+   order Whatnot already says is paid (a card declined and paid a moment later). A decline
+   that matches nothing goes to a person, and so does one that matches such a paid win AND
+   another win of the lot that is not.
 
    **An auction has one win.** An auction is a numbered lot of the show ("$1 BEAUTY PULLS
    #520"). Whatnot's paid order for a lot says who has it:
@@ -285,6 +291,7 @@ link):
 | Connection (which seller the shop is; problems people must act on) | `connection.py`, `routes/whatnot.py` |
 | Webhooks: verify (Standard Webhooks HMAC), store once by `webhook-id`, hand to a job | `webhooks.py`, `routes/webhooks.py` |
 | Mirror of shows and orders; matching recordings to shows; the timer | `sync.py` |
+| Older orders: one read, newest first, back to the dashboard's longest period with no cap (the normal catch-up stops at 3,000 orders of any kind and reads only the last three weeks of shows), then a daily top-up of the last days (orders placed between shows). Stores orders and items only: never marks a show read, makes a sale, applies an order or moves stock itself (what it stores is then re-read by the timer like any order, so an unsettled order of a show followed in "auto" mode is applied when it settles). Queued by the timer, never while a show is on air, in slices of about 90 s that each queue the next. The end of Whatnot's list only counts as the floor when two reads agree. Says on the dashboard which days every order is read for (`ordersCompleteSince` to `ordersCompleteUntil`) | `backfill.py` |
 | Orders against sales: compare, apply, "auto" | `orders.py` (through `services/reconcile.py` and `pipeline.py`) |
 | Parcels, the one-label rule, label requests and printing, carrier status | `shipping.py`, `routes/shipping.py` |
 | A show's results and the financial ledger (request, download, import by transaction id, sums) | `results.py`; shown through `services/dashboard.py` |
@@ -323,9 +330,59 @@ The probe, then the first connection in "Compare only" (reads only; one show com
 - **A first connection reads weeks of ended shows.** Their orders keep changing for days,
   so a show that was over before the shop chose "Apply as they arrive" is never applied
   on its own (`sync.history`, `whatnot_connections.auto_since`); a person still can.
-- **Known limit.** Orders are listed newest first with no filter, and a catch-up stops at
-  3,000 orders: shows older than that are marked read although they were not. None of
-  them has a recording, and none is applied on its own.
+- **Known limit, and how a catch-up ends.** Orders are listed newest first with no filter.
+  A catch-up stores at most 3,000 orders new to the app per pass (`sync.MAX_NEW_ORDERS`)
+  and walks at most 400 pages (`MAX_LISTED_PAGES`). A show is marked read only when the
+  read got down to its own start; the shows it did not reach stay unread and the next pass
+  carries on past the orders already held. (Until 2026-11-19 a stopped catch-up marked
+  every show read: shows beyond the newest 3,000 orders of the first connection hold none
+  or few of their orders here, and the dashboard's 30-day sales fell short of Whatnot's.) The
+  first pass after that fix reads every ended show of the last 30 days again, once per shop
+  (`sync.begin_repair`, `_unread_shows`; waits while a show is on air); only the orders the
+  app does not hold cost calls. A walk that hits its page limit with nothing new to store
+  is not repeated for the shows it cannot reach for six hours (`sync.STALLED_RETRY`). A show
+  older than 30 days is not read by the timer: "Read again from Whatnot" on the show's
+  Payments tab reads one show down to its own start.
+
+## How reads stay complete
+
+- **Results.** Whatnot says GENERATED while it is still counting (94 of 217 orders was
+  read 25 minutes after one show). A GENERATED answer is asked again every hour until six
+  hours after the show ended, then every six hours, until three days after it ended
+  (`results.results_due`); never while a show is on air, and figures already generated are
+  only replaced by newer GENERATED ones, never by "still working", "will not be calculated"
+  or an answer with nothing readable in it.
+- **Late orders.** A card declined at the win and retried is a new order, placed after the
+  show ended. The ended show's orders are listed again at 1, 6 and 24 hours after the end
+  (`sync.LATE_READS`), not while a show is on air. An order first stored by a parcel read is
+  queued for apply like any other (`sync.queue_apply`). The parcels of a show that ended are
+  asked for once its orders are read in full after the end (`sync._parcels_owed`), not while
+  another show is on air: nothing is marked asked meanwhile, so the first pass after that
+  show asks for them.
+- **A read that fails part-way** keeps the orders already read (each is stored whole: an
+  order whose items could not be read is taken out again) and does not mark the shows
+  read. A failed show-list or open-order read is due again after two minutes
+  (`sync.RETRY_AFTER_FAILURE`), not a whole interval later, and the pass goes on to
+  everything behind it (`sync._attempt`). The orders an open-order pass re-read before a
+  failure are kept and their shows applied. A repair of orders held with no items
+  (`sync.repair_items`) takes them in turn, skips one Whatnot refuses and never stops the
+  read it rides on.
+- **Orders that cannot be read.** An order with no buyer does not stop the show: it is left
+  out, and Review says so in words (`orders_left_out`). If more than one in five of the
+  show's orders have no buyer (`orders.NAMELESS_ONE_IN`) the show is "blind": nothing is
+  applied and no sale is called out as unpaid. While a paid order has no buyer, no sale of
+  the show is called out as unpaid, none gives way to another win of its lot, and a failed
+  order is not undone as a decline if that order may be its retry (Review says so): the
+  same win, placed AFTER the failed orders, and one such payment holds back the attempts of
+  ONE buyer's win (a card declined twice, then paid), the buyer whose attempt is the closest
+  before it (`orders._hold_for_nameless`); the other buyers' are declines. A payment with no
+  order time holds them only when they are all one buyer's.
+- **Unverified.** Whether Whatnot's results `orders_count` includes giveaway orders, and
+  whether real orders ever come back with no buyer, are not known; the repair above does not
+  rely on the first.
+- **The open-order re-read** compares each order's status, not a count, and skips an order
+  Whatnot refuses (five refusals in a row end the pass, and so does a pass in which every
+  order was refused: that one is a failure, not a success).
 
 ## Not verified
 

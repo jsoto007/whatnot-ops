@@ -409,3 +409,30 @@ test('a show that needs its laptop has no such note', async () => {
   await screen.findByTestId('show-mode')
   expect(screen.queryByTestId('no-laptop')).toBeNull()
 })
+
+test('a live show whose laptop went quiet says so on the show page', async () => {
+  const show = { id: 3, key: 'k', date: '2026-11-12', startedAt: '2026-11-13T05:29:00Z', updatedAt: '2026-11-13T06:29:00Z', sourceUrl: null, messageCount: 9, title: null, recorded: true }
+  const liveGaps = [{ showId: 3, title: 'Friday night', code: 'no_chat', minutes: 9 }]
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url === '/api/shows/3') return new Response(JSON.stringify({ show, stats: {}, liveGaps }), { status: 200 })
+      if (url.endsWith('/sales')) return new Response(JSON.stringify({ sales: [] }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }),
+  )
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter initialEntries={['/app/shows/3']}>
+          <Routes>
+            <Route path="/app/shows/:id" element={<ShowDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+  const card = await screen.findByTestId('live-gaps')
+  expect(card).toHaveTextContent('No chat has come in from the laptop for 9 minutes.')
+  expect(screen.queryByRole('link', { name: 'Open the show' })).toBeNull()
+})

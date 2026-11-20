@@ -39,6 +39,9 @@ export function WhatnotOrders({ showId, canApply }: { showId: string; canApply: 
   const conflicts = rows.filter((r) => r.action === 'unmatched').length
   const toChange = CHANGES.reduce((n, k) => n + (summary[k] ?? 0), 0) + conflicts + (d.complete ? uncovered.length : 0)
   const noBuyers = (d.info?.noBuyer ?? 0) > 0
+  // Most orders name no buyer: none can be matched, so Apply is off. A few are left out one by one.
+  const blind = d.info?.blind ?? noBuyers
+  const unreadable = d.info?.unreadable ?? 0
 
   const matcher = canApply && (d.choices?.length ?? 0) > 0 && d.link !== 'made' && (
     <span className="inline-form">
@@ -82,7 +85,14 @@ export function WhatnotOrders({ showId, canApply }: { showId: string; canApply: 
           </p>
           {noBuyers && (
             <p className="form-error small" data-testid="whatnot-no-buyers">
-              Whatnot is not telling the app who bought {plural(d.info!.noBuyer, 'item', 'items')}, so they cannot be matched. The access token needs the permission to read customers.
+              {blind
+                ? `Whatnot is not telling the app who bought ${plural(d.info!.noBuyer, 'item', 'items')}, so none of this show's orders can be matched. Ask your developer to check the connection to Whatnot.`
+                : `Whatnot did not say who bought ${plural(d.info!.noBuyer, 'item', 'items')} (an account that was closed, perhaps). They are left out; every other order is applied.`}
+            </p>
+          )}
+          {unreadable > 0 && (
+            <p className="form-error small" data-testid="whatnot-unreadable">
+              {plural(unreadable, 'item', 'items')} named no listing or an order state the app does not know. They are left out.
             </p>
           )}
           {canApply && (
@@ -90,7 +100,7 @@ export function WhatnotOrders({ showId, canApply }: { showId: string; canApply: 
               <button type="button" className="btn" disabled={act.isPending} onClick={() => act.mutate({ path: 'refresh' })} data-testid="whatnot-refresh">
                 Read again from Whatnot
               </button>
-              <button type="button" className="btn primary" disabled={act.isPending || noBuyers || toChange === 0} onClick={() => act.mutate({ path: 'apply' })} data-testid="whatnot-apply">
+              <button type="button" className="btn primary" disabled={act.isPending || blind || toChange === 0} onClick={() => act.mutate({ path: 'apply' })} data-testid="whatnot-apply">
                 {toChange ? `Apply ${plural(toChange, 'change', 'changes')}` : 'Nothing to apply'}
               </button>
               {matcher}

@@ -47,6 +47,7 @@ PICK_WORDS = {
     "several": "typed more spots than the win takes",
     "unread": "not read because a laptop's clock was out",
     "no_layout": "not read because the show has no shelf layout",
+    "not_recorded": "not read because no laptop was recording the chat yet when they won",
 }
 
 
@@ -314,6 +315,20 @@ def _org_updated(d: dict, _target: str) -> str:
     return text[:1].upper() + text[1:]
 
 
+def _show_merged(d: dict, _target: str) -> str:
+    from .show_merge import date_words
+
+    n = d.get("shows", 1)
+    text = (
+        f"Merged {_plural(n, 'other show')} into {date_words(d)}"
+        + (f" ({_q(d['title'])})" if d.get("title") else "")
+        + f": {_plural(d.get('sales', 0), 'sale')}, {_plural(d.get('orders', 0), 'order')}"
+    )
+    if d.get("joined"):
+        text += f", {_plural(d['joined'], 'buyer')} now in one order"
+    return text
+
+
 SALE_MODES = {"winners_pick": "winners pick in chat", "listing": "one product per listing"}
 
 
@@ -410,6 +425,7 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "show.ai_audit_requested": ("Asked the AI to check a show", None),
     "show.mode": ("Changed how a show sells", _show_mode),
     "show.laptop_data_deleted": ("Deleted a show's laptop data", _laptop_data_deleted),
+    "show.merged": ("Merged two shows of one Whatnot show", _show_merged),
     "sale.product_changed": (
         "Changed a sale's product",
         lambda d, t: (
