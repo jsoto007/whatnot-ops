@@ -366,7 +366,9 @@ tr.short td { background: rgba(255, 59, 48, 0.06); }
 .slip-order-notes { margin: var(--space-2) 0 0; }
 .slip-foot { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-top: var(--space-3); padding-top: var(--space-2); border-top: 1px dashed #999; }
 .blank { display: inline-block; width: 120px; border-bottom: 1px solid #333; vertical-align: -3px; }
-.order-slips .slips-cover, .order-slips .slips-page { margin-bottom: var(--space-4); text-align: center; color: var(--slip-rule); }
+/* Comfortaa on screen too: the slip previews the printout, and the font is loaded before Print. */
+.order-slips .slips-cover, .order-slips .slips-page { margin-bottom: var(--space-4); text-align: center; color: var(--slip-rule); font-family: var(--font-slip); }
+.order-slips .slips-cover h3, .order-slips .slips-page h3 { font-family: var(--font-slip); }
 .slips-cover-title { font-size: 26px; font-weight: 500; margin: 0; }
 .slips-totals { margin: var(--space-3) 0; }
 .slips-buyer { font-size: 20px; font-weight: 500; margin: 0 0 var(--space-2); }
@@ -392,7 +394,9 @@ tr.short td { background: rgba(255, 59, 48, 0.06); }
 .warn-card > div { margin-top: var(--space-1); }
 @media print {
   body { background: #fff; }
-  .sidebar, .topbar, .toolbar, .btn, .app-header, .site-footer, .legal-back, .tabs, .no-print, .page-head .head-actions { display: none !important; }
+  /* `.banner`: the licence, Whatnot-connection and Orders prompts are for the screen; on the
+     pick list they would push the first slip onto a Letter page ahead of the labels. */
+  .sidebar, .topbar, .toolbar, .btn, .app-header, .site-footer, .legal-back, .tabs, .no-print, .banner, .page-head .head-actions { display: none !important; }
   /* Both selectors: `.app.collapsed` (the default) outranks `.app`, and would keep the 76px sidebar
      column on landscape paper and the phone padding on portrait. */
   .app, .app.collapsed { grid-template-columns: 1fr; padding: 0; } .content { padding: 0; max-width: none; }
@@ -406,8 +410,43 @@ tr.short td { background: rgba(255, 59, 48, 0.06); }
   .order-slips .slips-cover, .order-slips .slips-page { margin: 0; padding: 0; border-radius: 0; }
   .order-slips .slips-page { break-before: page; }
   .order-slips .slips-grid tr { break-inside: avoid; }
-  .order-slips .slips-grid th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .slips-grid tr.has-gift td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* The pick list prints like the shop's own sheet: one buyer per 4×6 thermal label, black on
+     white, Comfortaa, a full near-black grid, "[ ]" to tick. Sizes are the sheet's, measured
+     against its table width. A buyer with more rows runs onto the next label, where the
+     column header repeats. Last in this block: it outranks `.slip .table th/td` above. */
+  .order-slips .slips-cover, .order-slips .slips-page { page: slip-label; color: var(--slip-rule); }
+  .order-slips .slips-cover-title { font-size: 13px; }
+  .order-slips .slips-totals { margin: 4px 0 6px; font-size: 8px; }
+  .order-slips .slips-buyer { font-size: 10px; font-weight: 500; margin: 0 0 6px; }
+  .order-slips .slips-grid { table-layout: fixed; max-width: none; background: #fff; border-color: var(--slip-rule); }
+  .order-slips .slips-grid th, .order-slips .slips-grid td { border-color: var(--slip-rule); background: #fff; padding: 4px 2px; font-size: 6px; line-height: 1.25; overflow-wrap: anywhere; }
+  .order-slips .slips-grid th { font-weight: 600; font-size: 6.2px; }
+  .order-slips .slips-grid tr.has-gift td.slip-gift, .order-slips .slips-grid tr.has-gift td.slip-price { background: #fff; }
+  .slips-page .slips-grid th:nth-child(1) { width: 12%; }
+  .slips-page .slips-grid th:nth-child(2) { width: 15.5%; }
+  .slips-page .slips-grid th:nth-child(3) { width: 16.75%; }
+  .slips-page .slips-grid th:nth-child(4) { width: 37%; }
+  .slips-page .slips-grid th:nth-child(5) { width: 7.5%; }
+  .slips-page .slips-grid th:nth-child(6) { width: 11.25%; }
+  .slips-page .slips-grid tbody tr:nth-child(5n):not(:last-child) td { border-bottom-width: 2px; }
+  .order-slips .slips-grid td.slip-gift { font-size: 6px; }
+  .order-slips .slips-grid .slip-said { font-size: 5.5px; color: var(--slip-rule); }
+  .order-slips .slips-grid .tick { border: 0; width: auto; height: auto; margin: 0 0 0 1px; background: none; vertical-align: baseline; font-size: inherit; line-height: inherit; }
+  .order-slips .slips-grid .tick::before { content: '[ ]'; }
+  .order-slips .slips-foot { gap: 3px; margin-top: 10px; font-size: 6px; break-inside: avoid; }
+  .order-slips .slips-ready { font-size: 8.25px; }
+  /* A yellow bulb comes out blank on a thermal printer; the sheet's bulbs are solid black. */
+  .order-slips .slips-bulb { filter: grayscale(1) brightness(0.3) contrast(2); }
+  .order-slips .slips-sign { width: 0.75in; height: 0.25in; border-bottom-color: var(--slip-rule); }
+}
+/* The 4×6 label the pick list prints on (see `page: slip-label` above). Named, so no other
+   printout changes size. */
+@page slip-label {
+  size: 4in 6in;
+  /* The margins of the shop's own sheet, measured from a photo of a printed label: 0.6in above
+     the title, 0.22in each side. Its content ends well before the bottom, so that edge is only
+     kept clear of what a thermal printer cannot reach. */
+  margin: 0.6in 0.22in 0.25in;
 }
 
 /* ---------- dashboard ---------- */

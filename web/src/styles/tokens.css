@@ -54,7 +54,8 @@
   --tint-violet-ink: #3a38a8;
   --tint-grey: rgba(118, 118, 128, 0.14);
   --tint-grey-ink: #3c3f55;
-  /* The shop's paper order slips: pink header row, yellow lots that carry gifts. */
+  /* The shop's order slips. On screen: pink header row, yellow lots that carry gifts. Printed on
+     the 4×6 thermal label (as the shop's own sheet is): black on white, rules near-black. */
   --slip-head: #ffd6ea;
   --slip-gift: #fff2c2;
   --slip-rule: #111111;
@@ -73,6 +74,8 @@
   --font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, 'Segoe UI', sans-serif;
   --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter Tight', 'Inter', system-ui, sans-serif;
   --font: 15px/1.5 var(--font-family);
+  /* The order slips' rounded type: the shop's printed sheet is set in Comfortaa. */
+  --font-slip: 'Comfortaa', var(--font-family);
   --motion: 160ms ease;
   --ease-glass: cubic-bezier(0.2, 0.8, 0.2, 1);
   --motion-slide: 380ms var(--ease-glass);

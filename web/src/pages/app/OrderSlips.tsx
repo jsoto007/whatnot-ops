@@ -226,7 +226,9 @@ function Slip({ b, date, canEdit }: { b: BuyerSlip; date: string; canEdit: boole
         </tbody>
       </table>
       <div className="slips-foot">
-        <div className="slips-ready">💡 Ready To Ship 💡</div>
+        <div className="slips-ready">
+          <span className="slips-bulb" aria-hidden>💡</span> Ready To Ship <span className="slips-bulb" aria-hidden>💡</span>
+        </div>
         <div>☐ Gift(s) included (if applicable)</div>
         <div>Packed by:</div>
         <div className="slips-sign" />
