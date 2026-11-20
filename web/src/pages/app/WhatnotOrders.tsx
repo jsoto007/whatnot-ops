@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, api, apiGet, money, type WhatnotCompare } from '../../lib/api'
 import { fmtWhen, plural } from '../../lib/format'
-import { saleStatusLabel, summaryWords, whatnotAppliedLabel, whatnotOrderActionLabel, whatnotPaymentLabel, whatnotShowStatusLabel } from '../../lib/labels'
+import { assumedEndLabel, saleStatusLabel, summaryWords, whatnotAppliedLabel, whatnotOrderActionLabel, whatnotPaymentLabel, whatnotShowStatusLabel } from '../../lib/labels'
 
 const CHANGES = ['mark_paid', 'cancel', 'decline', 'record', 'reopen'] as const
 
@@ -78,7 +78,8 @@ export function WhatnotOrders({ showId, canApply }: { showId: string; canApply: 
       ) : (
         <>
           <p className="small" data-testid="whatnot-orders-state">
-            <b>{ws.title || 'Untitled show'}</b> · {whatnotShowStatusLabel(ws.status)} · {ws.ordersReadAt ? `orders read ${fmtWhen(ws.ordersReadAt)}` : 'orders not read yet'}
+            <b>{ws.title || 'Untitled show'}</b> · {whatnotShowStatusLabel(ws.status)}
+            {ws.assumedEnd ? ` (${assumedEndLabel(ws.assumedEnd.by)})` : ''} · {ws.ordersReadAt ? `orders read ${fmtWhen(ws.ordersReadAt)}` : 'orders not read yet'}
             {d.info ? ` · ${plural(d.info.orders, 'order', 'orders')}${d.info.giveaways ? `, ${plural(d.info.giveaways, 'giveaway', 'giveaways')}` : ''}` : ''}
           </p>
           <p className="muted small">

@@ -280,11 +280,13 @@ def running_low(
         )
     )
     if show_key is not None:
-        show_id = db.session.scalar(
-            select(Show.id).where(Show.organization_id == org_id, Show.show_key == show_key)
-        )
-        if show_id is None:
+        from .show_split import current
+
+        # The show the laptop records now (the last part of a recording split in two shows).
+        show = current(org_id, show_key)
+        if show is None:
             return []
+        show_id = show.id
         line = sale_items.lines()  # every product of a sale, not only its first
         sold_here = (
             select(line.c.sku_id)

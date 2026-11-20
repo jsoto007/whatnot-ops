@@ -259,9 +259,20 @@ def _in_package(sale: Sale) -> bool:
     )
 
 
+def _last_chat(show: Show) -> datetime:
+    """When chat last arrived from the laptop for this recording: on this show, or on any
+    other part of a recording split in two shows (services/show_split.py), which the laptop
+    keeps uploading under one key."""
+    from .show_split import family, laptop_key
+
+    return max(
+        [s.updated_at for s in family(show.organization_id, laptop_key(show))] or [show.updated_at]
+    )
+
+
 def _blockers(show: Show, plan: Plan, messages: int) -> list[str]:
     out = []
-    if messages and datetime.now(UTC) - show.updated_at < RECORDING_QUIET:
+    if messages and datetime.now(UTC) - _last_chat(show) < RECORDING_QUIET:
         out.append(
             "A laptop sent chat for this show in the last 10 minutes, so it may still be "
             "recording. Stop the recording on the laptop, then try again in 10 minutes."
@@ -525,11 +536,14 @@ def delete_laptop_data(org_id: int, show_id: int, *, user) -> dict:
             Job.payload["show_id"].as_integer() == show.id,
         )
     )
-    db.session.execute(
-        insert(DeletedRecording)
-        .values(organization_id=org_id, show_key=show.show_key, deleted_by_id=user.id)
-        .on_conflict_do_nothing(constraint="uq_deleted_recordings_org_key")
-    )
+    # The laptop's own key too, for a part of a recording split in two shows: its later
+    # uploads (under that key) are dropped like any deleted recording's.
+    for key in dict.fromkeys(k for k in (show.show_key, show.recording_key) if k):
+        db.session.execute(
+            insert(DeletedRecording)
+            .values(organization_id=org_id, show_key=key, deleted_by_id=user.id)
+            .on_conflict_do_nothing(constraint="uq_deleted_recordings_org_key")
+        )
     left = db.session.scalar(
         select(
             exists().where(Sale.show_id == show.id)

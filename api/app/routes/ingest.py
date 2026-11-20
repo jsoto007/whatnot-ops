@@ -1,13 +1,12 @@
 from datetime import UTC, datetime
 
-from flask import Blueprint, g, jsonify, request
-from sqlalchemy import select
+from flask import Blueprint, current_app, g, jsonify, request
 
 from ..db import db
 from ..models import Show
-from ..services import buyers, ratelimit, sale_mode, shipments, showdate, stock, text
-from ..services.devices import device_for_key, touch
-from ..services.ingest import BatchInvalid, ingest, message_count
+from ..services import buyers, ratelimit, sale_mode, shipments, show_split, showdate, stock, text
+from ..services.devices import count_other_channel, device_for_key, touch
+from ..services.ingest import BatchInvalid, OtherChannel, ingest, message_count
 from ..services.pipeline import schedule_parse
 from .extension import latest_version as extension_version
 
@@ -95,6 +94,21 @@ def post_batch():
     except BatchInvalid as e:
         db.session.rollback()
         return jsonify({"error": "invalid batch", "details": e.errors}), 400
+    except OtherChannel as e:
+        # Nothing of it is stored; the count is (and that the laptop was seen). 422: the
+        # laptop sets the lines aside instead of sending them again.
+        db.session.rollback()
+        if e.lines:  # (a report with no lines, that the page moved on, counts nothing)
+            count_other_channel(g.device, e.lines)
+        touch(g.device, request.headers.get("X-Extension-Version"))
+        db.session.commit()
+        if e.lines:
+            current_app.logger.warning(
+                "ingest: refused %d chat lines from another seller's show (device %s)",
+                e.lines,
+                g.device.id,
+            )
+        return jsonify({"error": e.message}), 422
     if result.deleted:
         # The owner deleted this recording: the laptop is told it was received, so its
         # outbox stops sending it, and nothing is stored but that the laptop was seen.
@@ -103,7 +117,21 @@ def post_batch():
         return jsonify(
             {"accepted": 0, "duplicates": result.duplicates, "deleted": True, "show": None}
         )
-    schedule_parse(result.show)
+    if result.report:
+        # The laptop's word that the page moved on: no line came, so nothing to parse.
+        db.session.commit()  # (that the laptop was seen)
+        show = result.show
+        return jsonify(
+            {
+                "accepted": 0,
+                "duplicates": 0,
+                "show": None
+                if show is None
+                else {"id": show.id, "key": show.show_key, "messageCount": result.message_count},
+            }
+        )
+    for show in result.shows or (result.show,):
+        schedule_parse(show)  # each show the lines went to (two after a split)
     db.session.commit()
     return jsonify(
         {
@@ -161,11 +189,8 @@ def _show_needs(show_key: str | None) -> dict:
     the seller's own page is as good as any). Nothing for a show the app has not seen."""
     if show_key is None:
         return {}
-    show = db.session.scalar(
-        select(Show).where(
-            Show.organization_id == g.device.organization_id, Show.show_key == show_key
-        )
-    )
+    # The show the laptop records now: the last part of a recording split in two shows.
+    show = show_split.current(g.device.organization_id, show_key)
     if show is None:
         return {}
     return {
@@ -191,11 +216,7 @@ def known_buyers():
     show_key = d.get("show")
     show = None
     if isinstance(show_key, str) and 0 < len(show_key) <= 64 and not text.has_hidden(show_key):
-        show = (
-            db.session.query(Show)
-            .filter_by(organization_id=g.device.organization_id, show_key=show_key)
-            .first()
-        )
+        show = show_split.current(g.device.organization_id, show_key)
     # "Before tonight": the show's own date, or today's for a show whose first lines
     # are still on their way up.
     before = show.show_date if show is not None else showdate.show_date(datetime.now(UTC))

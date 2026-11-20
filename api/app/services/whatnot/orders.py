@@ -410,14 +410,13 @@ def _hold_for_nameless(rows: list[Row], failed: list[Row]) -> None:
 
 
 def _complete(ws: WhatnotShow) -> bool:
-    """Every order of the show has been read after it ended: only then does a sale with
-    no order mean something."""
-    return (
-        ws.status == "ended"
-        and ws.ended_at is not None
-        and ws.orders_synced_at is not None
-        and ws.orders_synced_at >= ws.ended_at
-    )
+    """Every order of the show has been read after it ended (Whatnot's end, or the one
+    showend.py works out when Whatnot gives none): only then does a sale with no order mean
+    something."""
+    from . import showend
+
+    end = showend.end_of(ws)
+    return end is not None and ws.orders_synced_at is not None and ws.orders_synced_at >= end
 
 
 # A plan row's action that only Whatnot's orders have: the declined win with no product
@@ -441,6 +440,9 @@ NEVER_RECORDED = "never recorded here, and not paid on Whatnot"
 WAITING = "waiting for its product to be named"
 # The review item for a payment Whatnot declined when the app has no sale for the win.
 ORDER_DECLINED = "order_declined"
+# The item for a standing sale with no order among Whatnot's (once the show is over and read
+# in full): any order for the sale answers it, one still settling too.
+NOT_LISTED = "no_payment_record"
 # Items that doubt whether a standing sale was paid: the stream showed its card declined
 # (`pipeline.flag_decline`), the AI read as much in chat, or no order was found for it. A
 # paid order for the sale answers them.
@@ -448,7 +450,7 @@ ANSWERED_BY_PAYMENT = (
     pipeline.DECLINE_SEEN,
     pipeline.LOT_WON_TWICE,
     "payment_failed",
-    "no_payment_record",
+    NOT_LISTED,
 )
 
 HERE = {
@@ -959,11 +961,15 @@ def _flag_declines(show: Show, plan: Plan, show_ids: list[int]) -> None:
       from the stream leaves (`pipeline.review_decline`);
     - a sale that still stands and that Whatnot says is paid has its "the stream showed the
       card declined" items answered;
+    - a sale that still stands and that Whatnot has an order for that is still settling has
+      its "not among Whatnot's orders" item answered (only that one: whether it is paid is
+      still open, and a decline of that order is put to a person as any other);
     - a failed order with no sale here (`_flag_unrecorded`);
     - a second win of the same listing that the paid order did not cover (`_flag_twin`)."""
     by_itself = decides(show)
     sales = reconcile.load_sales(row.sale_id for row in plan.rows)
     answered: list[int] = []  # standing sales Whatnot says are paid
+    listed: list[int] = []  # standing sales Whatnot has an order for, still settling
     for row in plan.rows:
         sale = sales.get(row.sale_id) if row.sale_id else None
         if sale is None:
@@ -976,18 +982,24 @@ def _flag_declines(show: Show, plan: Plan, show_ids: list[int]) -> None:
             and sale.status in STANDING
         ):
             answered.append(sale.id)
+        elif row.status == "pending" and row.action == "unchanged" and sale.status in STANDING:
+            listed.append(sale.id)
     # Their open doubts about the payment, in one query for all of them.
-    for chunk in _chunks(answered):
-        for item in db.session.scalars(
-            select(ReviewItem).where(
-                ReviewItem.sale_id.in_(chunk),
-                ReviewItem.status == ReviewStatus.open,
-                ReviewItem.reason.in_(ANSWERED_BY_PAYMENT),
-            )
-        ):
-            item.status = ReviewStatus.resolved
-            item.resolution = {"by": "paid on Whatnot"}
-            item.resolved_at = datetime.now(UTC)
+    for ids, reasons, by in (
+        (answered, ANSWERED_BY_PAYMENT, "paid on Whatnot"),
+        (listed, (NOT_LISTED,), THERE["pending"]),
+    ):
+        for chunk in _chunks(ids):
+            for item in db.session.scalars(
+                select(ReviewItem).where(
+                    ReviewItem.sale_id.in_(chunk),
+                    ReviewItem.status == ReviewStatus.open,
+                    ReviewItem.reason.in_(reasons),
+                )
+            ):
+                item.status = ReviewStatus.resolved
+                item.resolution = {"by": by}
+                item.resolved_at = datetime.now(UTC)
     del sales
     _flag_unrecorded(show, plan, show_ids)
     _flag_twin(show, plan)

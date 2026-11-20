@@ -33,7 +33,7 @@ from ...db import db
 from ...models import WhatnotLedgerEntry, WhatnotReport, WhatnotShow
 from .. import jobs
 from .. import text as text_safe
-from . import connection, shipping, sync
+from . import connection, shipping, showend, sync
 from .client import (
     MAX_CENTS,
     Forbidden,
@@ -154,6 +154,8 @@ def show_results_job(payload: dict) -> None:
     db.session.commit()
     if refresh or status in (None, *FINAL) or tries + 1 >= RESULTS_TRIES or jobs.inline():
         return
+    if status == "NOT_ENDED" and ws.status in showend.ON_AIR:
+        return  # Whatnot still calls it live: asked again only once it says the show ended
     schedule_results(org_id, ws.whatnot_id, tries=tries + 1, delay_s=RESULTS_EVERY_S)
 
 
@@ -165,20 +167,18 @@ def results_due(org_id: int) -> list[str]:
     if not sync._due(org_id, "analytics", timedelta(hours=1)):
         return []
     now = datetime.now(UTC)
-    shows = db.session.scalars(
-        select(WhatnotShow).where(
-            WhatnotShow.organization_id == org_id,
-            WhatnotShow.status == "ended",
-            WhatnotShow.ended_at >= now - RESULTS_WINDOW,
-        )
-    ).all()
+    # Over by Whatnot's end, or by the one showend.py works out when Whatnot gives none.
     pending, refresh = [], []
-    for ws in shows:
+    for ws, end in showend.ended_within(org_id, RESULTS_WINDOW, now):
+        if ws.analytics_status == "NOT_ENDED" and ws.status in showend.ON_AIR:
+            # Over by the app's rule (showend.py) while Whatnot still calls it live: it said
+            # it has no results for a show it has not ended. Asked again once it says ended.
+            continue
         if ws.analytics_status not in FINAL:
             pending.append(ws.whatnot_id)
-        elif ws.analytics_status == "GENERATED" and ws.ended_at >= now - RESULTS_REFRESH_WINDOW:
+        elif ws.analytics_status == "GENERATED" and end >= now - RESULTS_REFRESH_WINDOW:
             at = ws.analytics_at
-            early = at is None or at < ws.ended_at + RESULTS_EARLY
+            early = at is None or at < end + RESULTS_EARLY
             if at is None or now - at >= (timedelta(hours=1) if early else RESULTS_REFRESH_EVERY):
                 refresh.append(ws.whatnot_id)
     return pending + ([] if not refresh or sync.on_air_now(org_id) else refresh)

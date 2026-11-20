@@ -1,5 +1,6 @@
 import type { CapturedRow } from '../capture/types'
-import { clampRow, clampUrl } from './limits'
+import type { PendingMove } from '../storage/db'
+import { clampChannel, clampUrl, wireRow } from './limits'
 import type { Settings } from './settings'
 import { deviceHeaders } from './version'
 
@@ -7,10 +8,17 @@ export const BATCH_MAX = 200
 
 export interface ChatEventBatch {
   version: 1
-  show: { id: string; startedAt: string; url?: string }
+  /**
+   * `channel`: on a batch of lines, the seller's handle the page showed when they were captured
+   * (each line's own, one batch per show and channel); absent when none was read. On a batch with
+   * no rows, the channel the recording is of.
+   * `movedOnAt`: only on a batch with no rows, the laptop's word that the page moved on to another channel.
+   */
+  show: { id: string; startedAt: string; url?: string; channel?: string; movedOnAt?: string }
   rows: CapturedRow[]
 }
 
+/** A show's start and page. Never its channel: a line goes up with the channel it was captured on. */
 export interface ShowLookup {
   (showId: string): Promise<{ startedAt: string; url?: string } | undefined>
 }
@@ -23,12 +31,16 @@ export interface UploadStore {
   /** Set rows aside for good: the server rejected their batch. */
   markParked(ids: string[]): Promise<void>
   show: ShowLookup
+  /** Shows whose move onto another channel the server is owed, with none of their lines still waiting. */
+  unsentMoves?(): Promise<PendingMove[]>
+  /** The server has that move (or refused it for good): not sent again. */
+  markMoveSent?(showId: string, at: string): Promise<void>
 }
 
 export type UploadOutcome =
   | { status: 'idle' }
   | { status: 'unconfigured' }
-  | { status: 'sent'; sent: number; remaining: number; parked?: number; detail?: string }
+  | { status: 'sent'; sent: number; remaining: number; parked?: number; detail?: string; moved?: number }
   | { status: 'auth' }
   | { status: 'rejected'; detail: string }
   | { status: 'offline'; detail: string }
@@ -59,7 +71,11 @@ export function slowDown(res: Response): UploadError {
   return new UploadError('offline', `server asked to slow down; next try in ${seconds} s`, seconds * 1000)
 }
 
-/** Sends one batch per show. Pure: fetch and store are injected, so it runs in Vitest. */
+/**
+ * Sends one batch per show and channel: each line with the channel the page showed when it was
+ * captured (none when none was read), never one the show learned later, so the shop's own lines
+ * are never refused as another seller's. Pure: fetch and store are injected, so it runs in Vitest.
+ */
 export async function uploadOnce(
   store: UploadStore,
   settings: Settings,
@@ -67,19 +83,25 @@ export async function uploadOnce(
 ): Promise<UploadOutcome> {
   if (!settings.serverUrl || !settings.apiKey) return { status: 'unconfigured' }
   const rows = await store.pendingRows(BATCH_MAX)
-  if (!rows.length) return { status: 'idle' }
-  const byShow = new Map<string, CapturedRow[]>()
-  for (const r of rows) (byShow.get(r.showId) ?? byShow.set(r.showId, []).get(r.showId)!).push(r)
+  if (!rows.length && !(await store.unsentMoves?.())?.length) return { status: 'idle' }
+  const groups = new Map<string, { showId: string; channel: string; rows: CapturedRow[] }>()
+  for (const r of rows) {
+    const channel = clampChannel(r.channel) ?? ''
+    const key = JSON.stringify([r.showId, channel])
+    ;(groups.get(key) ?? groups.set(key, { showId: r.showId, channel, rows: [] }).get(key)!).rows.push(r)
+  }
+  const metas = new Map<string, Awaited<ReturnType<ShowLookup>>>()
   let sent = 0
   let parked = 0
   let detail: string | undefined
-  for (const [showId, showRows] of byShow) {
-    const meta = await store.show(showId)
+  for (const { showId, channel, rows: showRows } of groups.values()) {
+    if (!metas.has(showId)) metas.set(showId, await store.show(showId))
+    const meta = metas.get(showId)
     const url = clampUrl(meta?.url)
     const batch: ChatEventBatch = {
       version: 1,
-      show: { id: showId, startedAt: meta?.startedAt ?? showId, ...(url ? { url } : {}) },
-      rows: showRows.map(clampRow),
+      show: { id: showId, startedAt: meta?.startedAt ?? showId, ...(url ? { url } : {}), ...(channel ? { channel } : {}) },
+      rows: showRows.map(wireRow),
     }
     try {
       await postBatch(settings, batch, fetchFn)
@@ -95,7 +117,39 @@ export async function uploadOnce(
     await store.markUploaded(showRows.map((r) => r.id))
     sent += showRows.length
   }
-  return { status: 'sent', sent, remaining: await store.pendingCount(), ...(parked ? { parked, detail } : {}) }
+  const moved = await sendMoves(store, settings, fetchFn)
+  return { status: 'sent', sent, remaining: await store.pendingCount(), ...(parked ? { parked, detail } : {}), ...(moved !== null ? { moved } : {}) }
+}
+
+/**
+ * Tell the server, once per move, that a show's page moved on to another channel (Whatnot does
+ * that when a show ends): a batch with no rows, after all the show's lines (the server takes the
+ * moment it hears this, by its own clock, as the show's end when Whatnot gives none). A server
+ * that refuses it (an API older than the field answers 400) is not asked again; one that could
+ * not be reached is, with the rows' backoff. Returns how many the server took, or null when
+ * there was none to send.
+ */
+async function sendMoves(store: UploadStore, settings: Settings, fetchFn: typeof fetch): Promise<number | null> {
+  const moves = (await store.unsentMoves?.()) ?? []
+  if (!moves.length || !store.markMoveSent) return null
+  let took = 0
+  for (const m of moves) {
+    const url = clampUrl(m.url)
+    const channel = clampChannel(m.channel)
+    const batch: ChatEventBatch = {
+      version: 1,
+      show: { id: m.id, startedAt: m.startedAt, ...(url ? { url } : {}), ...(channel !== undefined ? { channel } : {}), movedOnAt: m.movedOnAt },
+      rows: [],
+    }
+    try {
+      await postBatch(settings, batch, fetchFn)
+      took++
+    } catch (err) {
+      if (!(err instanceof UploadError) || err.kind !== 'rejected') throw err
+    }
+    await store.markMoveSent(m.id, m.movedOnAt)
+  }
+  return took
 }
 
 export async function postBatch(settings: Settings, batch: ChatEventBatch, fetchFn: typeof fetch = fetch): Promise<void> {

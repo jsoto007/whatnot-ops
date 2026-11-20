@@ -17,6 +17,7 @@ declare global {
       /** keep only this many newest rows on the page, like a long real chat (0 = all) */
       keep: number
     }
+    __channel: { set(name: string): void }
     __player: {
       idle(title: string, price?: string): void
       bidding(name: string, price: string, title: string): void
@@ -284,6 +285,42 @@ test('a 20,000-message show: every line saved, the panel keeps up, a reload carr
   await expect(page.locator(panel('#st'))).toHaveText('Carried on recording (20010 saved). Watching chat.')
   await page.evaluate(() => window.__chat.append('after', 'reload line'))
   await expect(cnt).toHaveText('20011')
+})
+
+test("another channel's show in the same tab: nothing of it is kept, and recording carries on back on the shop's", async ({ page }) => {
+  // Made-up names. When a show ends Whatnot moves a viewer on to another channel's show.
+  const st = page.locator(panel('#st'))
+  const cnt = page.locator(panel('#cnt'))
+  await page.goto('/chat.html')
+  await page.evaluate(() => window.__channel.set('maple_cards_demo'))
+  await page.locator(panel('#start')).click()
+  await page.locator('.msg-row .msg-text').nth(3).click()
+  await expect(st).toHaveText("Watching chat on maple_cards_demo's show.")
+  await expect(cnt).toHaveText('10')
+  await page.evaluate(() => window.__chat.append('fern_buyer', 'on the shop show'))
+  await expect(cnt).toHaveText('11')
+
+  // Same address, another channel: its lines are not kept, from the very first one.
+  await page.evaluate(() => {
+    window.__channel.set('birch_breaks_demo')
+    window.__chat.append('pine_bidder', 'other show line')
+  })
+  await expect(st).toContainText('Whatnot moved this tab to another channel (birch_breaks_demo)', { timeout: 5_000 })
+  await expect(st).toContainText("maple_cards_demo's show")
+  await page.evaluate(() => window.__chat.append('pine_bidder', 'still the other show'))
+  await page.waitForTimeout(1500)
+  await expect(cnt).toHaveText('11')
+  await expect(page.locator(panel('#stop'))).toBeVisible() // still recording: only paused
+
+  // Back on the shop's show (its own chat on screen again): it carries on by itself.
+  await page.evaluate(() => {
+    document.querySelectorAll('#list > *').forEach((r) => r.textContent?.includes('pine_bidder') && r.remove())
+    window.__channel.set('Maple_Cards_Demo')
+  })
+  await expect(st).toHaveText("Watching chat on maple_cards_demo's show.", { timeout: 5_000 })
+  await page.evaluate(() => window.__chat.append('fern_buyer', 'back on the shop show'))
+  await expect(cnt).toHaveText('12')
+  await expect(page.locator(panel('#sync'))).toContainText('saved 12')
 })
 
 test('says so when the click was not on a list of messages', async ({ page }) => {

@@ -287,6 +287,10 @@ class Job(db.Model):
     )
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     locked_by: Mapped[str | None] = mapped_column(String(80))
+    # While running: the last time its worker said it was alive (database time). Stamped at
+    # the claim and every few seconds beside the handler; cleared when the job leaves
+    # running. A silent one is given back by jobs.requeue_stale().
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow

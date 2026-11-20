@@ -117,6 +117,15 @@
       // A card declined after the win, shown in the footer (made-up markup: no real decline captured yet).
       declined(text = 'Payment declined') { const d = document.createElement('div'); const s = document.createElement('span'); s.textContent = text; d.appendChild(s); footer().prepend(d); },
     };
+    // The seller (channel) whose show is on screen, where capture/channel.ts looks for it. Made-up
+    // markup: where whatnot.com shows the seller's name is not verified. None until set.
+    window.__channel = {
+      set(name) {
+        let el = document.querySelector('[data-testid="show-host-username"]');
+        if (!el) { el = document.createElement('span'); el.setAttribute('data-testid', 'show-host-username'); document.querySelector('.video').prepend(el); }
+        el.textContent = name;
+      },
+    };
     // The show's Sold tab (outside the chat): one row per item sold, with a status. Made-up markup.
     window.__sold = {
       add(buyer, title, price, status = 'Paid') {

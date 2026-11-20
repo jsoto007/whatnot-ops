@@ -94,6 +94,13 @@ test('a show still live does not call out sales with no order, and they do not c
   expect(screen.getByText('Their orders may simply not have arrived yet.')).toBeTruthy()
 })
 
+test('a show Whatnot left live is said to be treated as over, in words', async () => {
+  open({ ...compared, show: { ...SHOW, status: 'live', endedAt: null, assumedEnd: { by: 'time', at: '2026-11-08T14:00:00Z' } } }, true)
+  const line = (await screen.findByTestId('whatnot-orders-state')).textContent ?? ''
+  expect(line).toContain('Live (treated as over: 12 hours have passed since it began')
+  expect(line).not.toContain('(time)')
+})
+
 test('with hardly a buyer named the page says so and Apply is off', async () => {
   open({ ...compared, info: { orders: 3, giveaways: 0, noBuyer: 3, blind: true } }, true)
   const note = (await screen.findByTestId('whatnot-no-buyers')).textContent ?? ''

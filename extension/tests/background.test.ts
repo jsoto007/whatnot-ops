@@ -88,6 +88,73 @@ describe('background uploads', () => {
     )
   }
 
+  it("keeps the channel the recording started on; only the host's choice fills an empty one; a value that is not a name is dropped", async () => {
+    const from = { id: 'ext', url: 'https://www.whatnot.com/live/x', tab: { id: 1 } }
+    const ask = (msg: unknown) => new Promise((resolve) => onMessage(msg, from, resolve as (r: unknown) => void))
+    const show = { id: SHOW, startedAt: SHOW, url: '/live/x' }
+    const spot = { selectors: ['div.msg'], page: '/live/x' }
+    const { getShow } = await import('../src/storage/db')
+    await ask({ cmd: 'recording', show: { ...show, channel: 7 }, spot })
+    expect((await getShow(SHOW))?.channel).toBeUndefined()
+    // Not the host's choice (a later page): never fills the show's channel.
+    await ask({ cmd: 'recording', show: { ...show, channel: 'birch_breaks_demo' }, spot })
+    expect((await getShow(SHOW))?.channel).toBeUndefined()
+    await ask({ cmd: 'recording', show: { ...show, channel: 'maple_cards_demo' }, spot, chosen: 'yes' })
+    expect((await getShow(SHOW))?.channel).toBeUndefined() // only a real true
+    await ask({ cmd: 'recording', show: { ...show, channel: 'maple_cards_demo' }, spot, chosen: true })
+    expect((await getShow(SHOW))?.channel).toBe('maple_cards_demo')
+    await ask({ cmd: 'recording', show: { ...show, channel: 'birch_breaks_demo' }, spot, chosen: true })
+    expect((await getShow(SHOW))?.channel).toBe('maple_cards_demo')
+    const row: CapturedRow = { id: 'c1', showId: SHOW, username: 'u', body: 'm', rawText: 'u m', capturedAt: SHOW, seq: 1 }
+    expect(await ask({ cmd: 'rows', show: { ...show, channel: 'x'.repeat(81) }, rows: [row] })).toMatchObject({ ok: true })
+    expect((await getShow(SHOW))?.channel).toBe('maple_cards_demo')
+  })
+
+  it("keeps each line's own channel when it is a name, and drops it otherwise", async () => {
+    const from = { id: 'ext', url: 'https://www.whatnot.com/live/x', tab: { id: 1 } }
+    const ask = (msg: unknown) => new Promise((resolve) => onMessage(msg, from, resolve as (r: unknown) => void))
+    const show = { id: SHOW, startedAt: SHOW, url: '/live/x' }
+    const line = (seq: number, channel?: unknown) => ({ id: `c${seq}`, showId: SHOW, username: 'u', body: 'm', rawText: 'u m' + seq, capturedAt: SHOW, seq, ...(channel !== undefined ? { channel } : {}) })
+    expect(await ask({ cmd: 'rows', show, rows: [line(1, 'maple_cards_demo'), line(2), line(3, 'x'.repeat(81)), line(4, 7), line(5, '')] })).toMatchObject({ ok: true })
+    const { getRows } = await import('../src/storage/db')
+    expect((await getRows(SHOW)).map((r) => r.channel)).toEqual(['maple_cards_demo', undefined, undefined, undefined, undefined])
+  })
+
+  it('keeps when the page moved on to another channel; a value that is not a time is dropped', async () => {
+    const from = { id: 'ext', url: 'https://www.whatnot.com/live/x', tab: { id: 1 } }
+    const ask = (msg: unknown) => new Promise((resolve) => onMessage(msg, from, resolve as (r: unknown) => void))
+    const show = { id: SHOW, startedAt: SHOW, url: '/live/x' }
+    const spot = { selectors: ['div.msg'], page: '/live/x' }
+    const { getShow } = await import('../src/storage/db')
+    await ask({ cmd: 'recording', show: { ...show, movedOnAt: 'yesterday' }, spot })
+    expect((await getShow(SHOW))?.movedOnAt).toBeUndefined()
+    await ask({ cmd: 'recording', show: { ...show, movedOnAt: 7 }, spot })
+    expect((await getShow(SHOW))?.movedOnAt).toBeUndefined()
+    await ask({ cmd: 'recording', show: { ...show, movedOnAt: '2026-11-07T02:30:00.000Z' }, spot })
+    expect((await getShow(SHOW))?.movedOnAt).toBe('2026-11-07T02:30:00.000Z')
+  })
+
+  it('tells the server the page moved on soon after, in a batch with no lines', async () => {
+    online = true
+    const bodies: { show: { movedOnAt?: string }; rows: unknown[] }[] = []
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string))
+      return new Response('{}', { status: 200 })
+    })
+    const from = { id: 'ext', url: 'https://www.whatnot.com/live/x', tab: { id: 1 } }
+    const ask = (msg: unknown) => new Promise((resolve) => onMessage(msg, from, resolve as (r: unknown) => void))
+    const show = { id: SHOW, startedAt: SHOW, url: '/live/x' }
+    const spot = { selectors: ['div.msg'], page: '/live/x' }
+    await ask({ cmd: 'recording', show, spot })
+    await pass(3000)
+    expect(bodies).toEqual([]) // nothing to say yet
+    await ask({ cmd: 'recording', show: { ...show, movedOnAt: '2026-11-07T00:00:01.000Z' }, spot })
+    await pass(3000)
+    expect(bodies.map((b) => [b.rows.length, b.show.movedOnAt])).toEqual([[0, '2026-11-07T00:00:01.000Z']])
+    await pass(3000)
+    expect(bodies).toHaveLength(1) // once
+  })
+
   it('during an outage, new lines wait for the backoff instead of posting every 2 s', async () => {
     const t0 = Date.now()
     // A line saved every 2.5 s for a minute while the server is unreachable.

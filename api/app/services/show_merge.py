@@ -24,7 +24,9 @@ are two recordings by design (services/recordings.py) and stay so.
 When: on its own, at each read of Whatnot's shows (`sync.link_recordings`), while a
 recording whose own page address names the Whatnot show and a show the app MADE for it are
 both there (`fold_made`: only made shows, never another recording, and never a recording
-tied by the clock alone: the clock may be re-decided later). Everything else is the
+tied by the clock alone: the clock may be re-decided later). The same when the app splits a
+laptop recording that ran through two shows (services/show_split.py): each half takes the
+show made for its own Whatnot show. Everything else is the
 owner's "Merge" on the show page, with its preview and confirmation: a recording a person
 matched by hand ("Match" never merges), a recording tied by the clock, a recording whose
 laptop data was deleted. Nothing sweeps old shows: a split that already exists waits for
@@ -310,7 +312,8 @@ def merge(ws: WhatnotShow, *, user=None, wait: bool = True, made_only: bool = Fa
     (see the module docstring). The caller commits; raises MergeError, having changed
     nothing, when it may not be done now. A person's merge also pins the recording to the
     Whatnot show (link "manual"): the clock never re-decides it. `made_only` (the merge on
-    its own): only shows the app made fold, into a recording its address names."""
+    its own): only shows the app made fold, into a recording its address names or a split
+    tied (`sync.pinned`)."""
     from .whatnot import sync
 
     _lock(ws, wait=wait)
@@ -322,7 +325,7 @@ def merge(ws: WhatnotShow, *, user=None, wait: bool = True, made_only: bool = Fa
             else "Each of these shows was recorded by a laptop, so they stay apart."
         )
     if made_only and (
-        not sync.by_address(plan.keeper, ws) or any(s.whatnot_link != "made" for s in plan.folded)
+        not sync.pinned(plan.keeper, ws) or any(s.whatnot_link != "made" for s in plan.folded)
     ):
         raise MergeError("Only the owner merges these shows.")
     if blockers := _blockers(plan):
@@ -356,9 +359,10 @@ def merge(ws: WhatnotShow, *, user=None, wait: bool = True, made_only: bool = Fa
 
 def fold_made(ws: WhatnotShow, *, wait: bool = False) -> dict | None:
     """On its own, at a read of Whatnot's shows (`sync.link_recordings`): fold the shows the
-    app made for the Whatnot show into the recording its own page address names. Only made
-    shows, and only into such a recording: a recording a person matched, one the clock tied
-    and one whose laptop data was deleted wait for the owner's "Merge". None when there is
+    app made for the Whatnot show into the recording its own page address names (or a half
+    of a split recording, `sync.pinned`). Only made shows, and only into such a recording:
+    a recording a person matched, one the clock tied and one whose laptop data was deleted
+    wait for the owner's "Merge". None when there is
     nothing to fold or it cannot be done now; the next read tries again (a parse running
     is not waited for). Never raises: the reading of Whatnot's shows must go on."""
     from .whatnot import sync
@@ -366,7 +370,7 @@ def fold_made(ws: WhatnotShow, *, wait: bool = False) -> dict | None:
     plan = _plan(ws)
     if plan.keeper is None or not plan.folded:
         return None
-    if not sync.by_address(plan.keeper, ws) or any(s.whatnot_link != "made" for s in plan.folded):
+    if not sync.pinned(plan.keeper, ws) or any(s.whatnot_link != "made" for s in plan.folded):
         return None
     try:
         with db.session.begin_nested():

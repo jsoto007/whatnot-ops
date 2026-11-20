@@ -5,6 +5,15 @@ export interface ShowRef {
   id: string
   startedAt: string
   url?: string
+  /**
+   * The channel (seller's handle) the recording is of (capture/channel.ts), fixed only when the
+   * host chose the page; '' when that page showed none that could be read. It names a stored show's
+   * channel only on a `recording` message marked `chosen` (storage/db.ts). Absent from content
+   * scripts before 1.10.0.
+   */
+  channel?: string
+  /** When this tab last saw the show's page move on to another channel (see ShowMeta.movedOnAt). */
+  movedOnAt?: string
 }
 
 /**
@@ -23,8 +32,12 @@ export const MAX_SELECTORS = 3
 /** content → background */
 export type Request =
   | { cmd: 'rows'; show: ShowRef; rows: CapturedRow[] }
-  /** this tab records `show` from `spot` until Stop (spot null) */
-  | { cmd: 'recording'; show: ShowRef; spot: ChatSpot | null }
+  /**
+   * this tab records `show` from `spot` until Stop (spot null). `chosen`: the host just chose this
+   * page (clicked a chat line after Start or Pick chat, or started at a channel page's address), so
+   * `show.channel` may become the stored show's when it has none yet.
+   */
+  | { cmd: 'recording'; show: ShowRef; spot: ChatSpot | null; chosen?: true }
   | { cmd: 'getSession' }
   | { cmd: 'clearSession' }
   | { cmd: 'openSearch' }

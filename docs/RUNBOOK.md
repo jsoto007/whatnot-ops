@@ -83,6 +83,38 @@ unset); the worker does. Both read the same `DATABASE_URL`.
 - **Logs**: web and worker logs in Render. The worker logs each failed job
   with its attempt; after 5 attempts a job is `failed` in the `jobs` table.
   Re-queue by setting `status='queued'` (needs Javier's OK on prod).
+- **A worker that dies mid-job** (killed, out of memory, a deploy): while a job
+  runs, a thread beside it stamps `jobs.heartbeat_at` every 15 s (its own
+  connection, one short UPDATE). Every worker's poll, every 15 s, gives back a
+  `running` job whose heartbeat is older than 90 s (database time), but only
+  once that worker has itself reached the database for 90 s with no failure
+  anywhere in its process (see below). So a dead worker's job is queued again
+  about 1.5–2 minutes after the worker stopped (or after a new worker started,
+  whichever is later), not 15 minutes. A worker checks only between its own jobs: if the other
+  worker is in a long job, the dead worker's job waits for that job to end.
+  With one worker, it waits until Render restarts the worker.
+  The fallback rules are unchanged:
+  - A job whose last allowed attempt never finished is failed, not retried.
+  - A running row with no heartbeat at all (claimed before migration 0038)
+    keeps the 15-minute rule on `locked_at`.
+
+  A slow but alive job keeps beating, so it is never handed to a second
+  worker. Each claim is fenced by worker and attempt: a worker that was given
+  up on cannot finish, retry or keep alive the new claim, and what its handler
+  left uncommitted is dropped. While the database is away every live worker's
+  beats fail too, so a worker gives nothing back until it has reached the
+  database for 90 s since the last failure it saw anywhere: its own polls, a
+  give-back, a job that lost the database, or the heartbeat thread of the job
+  it is running (a worker busy in a long job never polls during an outage, but
+  its heartbeat does). A worker that has just started waits those 90 s too,
+  and two successes more than 30 s apart restart them (a call that hung
+  through an outage raises nothing). Not covered:
+  - a worker frozen for more than 90 s;
+  - a network cut that only the worker running the job sees.
+
+  In those two cases the job can run twice. A deploy kills the running job;
+  the new worker picks it up within about 2 minutes, and that counts as one
+  of its attempts (`reset_mail` has only one).
 - **Re-parse a show**: show page → Parse now (re-evaluates only lines that led
   nowhere; existing sales are never rewritten).
 - **AI evaluation**: `flask --app wsgi.py ai-eval` replays the synthetic
