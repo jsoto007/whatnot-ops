@@ -42,6 +42,10 @@ export function WhatnotOrders({ showId, canApply }: { showId: string; canApply: 
   // Most orders name no buyer: none can be matched, so Apply is off. A few are left out one by one.
   const blind = d.info?.blind ?? noBuyers
   const unreadable = d.info?.unreadable ?? 0
+  const noItems = d.info?.noItems ?? 0
+  // The orders left out for something unreadable or no items: the first few by Seller Hub's number.
+  const leftOut = d.info?.leftOut ?? 0
+  const named = d.info?.leftOutOrders ?? []
 
   const matcher = canApply && (d.choices?.length ?? 0) > 0 && d.link !== 'made' && (
     <span className="inline-form">
@@ -93,6 +97,17 @@ export function WhatnotOrders({ showId, canApply }: { showId: string; canApply: 
           {unreadable > 0 && (
             <p className="form-error small" data-testid="whatnot-unreadable">
               {plural(unreadable, 'item', 'items')} named no listing or an order state the app does not know. They are left out.
+            </p>
+          )}
+          {noItems > 0 && (
+            <p className="form-error small" data-testid="whatnot-no-items">
+              Whatnot listed no items for {plural(noItems, 'order', 'orders')}. They are left out until it does.
+            </p>
+          )}
+          {leftOut > 0 && named.length > 0 && (
+            <p className="small" data-testid="whatnot-left-out-orders">
+              Check on Whatnot: {named.join(', ')}
+              {leftOut > named.length ? ` and ${leftOut - named.length} more` : ''}.
             </p>
           )}
           {canApply && (

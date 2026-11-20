@@ -6,7 +6,7 @@ import { Icon } from '../../components/Icon'
 import { BuyerFlagChip } from '../../components/BuyerFlag'
 import { ApiError, api, apiFile, apiGet, type Shipping as Doc, type ShippingBuyer, type ShippingPackage } from '../../lib/api'
 import { fmtLongDate, fmtWhen, plural } from '../../lib/format'
-import { labelProblemLabel, orderStatusLabel, packageHoldLabel, packageStatusLabel, shippingStateLabel } from '../../lib/labels'
+import { labelProblemLabel, noParcelWords, orderStatusLabel, packageHoldLabel, packageStatusLabel, shippingStateLabel } from '../../lib/labels'
 
 const CONFIRM = (n: number) =>
   `Make ${plural(n, 'label', 'labels')}?\n\nEach label closes its buyer's bundle on Whatnot: anything they win afterwards ships, and is charged shipping, separately. It cannot be undone.`
@@ -91,6 +91,14 @@ export function Shipping() {
       } else setNote(d.queued ? 'Reading from Whatnot now. This page shows the result in a minute.' : null)
     },
   })
+  /** A label that did not come out (jammed printer, tab closed first): back with the ones to print, in one click. */
+  const unprint = useMutation({
+    mutationFn: (id: number) => api<{ id: number; changed: boolean }>('POST', `/api/shipping/shipments/${id}/not-printed`, {}),
+    onSuccess: async () => {
+      setNote('Marked not printed. It prints with the next Print labels.')
+      await qc.invalidateQueries({ queryKey: key })
+    },
+  })
   if (q.isPending) return <p className="muted">Loading…</p>
   if (q.isError) return <p className="form-error">Could not load shipping for this show.</p>
   const d = q.data
@@ -99,7 +107,27 @@ export function Shipping() {
   // What the button would send, as the server counts it: never a package already asked for.
   const toMake = d.labelsToMake ?? 0
   const toPrint = d.labelsToPrint ?? 0
-  const error = printError ?? (act.error instanceof ApiError ? act.error.message : act.error ? 'That did not work. Try again.' : null)
+  const failed = act.error ?? unprint.error
+  const error = printError ?? (failed instanceof ApiError ? failed.message : failed ? 'That did not work. Try again.' : null)
+  // Buyers Whatnot has no parcel for are a group of their own; both keep the server's order (the slips' order).
+  const noParcel = d.buyers.filter((b) => b.state === 'no_parcel')
+  const rest = d.buyers.filter((b) => b.state !== 'no_parcel')
+  const canPrint = can('orders.fulfill')
+  const reread = () => setTimeout(() => void qc.invalidateQueries({ queryKey: key }), 1500)
+  const row = (b: ShippingBuyer, i: number) => (
+    <BuyerRow key={b.buyer ?? i} b={b} canPrint={canPrint} onPrinted={reread} onUnprint={(id) => unprint.mutate(id)} unprinting={unprint.isPending} />
+  )
+  const head = (
+    <thead>
+      <tr>
+        <th>Buyer</th>
+        <th className="num">Items</th>
+        <th>Shipping</th>
+        <th>Package</th>
+        <th>Order here</th>
+      </tr>
+    </thead>
+  )
 
   return (
     <section className="shipping">
@@ -138,6 +166,7 @@ export function Shipping() {
             {t.shipped ? ` · ${t.shipped} with the carrier` : ''}
             {t.split ? ` · ${t.split} to combine` : ''}
             {t.hold ? ` · ${t.hold} on hold` : ''}
+            {t.no_parcel ? ` · ${t.no_parcel} with no parcel on Whatnot` : ''}
             {t.none ? ` · ${t.none} not packaged yet` : ''}
             {t.pickup ? ` · ${t.pickup} for pickup` : ''}
           </p>
@@ -217,30 +246,35 @@ export function Shipping() {
               )}
             </p>
           )}
+          {noParcel.length > 0 && (
+            <section data-testid="shipping-no-parcel">
+              <h3>No parcel on Whatnot ({noParcel.length})</h3>
+              <p className="small muted">
+                The show was read in full and Whatnot has no parcel for these paid items, so no label can be made for them. Create the parcel in Seller Hub, then press <b>Read again from Whatnot</b>. Sales
+                Ops never makes parcels.
+              </p>
+              <div className="card flush">
+                <table className="table">
+                  {head}
+                  <tbody>{noParcel.map(row)}</tbody>
+                </table>
+              </div>
+            </section>
+          )}
           {d.buyers.length === 0 ? (
             <div className="empty">
               <b>No packages yet</b>
               They appear as Whatnot's orders for this show are read.
             </div>
           ) : (
-            <div className="card flush">
-              <table className="table" data-testid="shipping-buyers">
-                <thead>
-                  <tr>
-                    <th>Buyer</th>
-                    <th className="num">Items</th>
-                    <th>Shipping</th>
-                    <th>Package</th>
-                    <th>Order here</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {d.buyers.map((b, i) => (
-                    <BuyerRow key={b.buyer ?? i} b={b} canPrint={can('orders.fulfill')} onPrinted={() => setTimeout(() => void qc.invalidateQueries({ queryKey: key }), 1500)} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            rest.length > 0 && (
+              <div className="card flush">
+                <table className="table" data-testid="shipping-buyers">
+                  {head}
+                  <tbody>{rest.map(row)}</tbody>
+                </table>
+              </div>
+            )
           )}
         </>
       )}
@@ -248,8 +282,10 @@ export function Shipping() {
   )
 }
 
-function BuyerRow({ b, canPrint, onPrinted }: { b: ShippingBuyer; canPrint: boolean; onPrinted: () => void }) {
-  const warn = b.state === 'split' || b.state === 'hold' || b.state === 'failed' || b.state === 'other'
+type PrintProps = { canPrint: boolean; onPrinted: () => void; onUnprint: (id: number) => void; unprinting: boolean }
+
+function BuyerRow({ b, ...print }: { b: ShippingBuyer } & PrintProps) {
+  const warn = b.state === 'split' || b.state === 'hold' || b.state === 'failed' || b.state === 'other' || b.state === 'no_parcel'
   return (
     <tr data-testid={`ship-${b.buyer}`} className={b.state === 'shipped' ? 'low' : ''}>
       <td className="c-buyer">
@@ -261,17 +297,21 @@ function BuyerRow({ b, canPrint, onPrinted }: { b: ShippingBuyer; canPrint: bool
         <span className={warn ? 'form-error' : ''} data-testid="ship-state">
           {shippingStateLabel(b.state)}
         </span>
-        {b.unplaced > 0 && b.packages.length > 0 && <div className="muted small">{plural(b.unplaced, 'item is', 'items are')} not in a package yet</div>}
+        {b.state === 'no_parcel' ? (
+          <div className="small" data-testid="ship-no-parcel">
+            {noParcelWords(b.unplaced, b.items)}
+          </div>
+        ) : (
+          b.unplaced > 0 && b.packages.length > 0 && <div className="muted small">{plural(b.unplaced, 'item is', 'items are')} not in a package yet</div>
+        )}
       </td>
-      <td>
-        {b.packages.length === 0 ? <span className="muted">—</span> : b.packages.map((p) => <Package key={p.id} p={p} canPrint={canPrint} many={b.packages.length > 1} onPrinted={onPrinted} />)}
-      </td>
+      <td>{b.packages.length === 0 ? <span className="muted">—</span> : b.packages.map((p) => <Package key={p.id} p={p} many={b.packages.length > 1} {...print} />)}</td>
       <td>{b.orderId ? <Link to={`/app/orders/${b.orderId}`}>{orderStatusLabel(b.orderStatus ?? '')}</Link> : <span className="muted">no order here</span>}</td>
     </tr>
   )
 }
 
-function Package({ p, canPrint, many, onPrinted }: { p: ShippingPackage; canPrint: boolean; many: boolean; onPrinted: () => void }) {
+function Package({ p, many, canPrint, onPrinted, onUnprint, unprinting }: { p: ShippingPackage; many: boolean } & PrintProps) {
   return (
     <div className="ship-package" data-testid="ship-package">
       <div>
@@ -319,6 +359,12 @@ function Package({ p, canPrint, many, onPrinted }: { p: ShippingPackage; canPrin
           <a href={`/api/shipping/shipments/${p.id}/label.pdf`} target="_blank" rel="noreferrer" data-testid="ship-print" onClick={onPrinted}>
             {p.printedAt ? 'Print label and slip again' : 'Print label and slip'}
           </a>
+        )}
+        {canPrint && p.printedAt && (
+          // Opening the PDF marks it printed; this puts it back with the labels to print.
+          <button type="button" className="linkish" disabled={unprinting} onClick={() => onUnprint(p.id)} data-testid="ship-unprint">
+            Not printed
+          </button>
         )}
         {p.url && (
           <a href={p.url} target="_blank" rel="noreferrer">

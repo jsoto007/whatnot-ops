@@ -58,9 +58,10 @@ export function ProductPicker({ target, onClose, onDone }: { target: PickerTarge
   // remembering it is the person's choice, never the default.
   // Where each listing is one product, the win's Whatnot listing can be linked to the product
   // chosen here, so its later orders name themselves. Not for a listing the team marked "not
-  // one of ours", and only for people who may link listings.
+  // one of ours", never for a lot whose title says the winner chooses (each winner picks
+  // their own; the server refuses it too), and only for people who may link listings.
   const auth = useContext(AuthContext)
-  const canLink = sale.saleMode === 'listing' && !!sale.listing && !sale.listing.off && !sale.listing.linked && !!auth?.can('inventory.write')
+  const canLink = sale.saleMode === 'listing' && !sale.choiceTitle && !!sale.listing && !sale.listing.off && !sale.listing.linked && !!auth?.can('inventory.write')
   const [linkListing, setLinkListing] = useState(canLink)
   // The link is the exact way to remember a listing: the name is then not ticked by default.
   const [remember, setRemember] = useState(canRemember && sale.saleMode !== 'winners_pick' && !canLink)

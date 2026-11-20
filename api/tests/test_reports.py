@@ -1,5 +1,7 @@
 import io
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from openpyxl import load_workbook
 from sqlalchemy import select
 
@@ -111,6 +113,85 @@ def test_the_gifts_tile_counts_whatnots_giveaways_once_they_are_read(app, world)
         )
         db.session.flush()
         assert dashboard.show_tiles(show)["gifts"] == 2
+
+
+def _linked_whatnot_show(world, show, *, read, **kw):
+    """Link the show to an ended Whatnot show (or as `kw` says) whose only order read is an
+    auction: no giveaway. `read`: when its orders were last read in full, or None."""
+    from app.models import WhatnotOrder, WhatnotShow
+
+    now = datetime.now(UTC)
+    ws = WhatnotShow(
+        organization_id=world["org"],
+        whatnot_id="ws-0",
+        status=kw.get("status", "ended"),
+        ended_at=kw.get("ended_at", now - timedelta(hours=1)),
+        orders_synced_at=read,
+    )
+    db.session.add(ws)
+    db.session.flush()
+    show.whatnot_show_id = ws.id
+    db.session.add(
+        WhatnotOrder(
+            organization_id=world["org"],
+            whatnot_id="o-auction",
+            whatnot_show_id="ws-0",
+            status="completed",
+            transaction_type="auction",
+        )
+    )
+    db.session.flush()
+    return ws
+
+
+@pytest.mark.parametrize(
+    "state, gifts",
+    [
+        ("read_in_full_after_it_ended", 0),  # Whatnot's answer: no giveaway at all
+        ("never_read_in_full", 1),  # not read yet: the chat's
+        ("read_before_it_ended", 1),  # orders may still come: the chat's
+        ("still_live", 1),
+    ],
+)
+def test_a_show_read_in_full_with_no_giveaway_counts_none_not_the_chats(app, world, state, gifts):
+    """PR 79 review (C4): the chat says one giveaway; Whatnot's orders, read in full after
+    the show ended, list none. Zero is Whatnot's answer, not "nothing read yet"."""
+    seed(app, world)  # the chat names one giveaway
+    now = datetime.now(UTC)
+    with app.app_context():
+        show = db.session.get(Show, world["show"])
+        read = {
+            "read_in_full_after_it_ended": now,
+            "never_read_in_full": None,
+            "read_before_it_ended": now - timedelta(hours=2),
+            "still_live": now,
+        }[state]
+        extra = {"status": "live", "ended_at": None} if state == "still_live" else {}
+        _linked_whatnot_show(world, show, read=read, **extra)
+        assert dashboard.show_tiles(show)["gifts"] == gifts
+        db.session.rollback()
+
+
+def test_a_second_recording_of_a_show_read_in_full_with_no_giveaway_counts_none(app, world):
+    """Two laptops recorded the show; the second one's chat names a giveaway. Whatnot's orders,
+    read in full, list none: neither recording counts one."""
+    seed(app, world)
+    now = datetime.now(UTC)
+    with app.app_context():
+        second = db.session.get(Show, world["show"])
+        ws = _linked_whatnot_show(world, second, read=now)
+        first = Show(
+            organization_id=world["org"],
+            show_key="first-laptop",
+            started_at=second.started_at - timedelta(minutes=5),
+            show_date=second.show_date,
+            whatnot_show_id=ws.id,
+        )
+        db.session.add(first)
+        db.session.flush()
+        tiles = {t["showId"]: t["gifts"] for t in dashboard.tiles_for([first, second])}
+        assert tiles == {first.id: 0, second.id: 0}
+        db.session.rollback()
 
 
 def test_overview_and_top_lists(app, world):

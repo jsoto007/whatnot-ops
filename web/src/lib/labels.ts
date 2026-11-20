@@ -45,6 +45,10 @@ export const SALE_STATUS_LABEL: Record<SaleStatus, string> = {
   fulfilled: 'shipped',
 }
 export const saleStatusLabel = (s: string): string => SALE_STATUS_LABEL[s as SaleStatus] ?? 'other'
+/** A win paid on Whatnot on a listing the shop marked "Not one of ours", its question ignored. */
+export const NOT_OURS_LABEL = 'Paid on Whatnot · not one of our products'
+/** A sale's state in words: as its status says, or settled with no product (`notOurs`). */
+export const saleLabel = (s: { status: string; notOurs?: boolean | null }): string => (s.notOurs ? NOT_OURS_LABEL : saleStatusLabel(s.status))
 
 /** Orders: `paid` means every item is paid, so the order is ready to pick. */
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
@@ -189,6 +193,8 @@ export const whatnotAppliedLabel = (a: string): string => WHATNOT_APPLIED[a] ?? 
 /** Where a buyer's shipping stands for a show. One package and one label per buyer is the rule. */
 const SHIPPING_STATE: Record<string, string> = {
   none: 'Not in a package on Whatnot yet',
+  // The show was read in full and Whatnot still has no parcel for a paid item: made in Seller Hub, never by the app.
+  no_parcel: 'No parcel on Whatnot',
   wait: 'Bundle still open: the show is live',
   shared: 'Bundle still filling: this buyer is in another show that is live now',
   reading: "Waiting for the show's final list from Whatnot",
@@ -203,6 +209,9 @@ const SHIPPING_STATE: Record<string, string> = {
   failed: 'Delivery failed',
 }
 export const shippingStateLabel = (s: string): string => SHIPPING_STATE[s] ?? 'Other'
+/** What to do for a buyer Whatnot has no parcel for: `unplaced` of their `items` are in none (0: their only parcel was cancelled). */
+export const noParcelWords = (unplaced: number, items: number): string =>
+  `Whatnot has no parcel for ${unplaced > 0 && unplaced < items ? `${unplaced} of this buyer's items` : 'this buyer'} yet. Create it in Seller Hub, then press Read again from Whatnot.`
 
 /** A package's own status on Whatnot. */
 const PACKAGE_STATUS: Record<string, string> = {
@@ -358,4 +367,14 @@ export function salesLineUpWords(s: Pick<WhatnotSales, 'paidCents' | 'grossCents
   if (s.discountCents > 0) parts.push(`${money(s.discountCents)} in discounts`)
   if (s.cancelledOrders > 0) parts.push(`${money(s.cancelledCents + s.cancelledDiscountCents)} from ${plural(s.cancelledOrders, 'cancelled order', 'cancelled orders')}`)
   return parts.length ? `Before discounts and cancellations: ${money(s.grossCents)} (Sales plus ${parts.join(' and ')}).` : ''
+}
+
+/**
+ * The shipping buyers paid on the dashboard's paid orders, and Sales with it: the figure
+ * Whatnot's own screens read (item prices plus shipping; no tax). Sales itself stays the item
+ * prices. '' when there is no shipping to say (or a server that does not say it).
+ */
+export function salesShippingWords(s: Pick<WhatnotSales, 'shippingCents' | 'withShippingCents'>): string {
+  if (!s.shippingCents || s.withShippingCents == null) return ''
+  return `Shipping buyers paid ${money(s.shippingCents)} · Sales with shipping ${money(s.withShippingCents)}`
 }

@@ -229,10 +229,18 @@ def _listing(s) -> dict | None:
     }
 
 
-def sale(s, chat: list[dict] | None = None, *, review=None, to_pick: bool | None = None) -> dict:
+def sale(
+    s,
+    chat: list[dict] | None = None,
+    *,
+    review=None,
+    to_pick: bool | None = None,
+    not_ours: bool | None = None,
+) -> dict:
     """`review` is the open review item waiting on this sale, when the caller looked it up.
     `to_pick`: whether Whatnot says it is paid while its product is still to pick
-    (`orders.to_pick_ids`), when the caller looked it up; None otherwise."""
+    (`orders.to_pick_ids`), when the caller looked it up; None otherwise. `not_ours`: whether
+    it is settled with no product (`orders.settled_unnamed_ids`), likewise."""
     # A sale the app learnt of from Whatnot's order has no chat line: its order time.
     won = s.event.message.captured_at if s.event else s.ordered_at
     out = {
@@ -274,6 +282,9 @@ def sale(s, chat: list[dict] | None = None, *, review=None, to_pick: bool | None
         # Paid on Whatnot, product to pick: still `detected` here (no stock held until its
         # product is named), but not unpaid.
         "toPick": to_pick,
+        # Paid on Whatnot, its listing is "Not one of ours" and a person ignored its question:
+        # still `detected` here (no product, no stock), but settled; its order ships with it.
+        "notOurs": not_ours,
         "statusReason": s.status_reason,
         "flagged": s.flagged,
         "giftCount": s.gift_count,
@@ -347,11 +358,13 @@ def order(
     reviews=None,
     parcel: dict | None = None,
     to_pick: set[int] | None = None,
+    settled: set[int] | None = None,
 ) -> dict:
     """`with_gifts` adds the buyer's gift lines for the show (one query; detail view only).
     `reviews` maps sale id → the open review item waiting on it (routes/orders looks them up).
     `to_pick`: the ids of the sales Whatnot says are paid with their product still to pick
-    (`orders.to_pick_ids`, one query for the whole list)."""
+    (`orders.to_pick_ids`, one query for the whole list). `settled`: the ids of the wins
+    settled with no product (`orders.settled_unnamed_ids`, one query for the whole list)."""
     from .services.orders import gifts_for, verified
 
     standing = [
@@ -363,7 +376,7 @@ def order(
         "showDate": o.show.show_date.isoformat(),
         "buyer": o.buyer_username,
         "status": o.status.value,
-        "verified": verified(o),
+        "verified": verified(o, settled=settled),
         # Wins of this order paid on Whatnot whose product is still to pick: an "open" order
         # made only of these and paid items is waiting for picks, not for a payment.
         "toPick": sum(1 for x in o.sales if x.id in (to_pick or ())),
@@ -384,6 +397,7 @@ def order(
                 s,
                 review=(reviews or {}).get(s.id),
                 to_pick=(s.id in to_pick) if to_pick is not None else None,
+                not_ours=(s.id in settled) if settled is not None else None,
             )
             for s in o.sales
         ]

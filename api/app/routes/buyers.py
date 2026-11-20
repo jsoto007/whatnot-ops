@@ -7,7 +7,7 @@ from .. import serializers
 from ..auth import require
 from ..db import db
 from ..models import Order, Show
-from ..services import buyers, dashboard
+from ..services import buyers, dashboard, orders
 from ..services.buyers import BuyerError
 from .orders import BUYER_HISTORY_LIMIT, _loaded
 
@@ -64,8 +64,14 @@ def get_buyer(username: str):
         .order_by(Order.id.desc())
         .limit(BUYER_HISTORY_LIMIT)
     ).all()
+    # Whether each order may be picked counts a win settled with no product as ready
+    # (`orders.settled_unnamed_sales`): one query for the page, not one per order.
+    settled = orders.settled_unnamed_ids([s for o in rows for s in o.sales])
     return jsonify(
-        {"buyer": data, "orders": [serializers.order(o, with_sales=False) for o in rows]}
+        {
+            "buyer": data,
+            "orders": [serializers.order(o, with_sales=False, settled=settled) for o in rows],
+        }
     )
 
 

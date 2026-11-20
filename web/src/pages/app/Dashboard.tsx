@@ -7,7 +7,7 @@ import { Icon, type IconName } from '../../components/Icon'
 import { LiveGaps } from '../../components/LiveGaps'
 import { apiGet, money, type Attention, type Overview, type ShowTiles, type TopBuyer, type TopSku, type WhatnotMoney, type WhatnotMoneyData, type WhatnotShowMoney, type WhatnotTopBuyer } from '../../lib/api'
 import { fmtDate, fmtWhen, SHOP_TZ } from '../../lib/format'
-import { salesLineUpWords } from '../../lib/labels'
+import { salesLineUpWords, salesShippingWords } from '../../lib/labels'
 
 const shortMoney = (cents: number) => (cents % 100 === 0 ? `$${(cents / 100).toLocaleString()}` : money(cents))
 const weekdayDate = (iso: string) => new Date(iso + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
@@ -261,6 +261,7 @@ function WhatnotMoneyCard({ m, chosen, onDays, stale }: { m: WhatnotMoneyData; c
   const c = m.customers
   const split = c.new.paidCents + c.returning.paidCents
   const lineUp = salesLineUpWords(s)
+  const shipping = salesShippingWords(s)
   const pct = (x: number) => `${split ? (100 * x) / split : 0}%`
   const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: SHOP_TZ })
   const since = c.knownSince ? day(c.knownSince) : null
@@ -279,6 +280,11 @@ function WhatnotMoneyCard({ m, chosen, onDays, stale }: { m: WhatnotMoneyData; c
         </div>
         <div className="money-big">{money(s.paidCents)}</div>
         <div className="muted small">{s.orders ? `${plural(s.orders, 'paid order', 'paid orders')} · ${money(s.averageOrderCents)} per order` : 'no paid orders yet'}</div>
+        {shipping && (
+          <div className="small" data-testid="sales-shipping">
+            {shipping}
+          </div>
+        )}
         {lineUp && (
           <div className="muted small" data-testid="sales-line-up">
             {lineUp}

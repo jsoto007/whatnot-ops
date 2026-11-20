@@ -144,7 +144,13 @@ def paid_sale(app, world):
 def test_a_paid_sales_product_changes_there_and_back_and_stock_follows(app, world, blue):
     paid_sale(app, world)
     assert (level(app, world["red"]), level(app, blue)) == ((2, 0), (3, 0))
-    assert change(app, blue) == {"changed": True, "from": world["red"], "to": blue, "picked": False}
+    assert change(app, blue) == {
+        "changed": True,
+        "from": world["red"],
+        "to": blue,
+        "picked": False,
+        "restocked": 1,
+    }
     assert (level(app, world["red"]), level(app, blue)) == ((3, 0), (2, 0))
     change(app, world["red"])  # back again: the ledger would refuse this without rows
     assert (level(app, world["red"]), level(app, blue)) == ((2, 0), (3, 0))
@@ -240,33 +246,113 @@ def test_two_people_changing_one_sale_at_once_leave_one_unit_out(app, world, blu
         assert len([r for r in rows(app) if r[4]]) == 1  # one open row
 
 
-def test_once_the_order_is_being_picked_nothing_is_put_back_by_itself(
-    app, client, world, blue, sign_in
+def moves(app, sku_id):
+    """The sale-sourced movements of one product: (kind, source, key, quantity), in order."""
+    with app.app_context():
+        return [
+            (k.value, t, i, q)
+            for k, t, i, q in db.session.execute(
+                select(
+                    InventoryMovement.kind,
+                    InventoryMovement.source_type,
+                    InventoryMovement.source_id,
+                    InventoryMovement.quantity,
+                )
+                .where(
+                    InventoryMovement.sku_id == sku_id,
+                    InventoryMovement.source_type.in_(("sale", "sale_repaid")),
+                )
+                .order_by(InventoryMovement.id)
+            )
+        ]
+
+
+@pytest.mark.parametrize("stage", [OrderStatus.picking, OrderStatus.packed])
+def test_a_change_after_picking_began_puts_the_old_product_back_at_once(
+    app, client, world, blue, sign_in, stage
 ):
-    paid_sale(app, world)
+    """Javier's call, 2026-11-19: the old product goes back on the shelf count at the change,
+    at any step short of shipped, exactly once; the packer is told to swap the unit and put
+    it back on the shelf, never to count it in again (that would be a second restock)."""
+    world["say"](app, [("", "ann_made_up won Red bundle x2")])
+    run(app, world["show"])
     h = sign_in(world["org"], "manager")
+    with app.app_context():
+        sale = db.session.scalar(select(Sale))
+        steps = [OrderStatus.picking] + ([stage] if stage is OrderStatus.packed else [])
+        for step in steps:
+            orders.advance(sale.order, step, actor_label="Packer")
+        db.session.commit()
+        sale_id, row_id = sale.id, sale_items.ensure(sale).id
+        db.session.commit()
+    assert (level(app, world["red"]), level(app, blue)) == ((1, 0), (3, 0))
+    url = f"/api/orders/sales/{sale_id}/product"
+    # As the order page sends it: the product row being changed.
+    r = client.patch(url, json={"skuId": blue, "rowId": row_id}, headers=h)
+    assert r.status_code == 200 and r.get_json()["picked"] is True
+    # Both red units are back on the shelf, both blue ones left it: once each.
+    assert (level(app, world["red"]), level(app, blue)) == ((3, 0), (1, 0))
+    red_moves = moves(app, world["red"])
+    assert red_moves[-1] == ("restock", "sale", str(sale_id), 2)
+    assert [m[0] for m in red_moves] == ["reserve", "commit", "restock"]
+    assert [(k, q) for k, _, _, q in moves(app, blue)] == [("reserve", 2), ("commit", 2)]
+    # The same request again (a double click, a retry): its product row is closed, so it is
+    # refused; without a row the sale already holds Blue. Either way nothing moves and no
+    # second note or entry is left.
+    r = client.patch(url, json={"skuId": blue, "rowId": row_id}, headers=h)
+    assert r.status_code == 404
+    r = client.patch(url, json={"skuId": blue}, headers=h)
+    assert r.status_code == 200 and r.get_json()["changed"] is False
+    assert (level(app, world["red"]), level(app, blue)) == ((3, 0), (1, 0))
+    assert len(moves(app, world["red"])) == 3 and len(moves(app, blue)) == 2
+    with app.app_context():
+        sale = db.session.get(Sale, sale_id)
+        assert sale.flagged and sale.sku_id == blue and sale.order.status is stage
+        notes = db.session.scalars(
+            select(ReviewItem).where(ReviewItem.reason == "swapped_after_picking")
+        ).all()
+        assert len(notes) == 1 and notes[0].status is ReviewStatus.open
+        what = "being picked" if stage is OrderStatus.picking else "packed"
+        assert f"was changed to BLUE after its order was already {what}" in notes[0].summary
+        assert "already back in stock" in notes[0].summary
+        assert "count" not in notes[0].summary.lower()  # counting it in would add it twice
+        entries = db.session.scalars(
+            select(AuditLog).where(AuditLog.action == "sale.product_changed")
+        ).all()
+        assert len(entries) == 1
+        assert activity.describe(entries[0].action, entries[0].details) == (
+            "Changed ann_made_up's product from \u201cRED\u201d to \u201cBLUE\u201d "
+            "after picking had begun; 2 \u00d7 \u201cRED\u201d went back in stock"
+        )
+
+
+def test_back_to_paid_after_a_change_then_changing_again_or_cancelling_moves_each_unit_once(
+    app, world, blue
+):
+    """The old product went back at the first change; stepping the order back to paid and
+    changing again (or cancelling) moves only the product the sale holds now."""
+    world["say"](app, [("", "ann_made_up won Red bundle x2")])
+    run(app, world["show"])
     with app.app_context():
         sale = db.session.scalar(select(Sale))
         orders.advance(sale.order, OrderStatus.picking, actor_label="Packer")
         db.session.commit()
-        sale_id = sale.id
-    r = client.patch(f"/api/orders/sales/{sale_id}/product", json={"skuId": blue}, headers=h)
-    assert r.status_code == 200 and r.get_json()["picked"] is True
-    # The blue one leaves the shelf; the red one may already be in the box, so a person counts it.
-    assert (level(app, world["red"]), level(app, blue)) == ((2, 0), (2, 0))
+    assert change(app, blue)["picked"] is True
+    assert (level(app, world["red"]), level(app, blue)) == ((3, 0), (1, 0))
     with app.app_context():
-        sale = db.session.get(Sale, sale_id)
-        assert sale.flagged and sale.sku_id == blue
-        note = db.session.scalar(
-            select(ReviewItem).where(ReviewItem.reason == "swapped_after_picking")
-        )
-        assert note.status is ReviewStatus.open
-        assert "was changed to BLUE after its order was already being picked" in note.summary
-        entry = db.session.scalar(select(AuditLog).where(AuditLog.action == "sale.product_changed"))
-        assert activity.describe(entry.action, entry.details) == (
-            "Changed ann_made_up's product from \u201cRED\u201d to \u201cBLUE\u201d "
-            "after picking had begun"
-        )
+        sale = db.session.scalar(select(Sale))
+        orders.advance(sale.order, OrderStatus.paid, actor_label="Packer")  # back to paid
+        db.session.commit()
+    assert change(app, world["red"])["picked"] is False
+    assert (level(app, world["red"]), level(app, blue)) == ((1, 0), (3, 0))
+    set_status(app, SaleStatus.cancelled)
+    assert (level(app, world["red"]), level(app, blue)) == ((3, 0), (3, 0))
+    # Every ledger key moved each kind once: two red rows and one blue row, each held, sold
+    # and put back exactly once.
+    for sku_id, n_rows in ((world["red"], 2), (blue, 1)):
+        got = moves(app, sku_id)
+        assert len({(k, t, i) for k, t, i, _ in got}) == len(got) == 3 * n_rows
+        assert sum(q for k, *_, q in got if k == "restock") == 2 * n_rows
 
 
 def test_the_route_changes_a_product_and_refuses_what_cannot_be_changed(

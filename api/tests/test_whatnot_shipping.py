@@ -286,13 +286,71 @@ def test_a_package_whatnot_holds_back_is_not_labelled_and_says_why(app, shop):
 def test_a_win_not_in_any_package_yet_waits(app, shop):
     order(shop, "lani808", "Red bundle")
     read(app, shop)
-    read_shipments(app, shop)
+    # The show's parcels have not been read since it ended: the parcel may just not be read
+    # yet, so nobody is told to make one.
     v = view(app, shop)
     assert (v["buyers"][0]["state"], v["buyers"][0]["unplaced"], v["buyers"][0]["packages"]) == (
         "none",
         1,
         [],
     )
+
+
+# ---------- a paid buyer Whatnot put in no parcel (Javier's call, 2026-11-19) ----------
+
+
+def test_a_paid_buyer_whatnot_put_in_no_parcel_has_their_own_state_until_one_is_made(app, shop):
+    lone = order(shop, "lani808", "Red bundle")
+    parcel(shop, "kat.c", [order(shop, "kat.c", "Red bundle")])
+    read(app, shop)
+    read_shipments(app, shop)  # the show's final read: still no parcel for lani808
+    v = view(app, shop)
+    b = next(x for x in v["buyers"] if x["buyer"] == "lani808")
+    assert (b["state"], b["unplaced"], b["packages"]) == ("no_parcel", 1, [])
+    assert v["totals"] == {"buyers": 2, "no_parcel": 1, "ready": 1}
+    assert v["labelsToMake"] == 1  # kat.c's; the app never makes a parcel or a label for lani808
+    # Made in Seller Hub, then read again: the buyer is ready like any other.
+    parcel(shop, "lani808", [lone])
+    read_shipments(app, shop)
+    assert states(app, shop) == {"lani808": "ready", "kat.c": "ready"}
+
+
+def test_a_win_still_being_paid_for_is_not_called_a_buyer_with_no_parcel(app, shop):
+    order(shop, "lani808", "Red bundle", status="pending")
+    read(app, shop)
+    read_shipments(app, shop)
+    assert states(app, shop) == {"lani808": "none"}
+
+
+def test_a_paid_item_left_out_of_the_buyers_parcel_is_called_out_and_gets_no_label(app, shop):
+    first = order(shop, "lani808", "Red bundle")
+    order(shop, "lani808", LOT, 700)  # in no parcel
+    parcel(shop, "lani808", [first])
+    read(app, shop)
+    read_shipments(app, shop)
+    b = view(app, shop)["buyers"][0]
+    assert (b["state"], b["items"], b["unplaced"], len(b["packages"])) == ("no_parcel", 2, 1, 1)
+    # A label now would close the bundle without the item that is in no parcel.
+    assert [p["askable"] for p in b["packages"]] == [False]
+
+
+def test_a_paid_buyer_whose_only_parcel_was_cancelled_has_no_parcel(app, shop):
+    parcel(shop, "lani808", [order(shop, "lani808", "Red bundle")], status="cancelled")
+    read(app, shop)
+    read_shipments(app, shop)
+    b = view(app, shop)["buyers"][0]
+    assert (b["state"], b["unplaced"]) == ("no_parcel", 0)
+
+
+def test_two_open_parcels_are_still_split_with_an_item_in_no_parcel(app, shop):
+    parcel(shop, "lani808", [order(shop, "lani808", "Red bundle")])
+    parcel(shop, "lani808", [order(shop, "lani808", LOT, 700)])
+    order(shop, "lani808", LOT, 900)  # in no parcel
+    read(app, shop)
+    read_shipments(app, shop)
+    v = view(app, shop)
+    assert v["buyers"][0]["state"] == "split"
+    assert v["labelsToMake"] == 0 and not any(p["askable"] for p in v["buyers"][0]["packages"])
 
 
 def test_a_parcel_that_also_holds_another_shows_wins_says_so(app, shop):

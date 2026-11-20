@@ -111,6 +111,15 @@ test('one order with no buyer is left out and the rest can still be applied', as
   expect((screen.getByTestId('whatnot-apply') as HTMLButtonElement).disabled).toBe(false)
 })
 
+test('orders Whatnot listed no items for are said and named, not dropped', async () => {
+  const named = ['#1000000101 from kat.c', '#1000000102 from sam', '#1000000103 from lani808']
+  open({ ...compared, info: { orders: 40, giveaways: 0, noBuyer: 0, blind: false, unreadable: 1, noItems: 3, leftOut: 4, leftOutOrders: named } }, true)
+  expect((await screen.findByTestId('whatnot-no-items')).textContent).toContain('Whatnot listed no items for 3 orders')
+  const which = screen.getByTestId('whatnot-left-out-orders').textContent ?? ''
+  expect(which).toContain(`${named.join(', ')} and 1 more`)
+  expect(which).not.toContain('leftOut')
+})
+
 test('an unmatched show can be matched by hand', async () => {
   const calls = open({ connected: true, mode: 'shadow', link: null, show: null, choices: [SHOW], rows: [], uncovered: [], summary: {} }, true, compared)
   expect((await screen.findByTestId('whatnot-orders-state')).textContent).toContain('not matched to a show on Whatnot yet')

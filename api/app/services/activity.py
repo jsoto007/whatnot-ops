@@ -431,6 +431,12 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
         lambda d, t: (
             f"Changed {d.get('buyer', 'a buyer')}'s product from {_q(d['from'])} to {_q(d['to'])}"
             + (" after picking had begun" if d.get("picked") else "")
+            # Only rows written since 2026-11-19 say how many went back in stock.
+            + (
+                f"; {d['restocked']} × {_q(d['from'])} went back in stock"
+                if isinstance(d.get("restocked"), int) and d["restocked"] > 0
+                else ""
+            )
         ),
     ),
     "sale.products_allowed": (
@@ -592,6 +598,14 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
         lambda d, t: f"Asked Whatnot to make {_plural(d['packages'], 'shipping label')}",
     ),
     "label.printed": ("Opened a shipping label to print", None),
+    "label.unprinted": (
+        "Marked a shipping label not printed",
+        lambda d, t: (
+            f"Marked {d['buyer']}'s shipping label not printed: the next Print labels includes it"
+            if d.get("buyer")
+            else "Marked a shipping label not printed: the next Print labels includes it"
+        ),
+    ),
     "labels.printed": (
         "Opened a show's shipping labels to print",
         lambda d, t: (

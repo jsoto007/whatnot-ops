@@ -151,25 +151,48 @@ def _orders(ws: WhatnotShow) -> list[WhatnotOrder]:
     ).all()
 
 
+# How many of the orders left out a Review item and the Payments tab name (the rest are
+# counted): enough to find them on Whatnot, short enough to read.
+NAMED_LEFT_OUT = 3
+
+
+def _order_label(order: WhatnotOrder) -> str:
+    """An order as Seller Hub shows it ("Order #…"), with its buyer when Whatnot named one."""
+    buyer = (order.buyer_username or "").lstrip("@")
+    return f"#{order.whatnot_id} from {buyer}" if buyer else f"#{order.whatnot_id}"
+
+
 def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
     """Whatnot's orders for a show as payment rows, oldest first, and what was left out.
     Giveaways are not sales (the order slips list them as gifts)."""
     rows: list[Row] = []
     # noBuyer / unreadable: items left out for want of a buyer / of something the app can
     # read (a listing title, a state it knows). noBuyerPaid: of the first, those of a paid or
-    # settling order: only they can hide a sale's payment (`apply`).
+    # settling order: only they can hide a sale's payment (`apply`). noItems: orders the app
+    # holds no items for (Whatnot answered the order before its items; `sync.repair_items`
+    # asks again): they give no row at all. leftOut: the orders with an unreadable item or
+    # no items, oldest first; leftOutOrders names the first `NAMED_LEFT_OUT` of them.
     info = {
         "orders": 0,
         "giveaways": 0,
         "noBuyer": 0,
         "noBuyerPaid": 0,
         "unreadable": 0,
+        "noItems": 0,
+        "leftOut": 0,
+        "leftOutOrders": [],
         "heldDeclines": 0,
         "held": [],
         "blind": False,
     }
     nameless = 0
     sku_for = catalog.resolver(ws.organization_id)
+
+    def left_out(order: WhatnotOrder) -> None:
+        info["leftOut"] += 1
+        if len(info["leftOutOrders"]) < NAMED_LEFT_OUT:
+            info["leftOutOrders"].append(_order_label(order))
+
     for order in _orders(ws):
         if order.transaction_type == GIVEAWAY:
             info["giveaways"] += 1
@@ -177,6 +200,11 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
         info["orders"] += 1
         nameless += not order.buyer_username
         status = PAYMENT.get(order.status, "unknown")
+        if not order.items:
+            info["noItems"] += 1
+            left_out(order)
+            continue
+        unread = False  # this order has an item left out as unreadable (named once)
         for item in order.items:
             row = Row(
                 buyer=(order.buyer_username or "").lstrip("@"),
@@ -201,10 +229,14 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
             elif not row.item:
                 info["unreadable"] += 1
                 row.action, row.note = "skip", "the order names no listing"
+                unread = True
             elif status == "unknown":
                 info["unreadable"] += 1
                 row.action, row.note = "skip", "an order state the app does not know"
+                unread = True
             rows.append(row)
+        if unread:
+            left_out(order)
     info["blind"] = is_blind(nameless, info["orders"])
     _skip_retried(rows)
     held = [r for r in rows if r.note == MAYBE_RETRIED]
@@ -223,12 +255,53 @@ def _note_order_time(sale: Sale, row: Row) -> None:
         sale.ordered_at = first
 
 
+def _derive_retied(sales: list[Sale]) -> None:
+    """Sales just tied to their Whatnot order (its line, or its order number) after
+    `reconcile.apply` derived the orders: a win with no product whose question a person
+    ignored, on a listing "Not one of ours", is settled only once that tie exists
+    (`orders.settled_unnamed_sales` reads it), so its order is derived again now, not at
+    the next read. One query for all of them; nothing for a sale that has its product."""
+    from .. import orders
+
+    waiting = [s for s in sales if s.status is SaleStatus.detected and s.sku_id is None]
+    derive = {s.order.id: s.order for s in waiting if s.order is not None}.values()
+    if not derive:
+        return
+    db.session.flush()
+    settled = orders.settled_unnamed_ids([s for o in derive for s in o.sales])
+    for order in derive:
+        orders.refresh(order, settled=settled)
+
+
+def _unit_off(row: Row) -> tuple[int, int] | None:
+    """What the row's order can have taken off one unit (`pipeline.unit_discount`): its price
+    is stated after that, so two attempts at one win may differ by it."""
+    return pipeline.unit_discount(row.discount_cents, row.quantity, row.order_lines)
+
+
+def _retry_key(failed: Row, paid: Row) -> tuple | None:
+    """Whether `paid` can be the retry of the declined attempt `failed`: the same win by
+    `pipeline.same_win`, each order's price read after its own discount ($25.00 declined,
+    $23.70 paid after $1.30 off is one win), and never across two listings."""
+    if failed.listing and paid.listing and failed.listing != paid.listing:
+        return None
+    return pipeline.same_win(
+        failed.item, failed.price_cents, failed.ordered_at,
+        paid.item, paid.price_cents, paid.ordered_at,
+        discount_a=_unit_off(failed), discount_b=_unit_off(paid),
+    )  # fmt: skip
+
+
 def _skip_retried(rows: list[Row]) -> None:
     """A card declined at the win and then paid on a retry is two orders on Whatnot: a failed
     one, then a paid (or settling) one for the same win (the 2026-11-13 show: 10 of 20 lots).
     The failed order is history, not a decline: left in, it would decline the win's sale while
     the paid order recorded the win a second time. `rows` is oldest first; one pass from the
     newest keeps each buyer's later payments, so the cost is linear in practice.
+
+    The two prices may differ by a discount one of the orders carries (`_retry_key`). A
+    payment at exactly the declined price is still the surer retry: it is taken over a nearer
+    one that agrees only through its discount.
 
     A paid order with no buyer (a closed account, or a name Whatnot stopped giving) may be
     that retry: the failed order is then NOT a decline, because declining would take back a
@@ -247,28 +320,31 @@ def _skip_retried(rows: list[Row]) -> None:
             if row.ordered_at is not None:
                 # The payment nearest after it: with two wins of one listing by one buyer,
                 # the declined attempt belongs to the first payment that follows, not the
-                # latest.
+                # latest. Two listings are two auctions (`_retry_key`), and both times are
+                # known, so a retry is always within `same_win`'s half hour.
+                retry = None
                 for paid in reversed(paid_later.get(buyer, ())):
-                    # Two listings are two auctions: a payment for one is never the retry of
-                    # a card declined on the other, however alike their titles and prices.
-                    if row.listing and paid.listing and row.listing != paid.listing:
+                    if paid.ordered_at is None:
                         continue
-                    # Both times known, so a retry is always within `same_win`'s half hour.
-                    if paid.ordered_at is not None and pipeline.same_win(
-                        row.item, row.price_cents, row.ordered_at,
-                        paid.item, paid.price_cents, paid.ordered_at,
-                    ) is not None:  # fmt: skip
-                        # The win's sale may already be tied to the failed order: the
-                        # payment is its.
-                        if paid.sale_hint is None and row.sale_hint is not None:
-                            paid.sale_hint, paid.hint_from_retry = row.sale_hint, True
-                        # The win happened when the first order was placed, not when a retry
-                        # paid.
-                        paid.first_ordered_at = min(
-                            paid.first_ordered_at or row.ordered_at, row.ordered_at
-                        )
-                        row.action, row.note = "skip", RETRIED
+                    key = _retry_key(row, paid)
+                    if key is None:
+                        continue
+                    if key[1] == 0:  # the same price exactly: the surest
+                        retry = paid
                         break
+                    retry = retry or paid  # only a discount makes them agree: unless exact
+                if retry is not None:
+                    paid = retry
+                    # The win's sale may already be tied to the failed order: the payment
+                    # is its.
+                    if paid.sale_hint is None and row.sale_hint is not None:
+                        paid.sale_hint, paid.hint_from_retry = row.sale_hint, True
+                    # The win happened when the first order was placed, not when a retry
+                    # paid.
+                    paid.first_ordered_at = min(
+                        paid.first_ordered_at or row.ordered_at, row.ordered_at
+                    )
+                    row.action, row.note = "skip", RETRIED
             if not row.action:
                 unpaired.append(row)
     _hold_for_nameless(rows, unpaired)
@@ -276,12 +352,13 @@ def _skip_retried(rows: list[Row]) -> None:
 
 def _hold_for_nameless(rows: list[Row], failed: list[Row]) -> None:
     """Failed orders no named payment answered, held back as `MAYBE_RETRIED` where a paid
-    order with no buyer can be their retry: the same win (`same_win`, never across two
-    listings) and ONE buyer's. A card declined twice and then paid is two failed orders and
-    one payment, so a payment holds every attempt of that one buyer's win once one of them
-    was placed before it (a retry comes later), and never the failed orders of two buyers (one
-    payment cannot have paid two buyers' wins): the buyer whose attempt is the closest before
-    it (payments taken oldest first). The others are declines as usual.
+    order with no buyer can be their retry: the same win (`_retry_key`: each price after its
+    own order's discount, never across two listings) and ONE buyer's. A card declined twice
+    and then paid is two failed orders and one payment, so a payment holds every attempt of
+    that one buyer's win once one of them was placed before it (a retry comes later), and
+    never the failed orders of two buyers (one payment cannot have paid two buyers' wins):
+    the buyer whose attempt is the closest before it (payments taken oldest first). The
+    others are declines as usual.
 
     A payment with no order time cannot be placed after anything. It holds the failed
     orders of its win only when they are all one buyer's (as before 2026-11-19: undoing a
@@ -292,12 +369,7 @@ def _hold_for_nameless(rows: list[Row], failed: list[Row]) -> None:
     untimed = [r for r in nameless if r.ordered_at is None]
 
     def same_win(a: Row, b: Row) -> bool:
-        if a.listing and b.listing and a.listing != b.listing:
-            return False
-        key = pipeline.same_win(
-            a.item, a.price_cents, a.ordered_at, b.item, b.price_cents, b.ordered_at
-        )
-        return key is not None
+        return _retry_key(a, b) is not None
 
     def hold(held: list[Row]) -> None:
         for row in held:
@@ -385,7 +457,8 @@ def _own_win_first(rows: list[Row], show_ids: list[int]) -> None:
     buyer has ANOTHER win of the listing still standing with no order of its own: the
     payment is that win's, and the failed order's sale stays declined (one buyer, the same
     listing twice, the first card declined and never retried). The pairing cannot see
-    sales; this can."""
+    sales; this can. The payment's price is after its order's discount, as in the pairing
+    (`_retry_key`), so a win at the price before it is still that same win."""
     retried = [r for r in rows if r.hint_from_retry and r.sale_hint is not None]
     if not retried:
         return
@@ -407,7 +480,7 @@ def _own_win_first(rows: list[Row], show_ids: list[int]) -> None:
                 and sale.buyer_username.lower() == row.buyer.lower()
                 and pipeline.same_win(
                     sale.item_text, pipeline.paid_price(sale), pipeline.won_when(sale),
-                    row.item, row.price_cents, row.ordered_at,
+                    row.item, row.price_cents, row.ordered_at, discount_b=_unit_off(row),
                 ) is not None
             ):  # fmt: skip
                 row.sale_hint, row.hint_from_retry = None, False
@@ -686,8 +759,8 @@ def apply(show: Show, *, user=None) -> dict:
                 )
             )
         )
-        for sale in reconcile.load_sales(waiting - asked).values():
-            pipeline.ask_for_product(sale)
+        # One query says which must be named; `reconcile.apply` below derives their orders.
+        pipeline.ask_for_products(list(reconcile.load_sales(waiting - asked).values()))
 
     reconcile.apply(
         primary,
@@ -713,15 +786,19 @@ def apply(show: Show, *, user=None) -> dict:
         else {}
     )
     sales = reconcile.load_sales(r.sale_id for r in tied)
+    retied: set[int] = set()
     for row in tied:
         item = items.get(row.ref)
         if item is not None and item.sale_id != row.sale_id:
             item.sale_id = row.sale_id
+            retied.add(row.sale_id)
         sale = sales.get(row.sale_id)
         if sale is not None:
             _note_order_time(sale, row)
             if sale.external_order_id is None and row.action != "unmatched":
                 sale.external_order_id = row.external_id
+                retied.add(sale.id)
+    _derive_retied([sales[i] for i in retied if i in sales])
     del items, sales  # the steps below read what they need themselves
     _flag_declines(primary, plan, show_ids)
     # While an order that may be paid has no buyer, no sale is called out as unpaid and none
@@ -908,7 +985,9 @@ def _flag_twin(show: Show, plan: Plan) -> None:
     win's own payment (`_skip_retried` reads it as a retry). So when such a paid order is
     applied while the buyer has another standing win of that listing with no order of its
     own, that win is put to a person at once, not only when the show is over: one of the
-    two was not paid. An order of its own arriving later answers the item."""
+    two was not paid. An order of its own arriving later answers the item. The paid order's
+    price is after its discount, as in the pairing (`_retry_key`); the item names the win's
+    own price when the win knows it."""
     retried = [r for r in plan.rows if r.status == "paid" and r.first_ordered_at and r.sale_id]
     if not retried or not plan.uncovered:
         return
@@ -920,15 +999,17 @@ def _flag_twin(show: Show, plan: Plan) -> None:
                 or other.buyer_username.lower() != row.buyer.lower()
                 or pipeline.same_win(
                     other.item_text, pipeline.paid_price(other), pipeline.won_when(other),
-                    row.item, row.price_cents, row.ordered_at,
+                    row.item, row.price_cents, row.ordered_at, discount_b=_unit_off(row),
                 ) is None
             ):  # fmt: skip
                 continue
+            won_for = pipeline.paid_price(other)
             pipeline.open_review(
                 show.organization_id,
                 "no_payment_record",
                 f"{other.buyer_username} won {other.item_text or 'this listing'} twice at "
-                f"{pipeline.money(row.price_cents)}, and Whatnot has one failed and one paid "
+                f"{pipeline.money(row.price_cents if won_for is None else won_for)}, and "
+                "Whatnot has one failed and one paid "
                 "order for the two: one of them was not paid. Check which, and mark it declined.",
                 show_id=other.show_id,
                 sale_id=other.id,
@@ -1012,13 +1093,24 @@ def _flag_unrecorded(show: Show, plan: Plan, show_ids: list[int]) -> None:
 LEFT_OUT = "orders_left_out"
 
 
+def _named(info: dict) -> str:
+    """The orders left out, the first few by number and buyer, then how many more."""
+    named = info["leftOutOrders"]
+    more = info["leftOut"] - len(named)
+    return ", ".join(named) + (f" and {more} more" if more > 0 else "")
+
+
 def _flag_left_out(
     show: Show, info: dict | None, show_ids: list[int], *, why: str | None = None
 ) -> None:
     """Tell a person that some of Whatnot's orders were not applied, and why in the shop's
-    words: no buyer (a closed account), nothing the app can read, or (`why`) the whole show
-    refused. One open item per show, rewritten as the figures change and resolved when
-    nothing is left out. Never blames the access token for a few orders."""
+    words: no buyer (a closed account), nothing the app can read, no items yet, or (`why`)
+    the whole show refused. The orders left out for something unreadable or for want of
+    items are named, the first few by Seller Hub's order number, the rest counted. One open
+    item per show, rewritten as the figures change and resolved when nothing is left out;
+    the names keep the orders' own order, so applying the same orders again says the same
+    thing (a notice a person dismissed is not opened again for it). Never blames the access
+    token for a few orders."""
     if why is None:
         parts = []
         if info and info["noBuyer"]:
@@ -1030,11 +1122,16 @@ def _flag_left_out(
                 f"{n} item{'s' if n != 1 else ''} named no listing or an order state the app "
                 "does not know"
             )
+        if info and info.get("noItems"):
+            n = info["noItems"]
+            parts.append(f"Whatnot listed no items for {n} order{'s' if n != 1 else ''}")
         summary = None
         if parts:
             summary = (
                 "; ".join(parts) + ". They are left out; every other order of the show was applied."
             )
+            if info.get("leftOut"):
+                summary += f" Check {_named(info)} on Whatnot."
             if info["heldDeclines"]:
                 n = info["heldDeclines"]
                 summary += (

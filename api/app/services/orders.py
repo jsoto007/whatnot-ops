@@ -66,16 +66,19 @@ def to_pick_sales(*where) -> list[Sale]:
     The one rule for such a win: the tiles, the orders, the pick list, the refused "Ignore"
     (`pipeline.must_name`) and the question asked again (`pipeline.ask_for_product`) all
     read it. A listing a person marked "Not one of ours" takes its wins out (the shop said
-    it is no product of its own: they may be ignored), except a title that says the winner
+    it is no product of its own: they may be ignored, and once ignored they are settled,
+    `settled_unnamed_sales`), except a title that says the winner
     chooses (`rules.is_choice_title`): that listing is a lot, never one product, so "not one
     of ours" says nothing about the product the winner picks from the shop's shelves.
+    A settled win that left in its buyer's parcel is out too, even once its listing is
+    linked to a product (`_left_in_parcel`): it is never asked about or named again.
     One query; the few candidates are filtered here so the title rule stays in rules.py."""
     from . import rules
 
     off = _listing_off().label("off")
     rows = db.session.execute(
         select(Sale, off)
-        .where(_paid_unnamed(), *where)
+        .where(_paid_unnamed(), ~(_left_in_parcel() & _question_ignored()), *where)
         .order_by(Sale.ordered_at.nulls_last(), Sale.id)
     ).all()
     return [sale for sale, is_off in rows if not is_off or rules.is_choice_title(sale.item_text)]
@@ -87,6 +90,105 @@ def to_pick_ids(sale_ids) -> set[int]:
     if not ids:
         return set()
     return {s.id for s in to_pick_sales(Sale.id.in_(ids))}
+
+
+def _question_ignored():
+    """SQL: a person ignored the sale's "which product is that?" question (a dismissed
+    unmatched_item) and nothing about the sale is open in Review."""
+    ignored = (
+        select(ReviewItem.id)
+        .where(
+            ReviewItem.sale_id == Sale.id,
+            ReviewItem.reason == "unmatched_item",
+            ReviewItem.status == ReviewStatus.dismissed,
+        )
+        .exists()
+    )
+    still_open = (
+        select(ReviewItem.id)
+        .where(ReviewItem.sale_id == Sale.id, ReviewItem.status == ReviewStatus.open)
+        .exists()
+    )
+    return ignored & ~still_open
+
+
+def _left_in_parcel():
+    """SQL: the sale's order has shipped and the sale was recorded before the parcel left,
+    so it went out with it. A win recorded later joined a parcel already gone
+    (`_won_after_shipping`): it is in no box, and still has to be named and sent."""
+    return (
+        select(Order.id)
+        .where(
+            Order.id == Sale.order_id,
+            Order.status == OrderStatus.shipped,
+            Order.shipped_at.is_not(None),
+            Sale.created_at <= Order.shipped_at,
+        )
+        .exists()
+    )
+
+
+def settled_unnamed_sales(*where) -> list[Sale]:
+    """The sales (narrowed by `where`) that are settled with no product: a win Whatnot says
+    is paid (`_paid_unnamed`), on a listing a person marked "Not one of ours"
+    (`_listing_off`) whose title does not say the winner chooses (so not a `to_pick_sales`
+    win), and whose question a person ignored, with nothing about it open in Review.
+
+    The one rule for such a win. The buyer paid and the shop said it is none of its
+    products: it no longer keeps its order open (`refresh`, `verified`), so the order is
+    paid, picked, packed and shipped, by hand or by the carrier. The sale itself stays as it
+    is: `detected`, no product, no stock held, never paid or fulfilled here, never on the
+    pick list; its money counts as paid at what Whatnot charged (`dashboard`). Derived on
+    every read, never stored. Linking the listing to a product or opening its question
+    again undoes it, except once it left in its buyer's parcel (`_left_in_parcel`): then it
+    stays settled, and is never asked about or named from its listing again."""
+    from . import rules
+
+    found = db.session.scalars(
+        select(Sale)
+        .where(
+            _paid_unnamed(),
+            _listing_off() | _left_in_parcel(),
+            _question_ignored(),
+            *where,
+        )
+        .order_by(Sale.id)
+    ).all()
+    return [s for s in found if not rules.is_choice_title(s.item_text or "")]
+
+
+def _maybe_settled(s: Sale) -> bool:
+    """Could be settled with no product (checked without the database): a standing win with
+    no product that Whatnot's order made or claimed."""
+    return s.status is SaleStatus.detected and s.sku_id is None and bool(s.external_order_id)
+
+
+def settled_unnamed_ids(sales) -> set[int]:
+    """Which of these sales (Sale rows) are settled with no product (`settled_unnamed_sales`).
+    One query for all of them, and none when no sale could be: a list of orders asks once."""
+    ids = [s.id for s in sales if _maybe_settled(s) and s.id is not None]
+    if not ids:
+        return set()
+    return {s.id for s in settled_unnamed_sales(Sale.id.in_(ids))}
+
+
+def _waiting(order: Order, settled: set[int] | None = None) -> list[Sale]:
+    """The order's standing sales that keep it from being paid: every one not paid or
+    shipped, except a win settled with no product (`settled_unnamed_sales`). `settled` is
+    the ids of such wins when the caller looked them up for many orders at once; otherwise
+    the database is asked only when every sale left could be one."""
+    waiting = [
+        s
+        for s in order.sales
+        if s.status in STANDING and s.status not in (SaleStatus.paid, SaleStatus.fulfilled)
+    ]
+    if not waiting or not all(_maybe_settled(s) for s in waiting):
+        return waiting
+    if settled is None:
+        if any(s.id is None for s in waiting):
+            db.session.flush()
+        settled = settled_unnamed_ids(waiting)
+    return [s for s in waiting if s.id not in settled]
 
 
 class OrderError(ValueError):
@@ -142,16 +244,17 @@ def _won_after_shipping(sale: Sale) -> None:
     )
 
 
-def refresh(order: Order) -> Order:
+def refresh(order: Order, *, settled: set[int] | None = None) -> Order:
     """Derive open / paid / cancelled from the sales; never touch picking / packed / shipped.
     Whatnot charges every win, so an order is paid (ready to pick) as soon as its items are
-    known; it stays open only while a sale still needs a person (item not recognised)."""
+    known; it stays open only while a sale still needs a person (item not recognised). A
+    win settled with no product (`settled_unnamed_sales`) needs nobody: the order is paid
+    with it, even when it is the order's only item. `settled`: see `_waiting`."""
     if order.status in FULFILLMENT:
         return order
-    standing = [s for s in order.sales if s.status in STANDING]
-    if not standing:
+    if not any(s.status in STANDING for s in order.sales):
         order.status = OrderStatus.cancelled
-    elif all(s.status in (SaleStatus.paid, SaleStatus.fulfilled) for s in standing):
+    elif not _waiting(order, settled):
         order.status = OrderStatus.paid
     else:
         order.status = OrderStatus.open
@@ -202,11 +305,11 @@ def card_in_doubt(order: Order) -> bool:
     return in_doubt(order) is not None
 
 
-def verified(order: Order) -> bool:
-    standing = [s for s in order.sales if s.status in STANDING]
-    return bool(standing) and all(
-        s.status in (SaleStatus.paid, SaleStatus.fulfilled) for s in standing
-    )
+def verified(order: Order, *, settled: set[int] | None = None) -> bool:
+    """Every item may go in a box: each standing sale is paid (or shipped), or is a win
+    settled with no product, which goes in the parcel as Whatnot sold it and is never
+    marked shipped here. `settled`: see `_waiting`."""
+    return any(s.status in STANDING for s in order.sales) and not _waiting(order, settled)
 
 
 def ship_by_carrier(order: Order, *, tracking: str | None, actor_label: str = "Whatnot") -> Order:

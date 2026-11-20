@@ -12,7 +12,9 @@ What it is and is not:
   * it only STORES: orders and their items, as every other read does (`sync.store_order`),
     and leaves an order the app holds that Whatnot had not settled to the timer's re-read
     (`sync.refresh_open_orders`), whose before-and-after comparison is what queues the
-    apply of a show whose order settled;
+    apply of a show whose order settled. A held COMPLETED order it finds cancelled is
+    stored here and applied by its show's next late read (`sync.LATE_READS`, out to three
+    days after the show); for an older show the new state is stored and nothing applies it;
   * it never marks a show's orders as read (`WhatnotShow.orders_synced_at`), never makes a
     sale, never applies an order, moves stock or queues `whatnot_apply_show` ITSELF. What it
     stores is then read like any other order: the timer re-reads an unsettled one for 14
@@ -37,7 +39,8 @@ reach, a full run starts afresh and its own floor becomes the new `completeSince
 The end of Whatnot's list is not the floor. `client.pages` stops on any 200 page with no
 next cursor, so one odd answer would look like "no older orders". The floor counts as
 reached only by seeing a page's worth of orders older than it in a row (one stray old order
-near the top proves nothing), or by two reads of the whole list that end on the same order.
+near the top proves nothing, and neither do a few at an end that came early), or by two
+reads of the whole list that end on the same order.
 
 A run is cut into slices of about `RUN_SECONDS`: the worker is one lane, and a read that
 lasts an hour would keep the show's own jobs waiting behind it. Each slice queues the next.
@@ -318,10 +321,12 @@ def run(org_id: int, client: WhatnotClient, *, budget_s: float | None = None) ->
                 return save(paused=True)
             if time.monotonic() - t0 >= budget:
                 return save()
-        # The list ended. After older orders it ended behind the floor; without any it may
-        # have ended early (one odd answer ends `client.pages`): only a second read that
-        # ends on the same order, with nothing found in between, says it is the end.
-        if older > 0 or cursor.get("end_id") == last_id:
+        # The list ended. It may have ended early (one odd answer ends `client.pages`), and
+        # fewer than `STOP_AFTER` older orders before that end prove nothing (one stray old
+        # order then an odd page would look like the floor): only a second read that ends
+        # on the same order says it is the end. A page's worth of older orders in a row
+        # returned above already.
+        if cursor.get("end_id") == last_id:
             return save(finished=True)
         cursor["end_id"] = last_id
     return save()  # the end is still being confirmed: the next slice reads on

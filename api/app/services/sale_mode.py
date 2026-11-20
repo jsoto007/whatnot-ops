@@ -13,7 +13,11 @@ chooses otherwise for it (`ShowSaleMode`). One Whatnot show can be several recor
 recording that appears later follows the others.
 
 A listing linked to a product names its sale in either mode. The mode says what a win with
-no product waits for, never what a linked listing means.
+no product waits for, never what a linked listing means. One exception, in both modes
+(Javier's call, 2026-11-19): a listing whose title says the winner chooses ("CHOOSE ANY…",
+`rules.is_choice_title`) names no product even when it is linked to one. Each of its wins
+waits in Review for the winner's pick (`orders.to_pick_sales`). Only a winner's-pick show
+reads that pick from chat by itself (`picks.run`); in a listing show a person names it.
 """
 
 from flask import g, has_request_context

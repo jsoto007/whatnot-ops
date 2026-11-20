@@ -22,7 +22,10 @@ with Auction Date, Auction Number, Username, Product Checklist, Gift and Notes (
   before, with Whatnot's per-buyer counts beside them, and the same chat on "No Pick" rows.
 - `only="ready"` keeps the buyers whose order is Ready to pick (every item paid and named,
   picking not started) and whose slip has nothing waiting for a person: no "No Pick" row (a
-  lot the app never recorded has no product), and no sale Whatnot does not list. It is the
+  lot the app never recorded has no product), and no sale Whatnot does not list. A win
+  settled with no product (`orders.settled_unnamed_sales`: paid on Whatnot, its listing "Not
+  one of ours", its question ignored) waits for nobody: its row prints as it always did
+  (its title, or "No Pick") and does not hold the slip back. It is the
   Orders page's "Print ready slips". The cover's totals follow; the Whatnot check stays
   show-wide, and `leftOut` says how many buyers were skipped.
 """
@@ -51,7 +54,7 @@ from ..models import (
     WhatnotShow,
 )
 from . import giveaways, rules, sale_chat, sale_items, shipments
-from .orders import STANDING
+from .orders import STANDING, settled_unnamed_ids
 from .whatnot import connection, watch
 
 NO_PICK = "No Pick"
@@ -230,6 +233,9 @@ def build(show: Show, *, only: str | None = None) -> dict:
             selectinload(Sale.event).selectinload(ParsedEvent.message),
         )
     ).all()
+    # Wins settled with no product: they hold no slip back (one query, none when no sale
+    # could be one).
+    settled = settled_unnamed_ids(sales)
     # A win closed after picking began (the order was already being picked or packed): its
     # unit may be in a box and the packer may hold an older slip with it. It is no item to
     # pack, but a reprint says so until a person has dealt with it in Review.
@@ -327,9 +333,10 @@ def build(show: Show, *, only: str | None = None) -> dict:
         chosen = named.get(lot.whatnot_order_id) if gift else None
         if gift and product == NO_PICK:
             product = chosen or "Gift"
+        # A settled win's row waits for nobody (even as "No Pick"): it goes in the box as sold.
+        waits = product == NO_PICK or (s is not None and s.status is SaleStatus.detected)
         b["needsReview"] |= (
-            (product == NO_PICK)
-            or (s is not None and s.status is SaleStatus.detected)
+            (waits and not (s is not None and s.id in settled))
             # More units than a box holds is a misread Qty column, not 999 lines to print.
             or lot.quantity > MAX_UNIT_ROWS
         )
@@ -366,7 +373,9 @@ def build(show: Show, *, only: str | None = None) -> dict:
         if s.id in used:
             continue
         b = buyer(s.buyer_username)
-        b["needsReview"] |= s.status is SaleStatus.detected or s.quantity > MAX_UNIT_ROWS
+        b["needsReview"] |= (
+            s.status is SaleStatus.detected and s.id not in settled
+        ) or s.quantity > MAX_UNIT_ROWS
         auction = rules.lot_label(s.item_text, s.auction_type)
         product = product_label(s)
         for unit, line in enumerate(_lines(s, product, s.quantity)):

@@ -577,8 +577,13 @@ def apply(
     from . import orders
 
     touched = {row.sale_id for row in p.rows if row.sale_id} | set(p.uncovered)
-    for order in _orders_of(show, touched):
-        orders.refresh(order)
+    derive = _orders_of(show, touched)
+    # Which wins are settled with no product (`orders.settled_unnamed_sales`): one query for
+    # every order, not one per order.
+    db.session.flush()
+    settled = orders.settled_unnamed_ids([s for o in derive for s in o.sales])
+    for order in derive:
+        orders.refresh(order, settled=settled)
     return p
 
 

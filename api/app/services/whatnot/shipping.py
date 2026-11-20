@@ -51,6 +51,7 @@ from ...models import (
     WhatnotSyncState,
 )
 from .. import jobs, rules, text
+from ..orders import WHATNOT_PAID
 from . import connection, sync, webhooks
 from .client import (
     MAX_CENTS,
@@ -406,15 +407,29 @@ def sync_recent_shipments(org_id: int, client: WhatnotClient, since: datetime) -
 # ---------- one package per buyer ----------
 
 
-def _state(packages: list[dict], unplaced: int, ended: bool, complete: bool) -> str:
+def _state(
+    packages: list[dict],
+    unplaced: int,
+    ended: bool,
+    complete: bool,
+    *,
+    paid: int = 0,
+    unplaced_paid: int = 0,
+) -> str:
     """Where a buyer's shipping stands, as one code the page turns into words. `complete`
     says every order and every parcel of the show was read after it ended: before that a
-    last win may still be on its way into a second package, so nobody is "ready"."""
+    last win may still be on its way into a second package, so nobody is "ready".
+
+    `paid`: the buyer's items Whatnot says are paid; `unplaced_paid`: those of them in no
+    parcel. Once the show was read in full, a paid item still in no parcel is "no_parcel"
+    (Javier's call, 2026-11-19): Whatnot has none for it, and the page says to make one in
+    Seller Hub and read again. The app never makes a parcel. Before that read, or for an item
+    whose payment is still being taken, it is "none": the parcel may just not be read yet."""
     live = [p for p in packages if p["status"] not in GONE]
     if any(p["holds"] for p in live):
         return "hold"
     if not live:
-        return "none"
+        return "no_parcel" if complete and paid else "none"
     to_ship = [p for p in live if not p["pickup"]]
     if not to_ship:
         return "pickup"  # handed over in person: no label, ever
@@ -422,7 +437,8 @@ def _state(packages: list[dict], unplaced: int, ended: bool, complete: bool) -> 
     if len(open_) > 1:
         return "split"  # two open packages: two labels unless they are combined first
     if unplaced:
-        return "none"
+        # A label now would close the bundle without the item that is in no parcel.
+        return "no_parcel" if complete and unplaced_paid else "none"
     if open_:
         if not ended:
             return "wait"
@@ -603,6 +619,8 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
                 "names": set(),
                 "items": 0,
                 "unplaced": 0,
+                "paid": 0,
+                "unplaced_paid": 0,
                 "in": defaultdict(int),
                 "void": defaultdict(int),
             },
@@ -610,10 +628,13 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
         b["buyer"] = name or b["buyer"]  # the name of the newest order
         b["names"].add(name.lower())
         b["items"] += item.quantity
+        paid = order.status in WHATNOT_PAID  # not "pending": its payment is still being taken
+        b["paid"] += item.quantity if paid else 0
         if item.whatnot_shipment_id and item.whatnot_shipment_id in shipments:
             b["in"][item.whatnot_shipment_id] += item.quantity
         else:
             b["unplaced"] += item.quantity
+            b["unplaced_paid"] += item.quantity if paid else 0
     for order, item in voided_rows:
         shipment = shipments.get(item.whatnot_shipment_id)
         if shipment is None or shipment.api_status != LABELLED:
@@ -627,6 +648,8 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
                 "names": set(),
                 "items": 0,
                 "unplaced": 0,
+                "paid": 0,
+                "unplaced_paid": 0,
                 "in": defaultdict(int),
                 "void": defaultdict(int),
             },
@@ -674,7 +697,9 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
                 }
             )
         packs.sort(key=lambda p: p["id"])
-        state = _state(packs, b["unplaced"], ended, complete)
+        state = _state(
+            packs, b["unplaced"], ended, complete, paid=b["paid"], unplaced_paid=b["unplaced_paid"]
+        )
         for p in packs:
             # Exactly the packages "Make labels" would send for right now.
             p["askable"] = state in ("ready", "second") and _askable(p, now)
@@ -1008,6 +1033,24 @@ def mark_printed(org_id: int, shipment_ids: list[int]) -> None:
     )
 
 
+def mark_not_printed(org_id: int, shipment_id: int) -> bool:
+    """Undo "printed" on one label (Javier's call, 2026-11-19): opening the PDF marks it
+    printed, and a jammed printer or a closed tab is put right with one click. It is back with
+    the labels still to print, and the next print marks it again. Returns whether it was marked
+    printed: the conditional UPDATE decides, so a second click changes (and records) nothing.
+    Nothing of the label is kept either way; `updated_at` is left as it was (see mark_printed)."""
+    done = db.session.execute(
+        update(WhatnotShipment)
+        .where(
+            WhatnotShipment.organization_id == org_id,
+            WhatnotShipment.id == shipment_id,
+            WhatnotShipment.label_printed_at.is_not(None),
+        )
+        .values(label_printed_at=None, updated_at=WhatnotShipment.updated_at)
+    )
+    return done.rowcount == 1
+
+
 def _label_pages(pdf: bytes) -> list:
     """The pages of one label, read in full before any of them is joined to the others, so a
     file that breaks half way adds nothing. The file comes from outside: anything pypdf
@@ -1200,14 +1243,18 @@ def _carrier_has(buyers: list[dict]) -> list[tuple[int, str | None]]:
     with an item nobody has settled (not every standing sale paid) is left for a person."""
     from .. import orders as orders_service
 
+    shipped = [b for b in buyers if b["state"] == "shipped"]
+    # Wins settled with no product (`orders.settled_unnamed_sales`) do not hold an order
+    # back: one query for every order here, not one per order.
+    settled = orders_service.settled_unnamed_ids(
+        [s for b in shipped for o in b["_orders"] for s in o.sales]
+    )
     out = []
-    for b in buyers:
-        if b["state"] != "shipped":
-            continue
+    for b in shipped:
         tracking = next((p["tracking"] for p in b["packages"] if p["tracking"]), None)
         for order in b["_orders"]:
             if order.status.value in ("paid", "picking", "packed") and orders_service.verified(
-                order
+                order, settled=settled
             ):
                 out.append((order.id, tracking))
     return out

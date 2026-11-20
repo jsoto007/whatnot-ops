@@ -540,7 +540,13 @@ def name_from_listing(sale: Sale, sku_id: int | None, *, price_cents: int | None
     or a person settled it a moment ago.
 
     `price_cents` is what the order says was paid per item. A win whose line carried no
-    price takes it, not the product's list price: Whatnot knows what it charged."""
+    price takes it, not the product's list price: Whatnot knows what it charged.
+
+    Never a win whose title says the winner chooses ("CHOOSE ANY…", Javier's call,
+    2026-11-19): a link of that listing names nothing, in either way of selling; the win
+    waits in Review for the winner's pick."""
+    if rules.is_choice_title(sale.item_text or ""):
+        return False
     sku = listed_sku(sale.organization_id, sku_id)
     if sku is None or sale.sku_id is not None or sale.status is not SaleStatus.detected:
         return False
@@ -588,9 +594,13 @@ def create_sale_from_order(
     for this order already. `settled` says Whatnot has taken the payment; otherwise the
     sale is paid "at the win" like any other and a later decline closes it."""
     # A listing linked to a product names it; otherwise its text may, unless a person
-    # said the listing is none of the shop's products (`by_text` False).
-    sku = listed_sku(show.organization_id, sku_id) or (
-        match_sku(show.organization_id, item_text) if item_text and by_text else None
+    # said the listing is none of the shop's products (`by_text` False). Neither for a title
+    # that says the winner chooses ("CHOOSE ANY…"): the winner's pick names it in Review.
+    sku = (
+        None
+        if rules.is_choice_title(item_text or "")
+        else listed_sku(show.organization_id, sku_id)
+        or (match_sku(show.organization_id, item_text) if item_text and by_text else None)
     )
     sale = Sale(
         organization_id=show.organization_id,
@@ -826,7 +836,9 @@ def close_sale(
 # Whatnot's paid order for the win clears them (whatnot/orders.apply).
 DECLINE_SEEN = "decline_seen"
 # The packer's note when a sale's product was changed after its order was being picked: the
-# old unit may be in the box and is counted back by a person (services/sale_items.change).
+# old unit may be in the box. It went back in stock at the change (services/sale_items.change),
+# so the packer swaps it and puts it back on the shelf, without counting it in again. Also the
+# note when a product was added to, or taken off, a sale that was being picked.
 SWAPPED_AFTER_PICKING = "swapped_after_picking"
 
 
@@ -1057,6 +1069,12 @@ def set_sale_status(
             409,
         )
     picked = None
+    # A win with no product that may be in its buyer's box (settled with no product when
+    # picking began): closed now, a person is told to take it out, as for a named item.
+    unnamed_in_box = new_status in (
+        SaleStatus.cancelled,
+        SaleStatus.payment_failed,
+    ) and _unnamed_in_box(sale)
     if new_status in (SaleStatus.cancelled, SaleStatus.payment_failed):
         rows = _rows(sale) if sale.status in (SaleStatus.reserved, SaleStatus.paid) else []
         # Paid at the win and still on the shelf: the products not put back yet.
@@ -1157,7 +1175,38 @@ def set_sale_status(
             show_id=sale.show_id,
             sale_id=sale.id,
         )
+    elif unnamed_in_box:
+        sale.flagged = True
+        stage = sale.order.status.value
+        what = {"picking": "being picked"}.get(stage, stage)
+        open_review(
+            sale.organization_id,
+            "closed_after_picking",
+            f"{sale.buyer_username}'s {sale.quantity} × {sale.item_text or 'win'} is "
+            f"{new_status.value.replace('_', ' ')} but its order was already {what}. Take it "
+            "out of the package if it is not going out. It is none of the shop's products: "
+            "nothing goes back on the shelf.",
+            show_id=sale.show_id,
+            sale_id=sale.id,
+        )
     return sale
+
+
+def _unnamed_in_box(sale: Sale) -> bool:
+    """A win with no product that may be in its buyer's box: still standing with none
+    (`detected`), its order being picked, packed or shipped, and recorded before picking
+    began. Such an order goes into fulfilment only once the win is settled with no product
+    (`orders.settled_unnamed_sales`), so the packer may have put it in. Read before the
+    sale closes: by then Whatnot's order no longer says it is paid. A win recorded after
+    picking began never was in the box."""
+    from .orders import FULFILLMENT
+
+    order = sale.order
+    if sale.status is not SaleStatus.detected or sale.sku_id is not None:
+        return False
+    if order is None or order.status not in FULFILLMENT:
+        return False
+    return order.picked_at is None or sale.created_at is None or sale.created_at <= order.picked_at
 
 
 def await_product(sale: Sale) -> bool:
@@ -1182,15 +1231,13 @@ def await_product(sale: Sale) -> bool:
     sale.status = SaleStatus.detected
     sale.flagged = True
     sale.status_reason = "item not recognised"
-    if sale.order is not None:
-        from . import orders
-
-        orders.refresh(sale.order)
+    # Paid after all: the decline's note, and a "take it out of the package" note of a win
+    # declined while its order was being picked, are settled, as when a named sale is paid.
     for item in db.session.scalars(
         select(ReviewItem).where(
             ReviewItem.sale_id == sale.id,
             ReviewItem.status == ReviewStatus.open,
-            ReviewItem.reason == "payment_declined",
+            ReviewItem.reason.in_(("payment_declined", "closed_after_picking")),
         )
     ):
         item.status = ReviewStatus.resolved
@@ -1205,6 +1252,9 @@ def await_product(sale: Sale) -> bool:
         event_id=sale.event_id,
         sale_id=sale.id,
     )
+    # After the question is open again: an ignored question of this win, from before its
+    # decline, must not count as settled (`orders.settled_unnamed_sales`).
+    refresh_order(sale)
     return True
 
 
@@ -1936,6 +1986,24 @@ def ask_for_product(sale: Sale) -> ReviewItem | None:
     reason."""
     if not must_name(sale):
         return None
+    item = _ask_which_product(sale)
+    refresh_order(sale)  # a question open again: its order waits for it (unless in a box)
+    return item
+
+
+def ask_for_products(sales: list[Sale]) -> list[Sale]:
+    """`ask_for_product` for many wins at once: one query says which must be named. Returns
+    the wins asked; the caller derives their orders again (`orders.refresh`)."""
+    from .orders import to_pick_ids
+
+    must = to_pick_ids(s.id for s in sales)
+    asked = [s for s in sales if s.id in must]
+    for sale in asked:
+        _ask_which_product(sale)
+    return asked
+
+
+def _ask_which_product(sale: Sale) -> ReviewItem:
     return open_review(
         sale.organization_id,
         "unmatched_item",
@@ -1944,6 +2012,19 @@ def ask_for_product(sale: Sale) -> ReviewItem | None:
         show_id=sale.show_id,
         sale_id=sale.id,
     )
+
+
+def refresh_order(sale: Sale | None) -> None:
+    """Derive the sale's order again (`orders.refresh`) once a review item about the sale was
+    opened or closed: whether a win is settled with no product
+    (`orders.settled_unnamed_sales`) reads the review items, so the order changes with them.
+    An order already being picked, packed or shipped is never touched."""
+    if sale is None or sale.order is None:
+        return
+    from . import orders
+
+    db.session.flush()  # the rule reads the review items from the database
+    orders.refresh(sale.order)
 
 
 def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> ReviewItem:
@@ -2076,15 +2157,23 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
         raise ReviewError(f"unknown action {action!r}")
     item.resolved_by_id = user.id if user is not None else None
     item.resolved_at = datetime.now(UTC)
+    # Every decision closes a question about the sale; "Ignore" on a paid win whose listing
+    # is "Not one of ours" settles it (`orders.settled_unnamed_sales`), and no sale status
+    # changes to refresh the order on the way.
+    refresh_order(item.sale)
     return item
 
 
 def similar_open_items(item: ReviewItem) -> list[ReviewItem]:
     """The other open "item not recognised" decisions in the same show whose lot title is this
     one's without the lot number ("$1 BEAUTY PULLS #521" next to "#520"). Only a person may
-    treat them as one product; the rules never assume it (lot #761 may be another bottle)."""
+    treat them as one product; the rules never assume it (lot #761 may be another bottle).
+    None for a title that says the winner chooses ("CHOOSE ANY…"): each winner picks their
+    own product (the review route refuses "name it once" for it, too)."""
     sale = item.sale
     if sale is None or item.show_id is None or not sale.item_text:
+        return []
+    if rules.is_choice_title(sale.item_text):
         return []
     key = rules.item_title(sale.item_text).lower()
     if not key:
