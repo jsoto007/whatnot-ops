@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from ...db import db
 from ...models import ChatMessage, Organization, Show, WhatnotEvent, WhatnotShow, WhatnotSyncState
 from .. import sale_mode
-from . import connection
+from . import connection, showend
 from .orders import BLIND
 
 # A reading that has failed since it last worked for this long "keeps failing". The show
@@ -104,8 +104,11 @@ def _orders_behind(org_id, conn, now) -> timedelta | None:
             )
         )
     worst: timedelta | None = None
+    found = showend.endings(shows, now)
     for ws in shows:
-        if ws.status == "live":
+        e = found[id(ws)]
+        end = showend.passed(e, now)
+        if ws.status == "live" and not e.over:
             began = ws.started_at or ws.begins_at
             if began is None or now - began < ORDERS_STALE_AFTER:
                 continue  # just went live: the first read is not due yet
@@ -114,11 +117,11 @@ def _orders_behind(org_id, conn, now) -> timedelta | None:
             if late >= ORDERS_STALE_AFTER and (worst is None or late > worst):
                 worst = late
         elif (
-            ws.ended_at is not None
-            and now - ws.ended_at >= FINAL_READ_DUE
-            and (ws.orders_synced_at is None or ws.orders_synced_at < ws.ended_at)
+            end is not None
+            and now - end >= FINAL_READ_DUE
+            and (ws.orders_synced_at is None or ws.orders_synced_at < end)
         ):
-            late = now - ws.ended_at
+            late = now - end
             if worst is None or late > worst:
                 worst = late
     return worst
@@ -128,19 +131,17 @@ def show_read(ws: WhatnotShow | None) -> dict | None:
     """When a Whatnot show's orders were last read, and whether that read began after it
     ended (so no order can be missing from it). For the order slips every role may open.
     None when there is nothing to judge: no show, one that never aired (cancelled,
-    scheduled) or one that ended with no end time (the timer never reads it again, so a
-    warning about it would never go away)."""
+    scheduled) or one Whatnot calls ended with no end time whose end by showend.py's rule
+    has not come yet (the timer reads it in full then)."""
     if ws is None:
         return None
-    live = ws.status in ("live", "stopped")
-    if not live and not (ws.status == "ended" and ws.ended_at is not None):
+    now = datetime.now(UTC)
+    e = showend.ending(ws, now)
+    live = ws.status in showend.ON_AIR and not e.over
+    end = showend.passed(e, now)
+    if not live and end is None:
         return None
-    final = bool(
-        ws.status == "ended"
-        and ws.ended_at is not None
-        and ws.orders_synced_at is not None
-        and ws.orders_synced_at >= ws.ended_at
-    )
+    final = bool(end is not None and ws.orders_synced_at is not None and ws.orders_synced_at >= end)
     return {
         "at": ws.orders_synced_at.isoformat() if ws.orders_synced_at else None,
         "final": final,
@@ -168,8 +169,8 @@ def live_gaps(org_id: int, now: datetime | None = None) -> list[dict]:
 
 def gaps_of(ws: WhatnotShow, now: datetime | None = None) -> list[dict]:
     now = now or datetime.now(UTC)
-    if ws.status != "live":
-        return []
+    if ws.status != "live" or showend.is_over(ws, now):
+        return []  # (a show left live past 12 hours, or one a laptop saw end: not on air)
     began = ws.started_at or ws.begins_at
     if began is None or now - began < NO_LAPTOP_AFTER:
         return []

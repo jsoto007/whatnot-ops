@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "show": { "id": "2026-11-19T20:00:00.000Z", "startedAt": "2026-11-19T20:00:00.000Z", "url": "/live/made-up-stream", "channel": "" },
+  "rows": [
+    {"id": "0123456789abcd03", "showId": "2026-11-19T20:00:00.000Z", "username": "fern_buyer", "body": "hello", "rawText": "fern_buyer hello", "capturedAt": "2026-11-19T20:01:00.000Z", "seq": 1}
+  ]
+}

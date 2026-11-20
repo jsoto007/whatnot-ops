@@ -473,6 +473,56 @@ The probe, then the first connection in "Compare only" (reads only; one show com
 - **The open-order re-read** compares each order's status, not a count, and skips an order
   Whatnot refuses (five refusals in a row end the pass, and so does a pass in which every
   order was refused: that one is a failure, not a success).
+- **A show Whatnot never ends** (`services/whatnot/showend.py`, Javier's call 2026-11-19).
+  Whatnot can call a show ended and give no end time (the probe checks for exactly that),
+  or leave it "live" or "stopped" long after it ended. Before, such a show was never read in
+  full by the timer, never complete, never owed its parcels, picks or results, and no label
+  was ever offered. One function now decides "over" for every reader (the timer's reads,
+  "every order read", the Shipping page and labels, the picks, results, alerts and "is a
+  show on air"):
+  - Whatnot's own end time always wins and is never written over. The app stores no end of
+    its own: it works it out each time, so a real end time that arrives later simply takes
+    over, and what was already read after it is not read again.
+  - Otherwise the show is over **12 hours after it began** (`ON_AIR_AT_MOST`, the same 12
+    hours that already stopped a stuck show holding back the timer): from its start, else
+    when the app saw it go live after knowing it as scheduled (`whatnot_shows.live_seen_at`;
+    never a scheduled time older than that, so a show started a day late is not over the
+    moment it goes live), else the time it was scheduled for, else (only while Whatnot calls
+    it on air) when the app first saw it. A show first seen already ended with no time at all
+    has no end until a laptop gives one: when it was first seen is not when it began.
+  - **A show laptop can make it sooner.** When the laptop's tab is moved on to another
+    channel, the extension tells the server once, in a batch with no lines, after the show's
+    lines (`show.movedOnAt`; the server keeps the time IT heard it, `shows.moved_on_at`,
+    never the laptop's clock). That is the end when it is before the 12-hour one, not before
+    the show began, and no chat of the show's recordings reached the server after it. While
+    Whatnot still calls the show live or paused, it also needs **proof nothing sold after
+    it**: every order of the show read at least 30 minutes after the move, and none placed
+    after it (2 minutes allowed for the last win's order; an order with no time counts from
+    when the app first stored it, `whatnot_orders.first_stored_at`). A quiet half hour nobody
+    read is no proof: the show stays on air until that read, which the timer makes even while
+    webhooks arrive. **A show that keeps selling stays on air whatever a laptop saw**. For a
+    show Whatnot calls ended there is no order check, because a card declined at the win and
+    retried is a new order placed after the end, and it must not take back a show already
+    complete.
+  - **The host may only have paused.** A show over by this rule that Whatnot still calls live
+    or paused with no end time keeps its orders read on every quiet timer pass until its 12
+    hours have passed and one read after them (tried for a day). An order placed after the
+    laptop's move puts it back on air at the next pass: labels, picks and "every order read"
+    wait again, and a win called out as "not among Whatnot's orders" closes itself when its
+    order comes (paid, or still settling). Not undone: a label made or a pick read while it
+    looked over; that Review item for a win whose order never comes; a second win of a lot
+    that gave way to another buyer's paid order (cancelled, stock back; its own order arriving
+    later records the win again); and the sale's "needs a decision" flag, which stays after
+    the item closes.
+  - A show Whatnot calls ended is "ended" on the Shipping page at once (it says "not read in
+    full" until the reads are done); what needs every order read after the end waits for
+    that end to pass. A show left live past the 12 hours is shown as Whatnot's "Live" with
+    "(treated as over: …)" on its Payments tab, and is history for "Apply as they arrive" if
+    that end was before the choice.
+  - **Not verified on the live shop**: how often Whatnot leaves out the end time or leaves a
+    show live, and whether it really moves a viewer on to another channel at every show's
+    end. The channel reader's selectors are not verified either (docs/PLAN.md §0), so the
+    laptop's word may never come; the 12-hour rule is the backstop.
 
 ## Not verified
 
@@ -498,6 +548,10 @@ The probe answered 1–4; the rest need a real show with the connection on.
 10. Buyers: that an account's id stays the same when the buyer changes their username, and
     whether an old order shows the name used then or the name used now. The app handles
     both, but no renamed buyer has been seen.
+11. Shows Whatnot never ends: how often an ended show comes with no `ended_at`, or a show
+    stays `live`/`stopped` after it ended, and whether Whatnot moves every viewer on to
+    another channel when a show ends. The app's rule (12 hours, or sooner on a laptop's word)
+    is in "How reads stay complete".
 11. Listings: whether the shop's listings carry a SKU at all, how a "choose any" lot
     appears in the catalog, and whether an order item names its variant. Also unknown,
     and needed before the app could ever set Whatnot's stock: whether Whatnot counts a
