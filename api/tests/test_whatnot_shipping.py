@@ -754,6 +754,95 @@ def test_a_labelled_parcel_taking_an_item_back_drops_none_of_its_own(app, shop):
     assert summary(view(app, shop))[:4] == ("labelled", 2, 0, [("label_generated", 2, False)])
 
 
+def test_an_item_an_open_parcel_and_a_delivered_one_both_list_goes_to_the_open_one(app, shop):
+    """The open parcel is mended first and keeps the item: the delivered one must not take
+    it after (that marked the order shipped while a parcel was still to label; PR 80
+    review probe c1). The stranded buyer ends exactly as one who was never stranded."""
+    a = order(shop, "lani808", "Red bundle")
+    b = order(shop, "lani808", "Blue bundle", 900)
+    can = parcel(
+        shop, "lani808", [], status="cancelled", created=shop["now"] - timedelta(minutes=58)
+    )
+    late = parcel(
+        shop, "lani808", [b], status="delivered", created=shop["now"] - timedelta(minutes=45)
+    )
+    parcel(shop, "lani808", [a])  # the open one is older: the full read takes it last
+    still_lists(shop["fake"], late["id"], a["id"])  # Whatnot lists Red under both
+    read(app, shop)
+    read_shipments(app, shop)
+    never_stranded = summary(view(app, shop))
+    assert never_stranded[0] == "second"
+    strand(app, shop, "Red bundle", can["id"])
+    assert summary(view(app, shop))[0] == "no_parcel"
+    read_shipments(app, shop)
+    assert summary(view(app, shop)) == never_stranded
+    assert view(app, shop)["toMarkShipped"] == 0
+
+
+def lots(app):
+    with app.app_context():
+        return sorted(
+            db.session.execute(select(WhatnotLot.whatnot_order_id, WhatnotLot.title)).all()
+        )
+
+
+def test_a_labelled_parcel_taking_one_item_of_an_order_back_overwrites_no_lot(app, shop):
+    """Both items of one order were stored on the cancelled parcel, and Whatnot lists only
+    one of them under the labelled parcel now: that one goes back, and the order's lots stay
+    as they were (written by place in a list, the item taken back overwrote the other's;
+    PR 80 review probe c2)."""
+    fake = shop["fake"]
+    m = fake.add_order(
+        show_id=shop["wshow"],
+        buyer="lani808",
+        items=[{"title": "Red bundle", "price_cents": 2500}, {"title": LOT, "price_cents": 700}],
+        created=datetime.now(UTC) - timedelta(seconds=20),
+    )
+    red, lot = (i["id"] for i in fake.items_of(m["id"]))
+    can = parcel(
+        shop, "lani808", [], status="cancelled", created=shop["now"] - timedelta(minutes=55)
+    )
+    lab = parcel(shop, "lani808", [m], status="label_generated")
+    read(app, shop)
+    read_shipments(app, shop)
+    before = lots(app)
+    assert len(before) == 2
+    for sid, si in list(fake.shipment_items.items()):  # Whatnot lists only Red under it now
+        if si["shipment_id"] == lab["id"] and si["order_item_id"] == lot:
+            del fake.shipment_items[sid]
+    strand(app, shop, "Red bundle", can["id"])
+    strand(app, shop, LOT, can["id"])
+    read_shipments(app, shop)
+    assert lots(app) == before
+    with app.app_context():
+        where = dict(
+            db.session.execute(
+                select(WhatnotOrderItem.whatnot_id, WhatnotOrderItem.whatnot_shipment_id)
+            ).all()
+        )
+    assert where == {red: lab["id"], lot: can["id"]}
+    assert summary(view(app, shop))[0] == "no_parcel"  # the other item is still in none
+
+
+def test_whatnot_failing_on_a_mend_does_not_fail_the_read(app, shop, monkeypatch):
+    """The extra read of a labelled parcel is best effort: the parcels themselves were read."""
+    _, old, new = replaced(shop)
+    shop["fake"].set_shipment(new["id"], status="label_generated")
+    read(app, shop)
+    read_shipments(app, shop)
+    strand(app, shop, "Red bundle", old["id"])
+
+    def down(*args, **kwargs):
+        raise shipping.WhatnotError("unavailable")
+
+    monkeypatch.setattr(shipping, "_take_back", down)
+    read_shipments(app, shop)  # does not raise
+    assert summary(view(app, shop))[0] == "no_parcel"
+    monkeypatch.undo()
+    read_shipments(app, shop)
+    assert summary(view(app, shop))[0] == "labelled"
+
+
 @pytest.mark.parametrize("open_touched", [True, False])
 def test_an_item_only_the_cancelled_parcel_lists_stays_there_and_holds_the_label_back(
     app, shop, open_touched

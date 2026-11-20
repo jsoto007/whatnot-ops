@@ -536,7 +536,8 @@ commands.
     cancelled parcel never takes an item from one that ships while Whatnot still lists it
     there (`_held_by_a_parcel_that_ships` asks Whatnot; the stored pointer is not proof), and
     `_mend` reads the other parcel again for rows already stranded (a labelled one only
-    takes the item back, `_take_back`; at most `MAX_MENDS` calls a read).
+    takes back what is still stranded, moving its existing lot, `_take_back`; at most
+    `MAX_MENDS` calls a read; a Whatnot error there ends the mending, never the read).
   - **Older-orders backfill** (`whatnot/backfill.py`): the end of Whatnot's list counts as the
     floor only after `STOP_AFTER` older orders in a row or two reads ending on the same order;
     a few old orders before an end never finish a run.

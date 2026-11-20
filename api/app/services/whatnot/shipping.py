@@ -487,9 +487,10 @@ def _mend(
     again at each read while that lasts (at most MAX_MENDS calls a read, open parcels first).
 
     An open parcel is stored again whole. A labelled one, or one with the carrier, only
-    gains the stranded items it lists (`_take_back`): nothing else about its stored list
-    changes (`closed` above: Whatnot may stop listing a cancelled order's item its label
-    still carries)."""
+    gains the items still stranded after that which it lists (`_take_back`): nothing else
+    about its stored list changes (`closed` above: Whatnot may stop listing a cancelled
+    order's item its label still carries). An error from Whatnot on that best-effort read
+    ends the mending for this read, never the read."""
     if not gone or not (unread or closed_unread):
         return 0
     stranded: dict[str, set[str]] = defaultdict(set)  # buyer → their stranded items (Whatnot ids)
@@ -520,20 +521,42 @@ def _mend(
             return n
         wanted = stranded.get((buyer or "").lower())
         if wanted:
-            _take_back(org_id, client, whatnot_id, wanted)
+            try:
+                _take_back(org_id, client, whatnot_id, wanted, gone)
+            except WhatnotError:
+                # Best effort: the parcels themselves were read. A parcel Whatnot cannot
+                # list right now must not fail every read of the shop's shipments.
+                log.warning("whatnot: could not read parcel %s again to mend", whatnot_id)
+                return n
             n += 1
     return n
 
 
-def _take_back(org_id: int, client: WhatnotClient, whatnot_id: str, wanted: set[str]) -> None:
-    """A labelled parcel, or one with the carrier, takes back the items in `wanted` (stored on
-    a parcel that does not ship) that Whatnot lists under it now. Its other items stay as
-    they were read when the label was made: none is dropped."""
+def _take_back(
+    org_id: int, client: WhatnotClient, whatnot_id: str, wanted: set[str], gone: set[str]
+) -> None:
+    """A labelled parcel, or one with the carrier, takes back the items in `wanted` that are
+    still stored on a parcel that does not ship (`gone`: an open parcel read just before may
+    have taken one already, and it keeps it) and that Whatnot lists under this parcel now.
+    Only those items move, with the lot each already has: no lot is written by its place in a
+    list, so a list Whatnot cut short overwrites nothing, and none of the parcel's own items
+    is dropped."""
+    still = set(
+        db.session.scalars(
+            select(WhatnotOrderItem.whatnot_id).where(
+                WhatnotOrderItem.organization_id == org_id,
+                WhatnotOrderItem.whatnot_id.in_(wanted),
+                WhatnotOrderItem.whatnot_shipment_id.in_(gone),
+            )
+        )
+    )
+    if not still:
+        return
     try:
         listed = [
             i
             for i in client.shipment_items(whatnot_id)
-            if _str(i.get("order_item_id"), 20) in wanted
+            if _str(i.get("order_item_id"), 20) in still
         ]
     except NotFound:
         return
@@ -547,20 +570,44 @@ def _take_back(org_id: int, client: WhatnotClient, whatnot_id: str, wanted: set[
     )
     if row is None or _void(row.api_status, row.replaced_by):
         return
-    ids = {item.id for _, item in back}
-    kept = [
-        (order, item)
-        for order, item in db.session.execute(
-            select(WhatnotOrder, WhatnotOrderItem)
-            .join(WhatnotOrderItem, WhatnotOrderItem.order_id == WhatnotOrder.id)
+    for order, item in back:
+        was = item.whatnot_shipment_id
+        if was not in gone or order.status not in SHIPPABLE:
+            continue
+        item.whatnot_shipment_id = whatnot_id
+        # Its lot, if the cancelled parcel's read took it there (a re-read of the order
+        # alone leaves the lot where it was).
+        db.session.execute(
+            update(WhatnotLot)
             .where(
-                WhatnotOrderItem.organization_id == org_id,
-                WhatnotOrderItem.whatnot_shipment_id == whatnot_id,
+                WhatnotLot.organization_id == org_id,
+                WhatnotLot.title == item.title,
+                WhatnotLot.whatnot_order_id.in_(
+                    [order.whatnot_id] + [f"{order.whatnot_id}-{n}" for n in range(2, 10)]
+                ),
+                WhatnotLot.shipment_id.in_(
+                    select(WhatnotShipment.id).where(
+                        WhatnotShipment.organization_id == org_id,
+                        WhatnotShipment.whatnot_id == was,
+                    )
+                ),
             )
+            .values(shipment_id=row.id, recipient=row.recipient, updated_at=datetime.now(UTC))
         )
-        if item.id not in ids
-    ]
-    _store_lots(org_id, row, kept + back)
+    db.session.flush()
+    row.item_count = db.session.scalar(
+        select(func.coalesce(func.sum(WhatnotOrderItem.quantity), 0)).where(
+            WhatnotOrderItem.organization_id == org_id,
+            WhatnotOrderItem.whatnot_shipment_id == whatnot_id,
+        )
+    )
+    value = db.session.scalar(
+        select(func.sum(WhatnotOrderItem.unit_price_cents * WhatnotOrderItem.quantity)).where(
+            WhatnotOrderItem.organization_id == org_id,
+            WhatnotOrderItem.whatnot_shipment_id == whatnot_id,
+        )
+    )
+    row.value_cents = min(int(value), MAX_CENTS) if value else row.value_cents
 
 
 # ---------- one package per buyer ----------
