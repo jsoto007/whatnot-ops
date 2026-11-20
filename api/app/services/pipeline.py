@@ -1966,6 +1966,45 @@ def refuse_cancelling(sale: Sale | None) -> None:
         _refuse_leaving_unnamed(sale)
 
 
+def refuse_restoring(sale: Sale | None) -> None:
+    """Raise when a person's "They paid after all" would restore a declined win while
+    Whatnot's own order for it says the payment failed (Javier's call, 2026-11-20). Whatnot
+    decides whether a win was paid: when it does say paid, its paid order restores the sale
+    through the order sync, as for any declined win. A win declined by the stream or by a
+    payment file, with no failed Whatnot order of its own, is still restored by hand.
+
+    The orders read are the sale's own (`external_order_id`) and any whose items name it
+    (`WhatnotOrderItem.sale_id`). Any of them paid, or still taking payment, refuses
+    nothing."""
+    from ..models import WhatnotOrder, WhatnotOrderItem
+    from .whatnot.orders import PAYMENT
+
+    if sale is None or sale.status is not SaleStatus.payment_failed:
+        return
+    tied = select(WhatnotOrderItem.order_id).where(
+        WhatnotOrderItem.organization_id == sale.organization_id,
+        WhatnotOrderItem.sale_id == sale.id,
+    )
+    mine = WhatnotOrder.id.in_(tied)
+    if sale.external_order_id:
+        mine = or_(mine, WhatnotOrder.whatnot_id == sale.external_order_id)
+    orders = db.session.execute(
+        select(WhatnotOrder.whatnot_id, WhatnotOrder.status)
+        .where(WhatnotOrder.organization_id == sale.organization_id, mine)
+        .order_by(WhatnotOrder.id)
+    ).all()
+    said = {PAYMENT.get(status or "") for _, status in orders}
+    if "failed" not in said or said & {"paid", "pending"}:
+        return
+    number = next(w for w, status in orders if PAYMENT.get(status or "") == "failed")
+    raise ReviewError(
+        f"Whatnot's order #{number} says this payment failed, so the sale stays declined "
+        "here. If the buyer paid another way, Whatnot's order will say so, and applying "
+        "Whatnot's orders then marks the sale paid.",
+        409,
+    )
+
+
 def _refuse_leaving_unnamed(sale: Sale) -> None:
     message = (
         "This win is paid on Whatnot and still waiting for its product. Name the product "
@@ -2140,6 +2179,8 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
         status = _status(body.get("status"))
         if status is SaleStatus.cancelled:
             refuse_cancelling(sale)  # a paid win still to name: named, never cancelled here
+        if status is SaleStatus.paid:
+            refuse_restoring(sale)  # Whatnot's order says failed: Whatnot decides
         if body.get("skuId") and sale.sku_id is None and sale.status is SaleStatus.payment_failed:
             # A declined win whose item was never recognised: say what it was, then restore it.
             sku = catalog.get_sku(item.organization_id, _id(body["skuId"]))

@@ -141,7 +141,9 @@ commands.
   player / Sold tab (`extension/src/capture/decline.ts`, unverified against a
   real decline), said by the host/platform, or in the Seller Hub CSV — closes
   it `payment_failed` and restocks unless picking began; a person may restore
-  it once in Review. A viewer's chat line never pays or declines anything.
+  it once in Review, except while Whatnot's own order for it says failed
+  (`pipeline.refuse_restoring`, Javier's call 2026-11-20: Whatnot decides; its paid
+  order restores the sale). A viewer's chat line never pays or declines anything.
   **Where Whatnot's orders are applied as they arrive** (`whatnot/orders.decides(show)`:
   mode "auto", the recording matched to a followed show, a token that can read orders
   with their buyers), only Whatnot's order or a person declines a sale: a decline read

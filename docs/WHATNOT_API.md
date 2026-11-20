@@ -132,8 +132,9 @@ can differ on its own page):
      still stands. Whatnot's paid order clears it; a failed one closes the sale. A person
      who is sure can close the sale at once. The buyer's order cannot be picked meanwhile.
    - "Payment declined": Whatnot's order (or the stream, in Compare only) closed the sale.
-     "They paid after all" restores it by hand; with orders applied as they arrive, the
-     paid order restores it by itself.
+     "They paid after all" restores it by hand, but not while Whatnot's order for it says
+     the payment failed: Whatnot decides, and when its order says paid, applying the orders
+     restores the sale (with orders applied as they arrive, by itself).
    - "Payment declined: nothing recorded": Whatnot declined a payment for a win the app
      has no sale for. Nothing to undo; if they pay, the paid order records the sale.
 2. **Order slips.** With Whatnot's parcels read, the slips are the final pick list (one row

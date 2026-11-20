@@ -58,7 +58,7 @@ export function DeclineDialog({ sale, buyer, showDate, reviewId, onClose, onDone
       }
     >
       <p style={{ margin: 0 }}>
-        Whatnot declined the card for <b>{item}</b>. {sale.flagged ? 'Picking had already begun, so the item was not put back in stock.' : 'The item is back in stock.'} The buyer can still pay another way until the show ends; if they did, restore the sale.
+        Whatnot declined the card for <b>{item}</b>. {sale.flagged ? 'Picking had already begun, so the item was not put back in stock.' : 'The item is back in stock.'} The buyer can still pay another way until the show ends. When Whatnot's order says they paid, the sale is restored from it; restore it here only for a decline Whatnot's order does not show.
       </p>
       {needsSku && (
         <div className="sku-field">
