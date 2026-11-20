@@ -24,7 +24,7 @@ from app.models import (
     WhatnotOrder,
     WhatnotShow,
 )
-from app.services import picks
+from app.services import picks, pipeline
 from app.services.whatnot import (
     catalog,
     client_for,
@@ -37,6 +37,7 @@ from app.services.whatnot import (
 )
 from app.services.whatnot import orders as whatnot_orders
 from tests import test_whatnot_orders as wo
+from tests.test_pipeline import level, run
 from tests.test_whatnot_orders import order
 from tests.test_whatnot_reads import drain
 
@@ -802,3 +803,143 @@ def test_whatnot_is_not_asked_for_the_results_of_a_show_it_still_calls_live(app,
     whatnot_says(app, shop, "ended", began=13 * HOUR, ended=HOUR)  # Whatnot ends it at last
     with app.app_context():
         assert results.results_due(shop["org"]) == [shop["wshow"]]
+
+
+# ---------- a show the 12-hour rule ends long after it ran ----------
+
+LOT = "Red bundle #41"  # an auction: Whatnot's lot number is in the title
+DAY = timedelta(days=1)
+
+
+def ran_with_a_lot_paid_by_another_buyer(app, shop, *, began, ended=None):
+    """A show the shop ran `began` ago, "applying orders as they arrive" (chosen before it):
+    ann's win of lot #41 came from the stream (paid at the win), Whatnot's paid order for the
+    lot is bo's and was applied as it arrived (bo's sale). Whatnot calls the show ended, with
+    no end time unless `ended` (ago) is set. Its orders were last read an hour in, so it was
+    never complete: ann's sale stands. Returns the state before the next timer pass."""
+    now = datetime.now(UTC)
+    start = now - began
+    won = start + 30 * MIN
+    with app.app_context():
+        conn = db.session.scalar(select(WhatnotConnection))
+        conn.orders_mode = "auto"
+        conn.connected_at = start - 2 * DAY
+        conn.auto_since = start - DAY  # not history: followed since before it began
+        db.session.get(Show, shop["show"]).started_at = start
+        db.session.commit()
+    whatnot_says(app, shop, "ended", began=began, ended=ended)
+    recorded(app, shop)
+    shop["say"](app, [wo.win("ann_made_up", LOT)])
+    with app.app_context():  # every line of the recording was said during that show
+        db.session.execute(update(ChatMessage).values(captured_at=won, received_at=won))
+        db.session.commit()
+    run(app, shop["show"])
+    order(shop, "bo_made_up", LOT, created=won + timedelta(seconds=20))
+    wo.read(app, shop)
+    last_read(app, shop, began - HOUR)  # the last read was during the show
+    wo.apply(app, shop)  # bo's order, applied as it arrived
+    assert sales_of(app) == [
+        ("ann_made_up", "paid", pipeline.AUTOPAY_REASON),
+        ("bo_made_up", "paid", "paid on Whatnot"),
+    ]
+    jobs_done(app)
+    return wo.snapshot(app), level(app, shop["red"])
+
+
+def sales_of(app):
+    return [(buyer, status, reason) for buyer, _, status, reason, _ in wo.sale_rows(app)]
+
+
+def first_pass(app, shop):
+    """A timer pass and every job it leads to (picks wait a few minutes: run them too)."""
+    timer_pass(app, shop)
+    for _ in range(3):
+        due_now(app)
+        drain(app)
+
+
+@pytest.mark.parametrize("began", [5 * DAY, 20 * DAY])
+def test_a_show_the_rule_ends_days_after_it_ran_cancels_no_sale_by_itself(app, shop, began):
+    """The first pass after the 12-hour rule came in reaches shows of up to 30 days ago that
+    Whatnot never gave an end time: each is now over and read in full, and its orders are
+    applied as complete. Whatnot's paid order for lot #41 is bo's; ann's win stands with no
+    order. Days later nobody is watching that show: ann's sale is not cancelled and no stock
+    moves on the app's own clock; a person is asked (the "no payment record" item)."""
+    before, stock = ran_with_a_lot_paid_by_another_buyer(app, shop, began=began)
+    first_pass(app, shop)
+    with app.app_context():
+        ws = ws_of(shop)
+        assert showend.ending(ws).by == "time"
+        assert whatnot_orders._complete(ws) is True  # read in full after its end
+    assert sales_of(app) == [
+        ("ann_made_up", "paid", pipeline.AUTOPAY_REASON),
+        ("bo_made_up", "paid", "paid on Whatnot"),
+    ]
+    assert level(app, shop["red"]) == stock
+    assert wo.snapshot(app)[1] == before[1]  # no stock movement
+    assert open_items(app, "no_payment_record") == ["ann_made_up"]
+    # The next pass reads and applies nothing again; applying by hand opens no second item.
+    after = wo.snapshot(app)
+    timer_pass(app, shop)
+    assert queued(app, "whatnot_apply_show") == []
+    due_now(app)
+    drain(app)
+    assert wo.snapshot(app) == after
+    assert "gave_way" not in wo.apply(app, shop)
+    assert wo.snapshot(app) == after
+    assert open_items(app, "no_payment_record") == ["ann_made_up"]
+
+
+def test_a_show_the_rule_ended_lately_still_settles_on_one_win(app, shop):
+    """14 hours after it began (its 12-hour end two hours ago): the show was just run, and
+    Whatnot's paid order says who has the lot, as it does for a show Whatnot ended."""
+    _, stock = ran_with_a_lot_paid_by_another_buyer(app, shop, began=14 * HOUR)
+    first_pass(app, shop)
+    with app.app_context():
+        assert showend.ending(ws_of(shop)).by == "time"
+    assert sales_of(app) == [
+        ("ann_made_up", "cancelled", "the auction was won by bo_made_up on Whatnot"),
+        ("bo_made_up", "paid", "paid on Whatnot"),
+    ]
+    assert level(app, shop["red"]) != stock  # ann's unit is back
+    assert open_items(app, "no_payment_record") == []
+
+
+def test_a_show_whatnot_ended_days_ago_cancels_no_sale_by_itself_either(app, shop):
+    """Whatnot's own end time, five days ago, read in full only now: days after a show nobody
+    is watching it, so the rule is the age of the end, not who said it. A person decides."""
+    before, stock = ran_with_a_lot_paid_by_another_buyer(
+        app, shop, began=5 * DAY + 3 * HOUR, ended=5 * DAY
+    )
+    first_pass(app, shop)
+    with app.app_context():
+        assert showend.ending(ws_of(shop)).by == "whatnot"
+    assert sales_of(app) == [
+        ("ann_made_up", "paid", pipeline.AUTOPAY_REASON),
+        ("bo_made_up", "paid", "paid on Whatnot"),
+    ]
+    assert level(app, shop["red"]) == stock
+    assert wo.snapshot(app)[1] == before[1]
+    assert open_items(app, "no_payment_record") == ["ann_made_up"]
+
+
+def test_an_end_time_whatnot_fills_in_days_later_undoes_nothing_a_person_was_asked(app, shop):
+    """The 12-hour rule ended it five days ago and a person was asked about ann's win. Whatnot
+    then gives the show an end time: the next apply still cancels nothing by itself."""
+    before, stock = ran_with_a_lot_paid_by_another_buyer(app, shop, began=5 * DAY)
+    first_pass(app, shop)
+    assert open_items(app, "no_payment_record") == ["ann_made_up"]
+    with app.app_context():
+        ws = ws_of(shop)
+        ws.status, ws.ended_at = "ended", datetime.now(UTC) - 5 * DAY + 2 * HOUR
+        db.session.commit()
+        assert showend.ending(ws_of(shop)).by == "whatnot"
+    first_pass(app, shop)
+    assert "gave_way" not in wo.apply(app, shop)
+    assert sales_of(app) == [
+        ("ann_made_up", "paid", pipeline.AUTOPAY_REASON),
+        ("bo_made_up", "paid", "paid on Whatnot"),
+    ]
+    assert level(app, shop["red"]) == stock
+    assert wo.snapshot(app)[1] == before[1]
+    assert open_items(app, "no_payment_record") == ["ann_made_up"]

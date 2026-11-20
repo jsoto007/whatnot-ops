@@ -26,11 +26,15 @@ the chat lines from that moment on and what the parser read from them, the sales
 Whatnot order's show when it is known, else by when their line was captured: same ids, so
 the same stock ledger keys and not a unit moves in stock), each buyer's Order (one buyer
 with wins in both shows gets an Order in each), the Review questions about those lines or
-sales, Whatnot's lots read for the second show and their parcels. The second show takes
-the shelf layout and selling way that were in use, unless its Whatnot show has its own.
-Each half is then tied to its Whatnot show for good (link "split": the clock never
-re-decides it), and a show the app made for either Whatnot show folds into that half
-(services/show_merge.py), with its own rules.
+sales, what Whatnot's orders of the second show told a person with no sale or line to
+follow (a declined payment with no sale here, by its order item; a payment no sale answers,
+by the order it names; the show's "orders left out" notice, when the recording was the
+second show's before the split), each as it was, open, dismissed or resolved, so that
+show's next apply knows it, Whatnot's lots read for the second show and their parcels. The
+second show takes the shelf layout and selling way that were in use, unless its Whatnot
+show has its own. Each half is then tied to its Whatnot show for good (link "split": the
+clock never re-decides it), and a show the app made for either Whatnot show folds into
+that half (services/show_merge.py), with its own rules.
 
 A buyer whose box is being picked, packed or shipped with a win from the second show stops
 the split (a box cannot be cut in two), and so does anything that stops the made show's
@@ -51,7 +55,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import OperationalError
 
@@ -69,6 +73,7 @@ from ..models import (
     ShowShelf,
     WhatnotLot,
     WhatnotOrder,
+    WhatnotOrderItem,
     WhatnotShipment,
     WhatnotShow,
 )
@@ -496,6 +501,54 @@ def _carry_settings(show: Show, part: Show) -> None:
     db.session.flush()
 
 
+def _move_whatnot_questions(show: Show, part: Show, d: Decision, was: int | None) -> None:
+    """Review items Whatnot's orders wrote with no sale, line or event to follow go to the
+    half whose Whatnot show they are about, as they are (open, dismissed or resolved): that
+    show's next apply looks for them there, and finds them known instead of asking again.
+    - a declined payment with no sale here: by its order item's show;
+    - a payment no sale here answers: by the order it names (one from a file that names no
+      order says nothing about its show, and stays);
+    - the show's "orders left out" notice (one per show, naming no order): only when the
+      recording was the later show's before the split (`was`, read under the locks), so
+      its notice was that show's. Run before the made shows fold in: a made show's notice
+      is its own show's and must not be taken along."""
+    from .whatnot import orders as whatnot_orders
+
+    second_orders = select(WhatnotOrder.id).where(
+        WhatnotOrder.organization_id == show.organization_id,
+        WhatnotOrder.whatnot_show_id == d.second.ws.whatnot_id,
+    )
+    declined = select(WhatnotOrderItem.id).where(WhatnotOrderItem.order_id.in_(second_orders))
+    named = select(literal("order:") + WhatnotOrder.whatnot_id).where(
+        WhatnotOrder.id.in_(second_orders)
+    )
+    whose = [
+        and_(
+            ReviewItem.reason == whatnot_orders.ORDER_DECLINED,
+            ReviewItem.proposal["orderItem"].as_integer().in_(declined),
+        ),
+        and_(
+            ReviewItem.reason == "unmatched_payment",  # reconcile._review_unmatched
+            ReviewItem.proposal["dedupeKey"].as_string().in_(named),
+        ),
+    ]
+    if was is not None and was == d.second.ws.id:
+        whose.append(ReviewItem.reason == whatnot_orders.LEFT_OUT)
+    db.session.execute(
+        update(ReviewItem)
+        .where(
+            ReviewItem.organization_id == show.organization_id,
+            ReviewItem.show_id == show.id,
+            ReviewItem.sale_id.is_(None),
+            ReviewItem.message_id.is_(None),
+            ReviewItem.event_id.is_(None),
+            or_(*whose),
+        )
+        .values(show_id=part.id)
+        .execution_options(synchronize_session=False)
+    )
+
+
 def split(show: Show, d: Decision) -> Show | None:
     """Split the recording at `d.at` (see the module docstring). Returns the new show, or
     None when it cannot be done now (a parse running: nothing changed). Raises Blocked,
@@ -505,6 +558,8 @@ def split(show: Show, d: Decision) -> Show | None:
 
     if not _lock(show, d):
         return None
+    # Which Whatnot show the recording was before it splits, read under the locks.
+    was = db.session.scalar(select(Show.whatnot_show_id).where(Show.id == show.id))
     org_id = show.organization_id
     key = laptop_key(show)
     plan = _plan(show, d)
@@ -594,6 +649,9 @@ def split(show: Show, d: Decision) -> Show | None:
             .values(show_id=part.id)
             .execution_options(synchronize_session=False)
         )
+        # What Whatnot's orders told a person with nothing of the above to follow: before
+        # the recording is tied to the first show and the made shows fold in.
+        _move_whatnot_questions(show, part, d, was)
         # Whatnot's lots of the second show's orders, and the parcels most of them are in.
         second_orders = select(WhatnotOrder.whatnot_id).where(
             WhatnotOrder.organization_id == org_id,

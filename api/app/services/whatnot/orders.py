@@ -19,7 +19,7 @@ this is Whatnot's own record, read with the shop's token.
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -417,6 +417,28 @@ def _complete(ws: WhatnotShow) -> bool:
 
     end = showend.end_of(ws)
     return end is not None and ws.orders_synced_at is not None and ws.orders_synced_at >= end
+
+
+# A show Whatnot gave no end time for, and no laptop saw end, is over by the app's own clock
+# (showend.py: 12 hours after it began). Once that end is older than this, its applies no
+# longer make a sale give way to another win of its lot (`_one_win`): the first pass after the
+# 12-hour rule came in reads a month of such shows in full, and days after a show nobody is
+# watching it; a person decides instead. The same days the timer reads a show's parcels.
+GIVE_WAY_WITHIN = timedelta(days=3)
+
+
+def _ended_long_ago(ws: WhatnotShow) -> bool:
+    """The show's end, whoever said it (Whatnot, the 12-hour rule, a laptop's word), is more
+    than `GIVE_WAY_WITHIN` old. An apply this late never makes a paid sale give way by
+    itself: cancelling a sale and moving stock days after the show, with no person involved,
+    is worse than asking. The win keeps its "no order on Whatnot" item and a person decides.
+    Keyed on the end's age, not on who ended it: an end time Whatnot fills in days later, or
+    a first full read of an old show, must not undo what a person was asked to decide."""
+    from . import showend
+
+    now = datetime.now(UTC)
+    at = showend.end_of(ws, now)
+    return at is not None and at < now - GIVE_WAY_WITHIN
 
 
 # A plan row's action that only Whatnot's orders have: the declined win with no product
@@ -820,7 +842,9 @@ def apply(show: Show, *, user=None) -> dict:
     # unpaid and none gives way to another win of its lot: that order may be the one that
     # pays it.
     whole = _complete(ws) and not _may_hide(info)
-    gave_way = _one_win(primary, plan, show_ids, whole)
+    # A show over only by the app's clock, days ago: no sale gives way by itself. A win with
+    # no order stays called out as such ("no payment record"), and a person decides.
+    gave_way = _one_win(primary, plan, show_ids, whole and not _ended_long_ago(ws))
     # A sale that gave way is no longer "a sale with no order": it is settled.
     plan.uncovered = [i for i in plan.uncovered if i not in gave_way]
     summary = plan.summary
@@ -841,7 +865,9 @@ def _one_win(show: Show, plan: Plan, show_ids: list[int], complete: bool) -> set
       sale still standing for the lot with no order of its own gives way: another buyer's
       (the lot was run again after their card was declined), or a second copy of the same
       win. Before that a missing order may simply not have arrived, and a sale is never
-      cancelled on a guess; it is the stream that asks a person meanwhile.
+      cancelled on a guess; it is the stream that asks a person meanwhile. Nor for a show
+      whose end is more than three days old (`_ended_long_ago`): the caller
+      passes `complete` False, and a win with no order keeps its "no payment record" item.
 
     Only auction orders that are paid, only titles that carry a lot number, and only sales
     won within half an hour of the order: a "buy it now" listing sells many times, a title

@@ -4,7 +4,7 @@ import type { CapturedRow } from '../src/capture/types'
 import { validateBatch } from '../src/upload/schema'
 import { LIMITS } from '../src/upload/limits'
 import { normaliseUrl } from '../src/upload/settings'
-import { BATCH_MAX, UploadError, backoffSeconds, pairDevice, ping, postBatch, uploadOnce, type UploadStore } from '../src/upload/uploader'
+import { BATCH_MAX, UploadError, backoffSeconds, pairDevice, ping, postBatch, refusedUnknownShowField, uploadOnce, type UploadStore } from '../src/upload/uploader'
 
 const FIXTURES = path.resolve(__dirname, '..', '..', 'shared', 'fixtures')
 const fixture = (name: string) => JSON.parse(readFileSync(path.join(FIXTURES, name), 'utf8'))
@@ -250,6 +250,98 @@ describe('the page moved on to another channel (the show ended)', () => {
     expect(store.sent[A]).toBe(MOVED)
     expect(store.parked.size).toBe(0)
     expect(await uploadOnce(store, settings, old)).toEqual({ status: 'idle' })
+  })
+})
+
+/** What the API from before channels answers to a show with a field it does not know (its validator's own words). */
+const oldApiRefusal = () =>
+  new Response(JSON.stringify({ error: 'invalid batch', details: ['show: fails additionalProperties False'] }), { status: 400 })
+const sentBodies = (fetchFn: ReturnType<typeof vi.fn>) => fetchFn.mock.calls.map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)))
+
+describe('an API older than the extension (rolled back after a laptop installed the new build)', () => {
+  const A = '2026-11-19T20:00:00.000Z'
+  const own = (seq: number): CapturedRow => ({ ...row(A, seq), channel: 'maple_cards_demo' })
+
+  it('sends the lines once more without the channel, and they are sent, not set aside', async () => {
+    const store = memoryStore([own(1), own(2)])
+    const fetchFn = vi.fn(async (_u: string, init: RequestInit) => ('channel' in JSON.parse(String(init.body)).show ? oldApiRefusal() : ok()))
+    const out = await uploadOnce(store, settings, fetchFn as unknown as typeof fetch)
+    expect(out).toEqual({ status: 'sent', sent: 2, remaining: 0 })
+    expect(store.parked.size).toBe(0)
+    const [first, second] = sentBodies(fetchFn)
+    expect(first.show.channel).toBe('maple_cards_demo')
+    expect('channel' in second.show).toBe(false)
+    expect(second.rows.map((r: CapturedRow) => r.seq)).toEqual([1, 2])
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+  })
+
+  it('sets the lines aside when the retry is refused too, after exactly one retry', async () => {
+    const store = memoryStore([own(1)])
+    const fetchFn = vi.fn(async () => new Response(JSON.stringify({ error: 'invalid batch', details: ['rows/0/body: fails maxLength 4000'] }), { status: 400 }))
+    const first = vi.fn(async (_u: string, init: RequestInit) => ('channel' in JSON.parse(String(init.body)).show ? oldApiRefusal() : fetchFn()))
+    const out = await uploadOnce(store, settings, first as unknown as typeof fetch)
+    expect(out).toMatchObject({ status: 'sent', sent: 0, parked: 1 })
+    expect(first).toHaveBeenCalledTimes(2)
+  })
+
+  it("never resends another seller's lines (422): they are set aside with their channel", async () => {
+    const store = memoryStore([own(1)])
+    const fetchFn = vi.fn(async () => new Response(JSON.stringify({ error: "These chat lines are from another seller's show" }), { status: 422 }))
+    const out = await uploadOnce(store, settings, fetchFn as unknown as typeof fetch)
+    expect(out).toMatchObject({ status: 'sent', sent: 0, parked: 1 })
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+    expect([...store.parked]).toEqual([own(1).id])
+  })
+
+  it('does not strip anything for another 400, even on a batch with a channel', async () => {
+    const store = memoryStore([own(1)])
+    for (const details of [['rows/0/seq: fails minimum 0'], ['show/channel: fails maxLength 80'], ['show/url: fails additionalProperties False'], []]) {
+      const fetchFn = vi.fn(async () => new Response(JSON.stringify({ error: 'invalid batch', details }), { status: 400 }))
+      const s = memoryStore([own(1)])
+      expect(await uploadOnce(s, settings, fetchFn as unknown as typeof fetch)).toMatchObject({ parked: 1 })
+      expect(fetchFn).toHaveBeenCalledTimes(1)
+    }
+    expect(store.parked.size).toBe(0)
+  })
+
+  it('does not retry a batch that carries no channel (nothing to strip)', async () => {
+    const store = memoryStore([row(A, 1)])
+    const fetchFn = vi.fn(async () => oldApiRefusal())
+    expect(await uploadOnce(store, settings, fetchFn as unknown as typeof fetch)).toMatchObject({ parked: 1 })
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('a moved-on report the old API refuses stays owed (asked again at the next flush), never marked sent', async () => {
+    const MOVED = '2026-11-19T22:41:07.000Z'
+    const sent: Record<string, string> = {}
+    const store = Object.assign(memoryStore([]), {
+      unsentMoves: async () => (sent[A] ? [] : [{ id: A, startedAt: A, url: '/live/x', channel: 'maple_cards_demo', movedOnAt: MOVED }]),
+      markMoveSent: async (id: string, at: string) => void (sent[id] = at),
+    })
+    const old = vi.fn(async () => oldApiRefusal())
+    expect(await uploadOnce(store, settings, old as unknown as typeof fetch)).toEqual({ status: 'sent', sent: 0, remaining: 0, moved: 0 })
+    expect(sent[A]).toBeUndefined()
+    expect(old).toHaveBeenCalledTimes(1) // the report is sent as it is: stripping movedOnAt would make it an empty batch
+    // The API is deployed forward again: the same move goes up and is marked.
+    expect(await uploadOnce(store, settings, vi.fn(async () => ok()) as unknown as typeof fetch)).toEqual({ status: 'sent', sent: 0, remaining: 0, moved: 1 })
+    expect(sent[A]).toBe(MOVED)
+  })
+})
+
+describe('refusedUnknownShowField', () => {
+  const rej = (msg: string, status = 400) => new UploadError('rejected', msg, undefined, status)
+  it('matches the old validator\'s refusal of a show field, with or without its trailing value', () => {
+    expect(refusedUnknownShowField(rej('invalid batch; show: fails additionalProperties False'))).toBe(true)
+    expect(refusedUnknownShowField(rej('invalid batch; show: fails additionalProperties'))).toBe(true)
+    expect(refusedUnknownShowField(rej('show: fails additionalProperties False; rows/0/seq: fails minimum 0'))).toBe(true)
+  })
+  it('does not match another path, another rule, another status or another kind of error', () => {
+    for (const m of ['invalid batch', 'show/channel: fails maxLength 80', 'rows/0: fails additionalProperties False', 'show: fails required', 'xshow: fails additionalProperties False', 'show: fails additionalPropertiesX'])
+      expect(refusedUnknownShowField(rej(m)), m).toBe(false)
+    expect(refusedUnknownShowField(rej('show: fails additionalProperties False', 422))).toBe(false)
+    expect(refusedUnknownShowField(rej('show: fails additionalProperties False', 413))).toBe(false)
+    expect(refusedUnknownShowField(new UploadError('offline', 'show: fails additionalProperties False'))).toBe(false)
+    expect(refusedUnknownShowField(new Error('show: fails additionalProperties False'))).toBe(false)
   })
 })
 
