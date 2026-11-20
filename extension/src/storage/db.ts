@@ -218,16 +218,31 @@ export interface PendingMove {
 /**
  * Shows whose latest move onto another channel the server does not have yet, and none of whose
  * lines are still waiting: the server takes the moment it hears this as the show's end (when
- * Whatnot gives none), so it must come after every line recorded before it.
+ * Whatnot gives none), so it must come after every line recorded before it, and never after
+ * a line recorded once the tab was back on its own show (such a move is dropped).
  */
 export async function unsentMoves(): Promise<PendingMove[]> {
   const out: PendingMove[] = []
   for (const s of await listShows()) {
     if (!s.movedOnAt || s.movedOnAt === s.movedOnSent) continue
     if (await hasPending(s.id)) continue
+    // The tab came back to its own show and recorded again before this move was told: the
+    // show did not end there. Telling the server now would put the move AFTER the resumed
+    // chat it already has, and a quiet half hour later it would take a show still on air as
+    // over. The move is dropped (marked as answered); a later move is a new one and is owed.
+    if (await recordedAfter(s.id, s.movedOnAt)) {
+      await markMoveSent(s.id, s.movedOnAt)
+      continue
+    }
     out.push({ id: s.id, startedAt: s.startedAt, ...(s.url ? { url: s.url } : {}), ...(s.channel !== undefined ? { channel: s.channel } : {}), movedOnAt: s.movedOnAt })
   }
   return out
+}
+
+/** True when the show's latest line was captured after `at` (lines are kept in capture order). */
+async function recordedAfter(showId: string, at: string): Promise<boolean> {
+  const cur = await (await getDb()).transaction('rows').store.index('by-show-seq').openCursor(showRange(showId), 'prev')
+  return !!cur && cur.value.capturedAt > at
 }
 
 /** The server has the move noted at `at` (or refused it for good): not sent again. A newer move stays owed. */
