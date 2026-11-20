@@ -371,7 +371,8 @@ commands.
   - **An order the app cannot read never stops the show** (no buyer, no listing, a state it
     does not know): it is left out, counted in `info`, and Review says so in words
     (`orders_left_out`); only a show where more than one order in five has no buyer is "blind"
-    and applies nothing. Never word that as the token's fault. While a paid order has no buyer,
+    and applies nothing. Never word that as the token's fault. While a paid order has no buyer
+    or no items yet (`whatnot/orders._may_hide`),
     no sale is called out as unpaid, none gives way to another win, **and a failed order is
     not a decline when a paid order with no buyer could be its retry** (`MAYBE_RETRIED`):
     undoing a sale a buyer paid is worse than leaving a decline for a person. That hold is

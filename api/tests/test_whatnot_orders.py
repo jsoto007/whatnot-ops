@@ -277,6 +277,7 @@ def test_comparing_shows_what_applying_would_do_and_changes_nothing(app, shop):
         "noBuyerPaid": 0,
         "unreadable": 0,
         "noItems": 0,
+        "noItemsPaid": 0,
         "leftOut": 0,
         "leftOutOrders": [],
         "heldDeclines": 0,

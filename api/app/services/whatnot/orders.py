@@ -170,7 +170,9 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
     # read (a listing title, a state it knows). noBuyerPaid: of the first, those of a paid or
     # settling order: only they can hide a sale's payment (`apply`). noItems: orders the app
     # holds no items for (Whatnot answered the order before its items; `sync.repair_items`
-    # asks again): they give no row at all. leftOut: the orders with an unreadable item or
+    # asks again): they give no row at all; noItemsPaid: those of them a buyer paid or is
+    # paying, which can hide a sale's payment just as a paid order with no buyer can
+    # (`_may_hide`). leftOut: the orders with an unreadable item or
     # no items, oldest first; leftOutOrders names the first `NAMED_LEFT_OUT` of them.
     info = {
         "orders": 0,
@@ -179,6 +181,7 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
         "noBuyerPaid": 0,
         "unreadable": 0,
         "noItems": 0,
+        "noItemsPaid": 0,
         "leftOut": 0,
         "leftOutOrders": [],
         "heldDeclines": 0,
@@ -202,6 +205,7 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
         status = PAYMENT.get(order.status, "unknown")
         if not order.items:
             info["noItems"] += 1
+            info["noItemsPaid"] += status in ("paid", "pending")
             left_out(order)
             continue
         unread = False  # this order has an item left out as unreadable (named once)
@@ -422,6 +426,15 @@ REOPEN = "reopen"
 # Why a failed order is left out: its win was paid in a later order, or the app never had
 # a sale for it. The second is a declined payment nobody else would hear of (`_flag_unrecorded`).
 RETRIED = "declined, then paid in a later order"
+
+
+def _may_hide(info: dict) -> bool:
+    """A paid (or settling) order the app cannot tie to a buyer or to a listing yet may be
+    the payment of a sale that looks unpaid: while one exists, no sale of the show is called
+    out as having no order and none gives way to another win of its lot."""
+    return bool(info["noBuyerPaid"] or info.get("noItemsPaid"))
+
+
 MAYBE_RETRIED = "declined, and an order with no buyer may be its retry"
 NEVER_RECORDED = "never recorded here, and not paid on Whatnot"
 # Paid on Whatnot, no product named yet: the win waits for its product (the winner's pick).
@@ -770,7 +783,7 @@ def apply(show: Show, *, user=None) -> dict:
         import_id=IMPORT_ID,
         words=reconcile.WHATNOT,
         on_unmatched=record,
-        flag_uncovered=_complete(ws) and not info["noBuyerPaid"],
+        flag_uncovered=_complete(ws) and not _may_hide(info),
     )
     # Remember which sale each order item is, and when it was ordered. The items and sales
     # are read in one query each, not one per row.
@@ -801,9 +814,10 @@ def apply(show: Show, *, user=None) -> dict:
     _derive_retied([sales[i] for i in retied if i in sales])
     del items, sales  # the steps below read what they need themselves
     _flag_declines(primary, plan, show_ids)
-    # While an order that may be paid has no buyer, no sale is called out as unpaid and none
-    # gives way to another win of its lot: that order may be the one that pays it.
-    whole = _complete(ws) and not info["noBuyerPaid"]
+    # While an order that may be paid has no buyer, or no items yet, no sale is called out as
+    # unpaid and none gives way to another win of its lot: that order may be the one that
+    # pays it.
+    whole = _complete(ws) and not _may_hide(info)
     gave_way = _one_win(primary, plan, show_ids, whole)
     # A sale that gave way is no longer "a sale with no order": it is settled.
     plan.uncovered = [i for i in plan.uncovered if i not in gave_way]
@@ -1140,9 +1154,17 @@ def _flag_left_out(
                     + (", …" if n > len(info["held"]) else "")
                     + "): a payment with no buyer may be the retry that paid. Check them."
                 )
-            if info["noBuyerPaid"]:
+            if _may_hide(info):
+                what = " or ".join(
+                    w
+                    for w, n in (
+                        ("no buyer", info["noBuyerPaid"]),
+                        ("no items", info.get("noItemsPaid")),
+                    )
+                    if n
+                )
                 summary += (
-                    " While a paid order has no buyer, sales with no order are not called out "
+                    f" While a paid order has {what}, sales with no order are not called out "
                     "for this show."
                 )
     else:

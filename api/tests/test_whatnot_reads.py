@@ -880,6 +880,50 @@ def test_an_order_held_with_no_items_is_counted_named_and_cleared_once_its_items
     assert left_out_notes(app) == []
 
 
+def test_a_sale_with_no_order_is_not_called_out_while_a_paid_order_has_no_items_yet(app, shop):
+    """Whatnot answered a paid order before its items: it may be the one that pays the sale.
+    Say nothing about the sale until the items come; then the two are tied."""
+    shop["say"](app, [win("ghost", "Red bundle")])
+    run(app, shop["show"])
+    order(shop, "other_buyer", "Blue bundle")
+    bare = order(shop, "ghost", "Red bundle")
+    items = shop["fake"].items_of(bare["id"])
+    for it in items:
+        del shop["fake"].order_items[it["id"]]
+    read(app, shop)
+    with app.app_context():
+        result = whatnot_orders.apply(db.session.get(Show, shop["show"]))
+        db.session.commit()
+        assert (result["info"]["noItems"], result["info"]["noItemsPaid"]) == (1, 1)
+        assert "uncovered" not in result["summary"]
+    assert [r for r, _ in reviews(app) if r == "no_payment_record"] == []
+    texts = left_out_notes(app)
+    assert len(texts) == 1 and "sales with no order are not called out" in texts[0]
+    for it in items:
+        shop["fake"].order_items[it["id"]] = it
+    read(app, shop)
+    apply(app, shop)
+    assert [r for r, _ in reviews(app) if r == "no_payment_record"] == []
+    assert left_out_notes(app) == []
+
+
+def test_a_cancelled_order_with_no_items_hides_no_payment(app, shop):
+    """Only an order that may be paid can be a sale's payment: a cancelled one with no items
+    is counted and named, and the sale with no order is still called out."""
+    shop["say"](app, [win("ghost", "Red bundle")])
+    run(app, shop["show"])
+    order(shop, "other_buyer", "Blue bundle")
+    bare = order(shop, "ghost", "Red bundle", status="cancelled")
+    for it in shop["fake"].items_of(bare["id"]):
+        del shop["fake"].order_items[it["id"]]
+    read(app, shop)
+    with app.app_context():
+        result = whatnot_orders.apply(db.session.get(Show, shop["show"]))
+        db.session.commit()
+        assert (result["info"]["noItems"], result["info"]["noItemsPaid"]) == (1, 0)
+    assert len([r for r, _ in reviews(app) if r == "no_payment_record"]) == 1
+
+
 def test_orders_left_out_name_the_first_few_and_count_the_rest_one_notice_per_show(app, shop):
     order(shop, "lani808", "Red bundle")
     odd = [order(shop, f"odd_buyer_{i}", "Blue bundle", status="refunded") for i in range(3)]
