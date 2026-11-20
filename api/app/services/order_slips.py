@@ -48,12 +48,17 @@ from ..models import (
     Show,
     Sku,
     WhatnotLot,
+    WhatnotShow,
 )
 from . import giveaways, rules, sale_chat, sale_items, shipments
 from .orders import STANDING
-from .whatnot import connection
+from .whatnot import connection, watch
 
 NO_PICK = "No Pick"
+# The Review reason `pipeline.set_sale_status` opens when a paid win is cancelled or declined
+# after its order was picked or packed.
+CLOSED_AFTER_PICKING = "closed_after_picking"
+CLOSED = {SaleStatus.cancelled: "cancelled", SaleStatus.payment_failed: "declined"}
 # `only=`: which buyers to keep. "ready" = the order is Ready to pick (the Orders page's queue).
 READY = "ready"
 FILTERS = frozenset({READY})
@@ -114,17 +119,43 @@ def lot_product(sale: Sale | None, lot: WhatnotLot) -> str:
     return product_label(sale)
 
 
+def _order_of(lot: WhatnotLot) -> tuple[str, int]:
+    """(Whatnot's order number, which item of that order) of a lot. The API stores the first
+    item of an order under the order number and the later ones as "<order>-2", "<order>-3"
+    (shipping._store_lots); an order number itself never holds a dash."""
+    base, dash, tail = (lot.whatnot_order_id or "").rpartition("-")
+    if dash and base and tail.isdigit():
+        return base, int(tail)
+    return lot.whatnot_order_id, 1
+
+
 def match_lots(lots: list[WhatnotLot], sales: list[Sale]) -> dict[int, Sale]:
     """Whatnot lot id → the app's sale for it, each sale used once. Tried in order: Whatnot's
     order number on the sale (from the payment file), then the same buyer and lot number
-    with the same price, then the same buyer and lot number."""
+    with the same price, then the same buyer and lot number.
+
+    An order with several items is several sales with one order number and several lots
+    ("<order>", "<order>-2"…): within the order each lot takes the sale with its own title
+    first, then the remaining ones in order, so two items never share, or swap, a sale."""
     free = {s.id: s for s in sales}
     out: dict[int, Sale] = {}
-    by_order = {s.external_order_id: s for s in sales if s.external_order_id}
-    for lot in lots:
-        s = by_order.get(lot.whatnot_order_id)
-        if s is not None and s.id in free:
-            out[lot.id] = free.pop(s.id)
+    by_order: dict[str, list[Sale]] = defaultdict(list)
+    for s in sorted(sales, key=lambda s: s.id):
+        if s.external_order_id:
+            by_order[s.external_order_id].append(s)
+    ordered = sorted(lots, key=lambda lot: (_order_of(lot), lot.id))
+    for lot in ordered:  # the sale with this very title
+        for s in by_order.get(_order_of(lot)[0], ()):
+            if s.id in free and _same_title(s.item_text, lot.title):
+                out[lot.id] = free.pop(s.id)
+                break
+    for lot in ordered:  # the lots left take the order's remaining sales, in order
+        if lot.id in out:
+            continue
+        for s in by_order.get(_order_of(lot)[0], ()):
+            if s.id in free:
+                out[lot.id] = free.pop(s.id)
+                break
     # Indexes keyed by exactly what a match compares, each list in `sales` order, so the
     # first free entry is the one a front-to-back scan would have found.
     by_buyer_lot: dict[tuple[str, int], list[Sale]] = defaultdict(list)
@@ -199,6 +230,28 @@ def build(show: Show, *, only: str | None = None) -> dict:
             selectinload(Sale.event).selectinload(ParsedEvent.message),
         )
     ).all()
+    # A win closed after picking began (the order was already being picked or packed): its
+    # unit may be in a box and the packer may hold an older slip with it. It is no item to
+    # pack, but a reprint says so until a person has dealt with it in Review.
+    closed_after_picking = (
+        db.session.scalars(
+            select(Sale)
+            .join(ReviewItem, ReviewItem.sale_id == Sale.id)
+            .where(
+                Sale.show_id == show.id,
+                Sale.status.in_(CLOSED),
+                ReviewItem.status == ReviewStatus.open,
+                ReviewItem.reason == CLOSED_AFTER_PICKING,
+            )
+            .options(
+                selectinload(Sale.sku).selectinload(Sku.product),
+                selectinload(Sale.open_items).selectinload(SaleItem.sku).selectinload(Sku.product),
+            )
+            .order_by(Sale.id)
+        )
+        .unique()
+        .all()
+    )
     gifts = db.session.execute(
         select(ParsedEvent.buyer_username, ParsedEvent.item_text, ChatMessage.captured_at)
         .join(ChatMessage, ChatMessage.id == ParsedEvent.message_id)
@@ -234,11 +287,25 @@ def build(show: Show, *, only: str | None = None) -> dict:
 
     whatnot = shipments.for_show(show)
     lots = whatnot["lots"] if whatnot else []
+    unit_priced = whatnot["unitPriced"] if whatnot else set()
     matched = match_lots(lots, list(sales)) if lots else {}
     used = {s.id for s in matched.values()}
+    # Whatnot's order for a win the host declined or cancelled after picking began still
+    # stands: its lot is the one the "take it out" row below speaks of, not one to pick. Only
+    # by the order's own number: a retried card is a new order, and its lot is still to pick.
+    closed_orders = {s.external_order_id for s in closed_after_picking if s.external_order_id}
+    candidates = [
+        lot for lot in lots if lot.id not in matched and _order_of(lot)[0] in closed_orders
+    ]
+    by_id = {lot.id: lot for lot in candidates}
+    taken_out = {
+        lot_id
+        for lot_id, s in match_lots(candidates, closed_after_picking).items()
+        if s.external_order_id == _order_of(by_id[lot_id])[0]
+    }
     # Every standing sale: which win a line goes to depends on the buyer's other wins.
     chat = sale_chat.around(list(sales), limit=None)
-    no_win = [lot for lot in lots if lot.id not in matched]
+    no_win = [lot for lot in lots if lot.id not in matched and lot.id not in taken_out]
     lot_chat = sale_chat.about_lots(show, no_win) if no_win else {}
 
     def pick_chat(lines: list[dict], product: str, first: bool) -> dict:
@@ -250,6 +317,8 @@ def build(show: Show, *, only: str | None = None) -> dict:
     named = {gv["order"]: gv["product"] for gv in given if gv["product"]}
     whatnot_gifts = False
     for lot in lots:
+        if lot.id in taken_out:
+            continue
         s = matched.get(lot.id)
         b = buyer(lot.recipient)
         gift = bool(_GIVEAWAY.search(lot.sale_type))
@@ -276,7 +345,13 @@ def build(show: Show, *, only: str | None = None) -> dict:
                     "product": line,
                     "matched": bool(s and s.sku_id is not None) or bool(chosen),
                     "giftCount": s.gift_count if s and first else 0,
-                    "priceCents": lot.price_cents if first else None,
+                    # The whole lot's price once, as the sale path prints it. A lot from
+                    # Whatnot's API holds one unit's price; a scraped one the line's.
+                    "priceCents": (
+                        lot.price_cents * (max(1, lot.quantity) if lot.id in unit_priced else 1)
+                        if first and lot.price_cents is not None
+                        else None
+                    ),
                     "continued": not first,
                     "whatnotOrder": lot.whatnot_order_id,
                     "inApp": s is not None,
@@ -316,6 +391,26 @@ def build(show: Show, *, only: str | None = None) -> dict:
                     **pick_chat(chat.get(s.id, []), product, first),
                 }
             )
+    for s in closed_after_picking:
+        word = CLOSED[s.status]
+        buyer(s.buyer_username)["rows"].append(
+            {
+                "kind": "sale",
+                "saleId": None,  # nothing to edit: a closed win has no gifts to set
+                "auction": rules.lot_label(s.item_text, s.auction_type),
+                "product": f"{word.upper()}, take it out: {product_label(s)}",
+                "matched": True,
+                "giftCount": 0,
+                "priceCents": None,
+                "continued": False,
+                "whatnotOrder": None,
+                "inApp": True,
+                "onWhatnot": True,
+                "closed": word,
+                "said": [],
+                "saidMore": 0,
+            }
+        )
     # Whatnot's own giveaways replace the ones read from chat: its lots (the Shipments table)
     # when that lists any, else its orders. A row per unit, with the product once chosen.
     for gv in [] if whatnot_gifts else given:
@@ -337,7 +432,10 @@ def build(show: Show, *, only: str | None = None) -> dict:
                     "saidMore": 0,
                 }
             )
-    for name, item, _ in [] if whatnot_gifts or given else gifts:
+    # Chat-read gifts only where Whatnot lists none for the show: when it does, they print
+    # with its first recording (`giveaways.for_show`), never again from a second laptop.
+    chat_gifts = not (whatnot_gifts or given) and not (gifts and giveaways.on_another_show(show))
+    for name, item, _ in gifts if chat_gifts else []:
         buyer(name)["rows"].append(
             {
                 "kind": "gift",
@@ -374,7 +472,8 @@ def build(show: Show, *, only: str | None = None) -> dict:
     slips = []
     for key, b in by_buyer.items():
         b["cardInDoubt"] = b["orderId"] in in_doubt
-        b["items"] = len(b["rows"])
+        # A row that says "take it out" is no item to pack.
+        b["items"] = sum(1 for r in b["rows"] if not r.get("closed"))
         b["gifts"] = sum(r["giftCount"] for r in b["rows"])
         w = seen.get(key)
         # Whatnot's Shipments table for this buyer: None = not read yet, or not listed there.
@@ -418,19 +517,26 @@ def build(show: Show, *, only: str | None = None) -> dict:
             if whatnot
             else None
         ),
+        # When Whatnot's orders for this show were last read, and whether that was the
+        # final read after it ended: why a list may be missing orders, for every role.
+        "ordersRead": watch.show_read(
+            db.session.get(WhatnotShow, show.whatnot_show_id) if show.whatnot_show_id else None
+        ),
         "showId": show.id,
         "showDate": show.show_date.isoformat(),
         # The app reads the show's parcels from Whatnot itself (the shop is connected), so
         # nobody has to send them from the laptop.
         "parcelsFromWhatnot": connection.active(show.organization_id) is not None,
         "totals": {
-            "buyers": len(slips),
+            # A slip that only says "take it out" is no buyer to pack for.
+            "buyers": sum(1 for b in slips if b["items"]),
             "items": sum(b["items"] for b in slips),
             "gifts": sum(b["gifts"] for b in slips),
         },
         "summary": [
             {"username": b["username"], "items": b["items"], "gifts": b["gifts"]}
             for b in sorted(slips, key=lambda b: b["username"].lower())
+            if b["items"]
         ],
         "slips": slips,
     }

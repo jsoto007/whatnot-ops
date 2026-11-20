@@ -369,8 +369,9 @@ def for_show(show: Show) -> dict | None:
             b["items"] += r.item_count
         if r.status and r.status not in b["statuses"]:
             b["statuses"].append(r.status)
-    lots = db.session.scalars(
-        select(WhatnotLot)
+    lots = db.session.execute(
+        select(WhatnotLot, WhatnotShipment.whatnot_id.is_not(None))
+        .join(WhatnotShipment, WhatnotShipment.id == WhatnotLot.shipment_id)
         .where(WhatnotLot.show_id == show.id)
         # Whatnot's order numbers grow as the show goes on: this is win order.
         .order_by(func.length(WhatnotLot.whatnot_order_id), WhatnotLot.whatnot_order_id)
@@ -379,5 +380,8 @@ def for_show(show: Show) -> dict | None:
         "readAt": max(r.updated_at for r in rows).isoformat(),
         "shipments": len(rows),
         "buyers": buyers,
-        "lots": list(lots),
+        "lots": [lot for lot, _ in lots],
+        # Lots read from Whatnot's API hold the price of one unit (the page the scraper reads
+        # shows the line's price): ids of the first kind.
+        "unitPriced": {lot.id for lot, from_api in lots if from_api},
     }

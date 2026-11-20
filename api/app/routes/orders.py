@@ -149,11 +149,16 @@ def list_orders():
             [s for o in rows for s in o.sales if s.sku_id is None and s.external_order_id]
         )
     parcels = _parcels(rows)
+    to_pick = orders.to_pick_ids(s.id for o in rows for s in o.sales)
     return jsonify(
         {
             "orders": [
                 serializers.order(
-                    o, with_sales=with_sales, reviews=reviews, parcel=parcels.get(o.id)
+                    o,
+                    with_sales=with_sales,
+                    reviews=reviews,
+                    parcel=parcels.get(o.id),
+                    to_pick=to_pick,
                 )
                 for o in rows
             ],
@@ -171,7 +176,11 @@ def _parcels(orders: list[Order]) -> dict[int, dict]:
 def _one(o: Order) -> dict:
     """An order as its own page shows it."""
     return serializers.order(
-        o, with_gifts=True, reviews=_open_reviews([o]), parcel=_parcels([o]).get(o.id)
+        o,
+        with_gifts=True,
+        reviews=_open_reviews([o]),
+        parcel=_parcels([o]).get(o.id),
+        to_pick=orders.to_pick_ids(s.id for s in o.sales),
     )
 
 
@@ -266,8 +275,12 @@ def buyer_history(username: str):
         .limit(BUYER_HISTORY_LIMIT)
     ).all()
     reviews = _open_reviews(rows)
+    to_pick = orders.to_pick_ids(s.id for o in rows for s in o.sales)
     return jsonify(
-        {"buyer": username, "orders": [serializers.order(o, reviews=reviews) for o in rows]}
+        {
+            "buyer": username,
+            "orders": [serializers.order(o, reviews=reviews, to_pick=to_pick) for o in rows],
+        }
     )
 
 
@@ -277,7 +290,9 @@ def pick_list(show_id: int):
     show = db.session.get(Show, show_id)
     if show is None or show.organization_id != g.u.organization_id:
         return jsonify({"error": "show not found"}), 404
-    return jsonify({"items": orders.pick_list(show)})
+    # `toPick`: wins Whatnot says are paid whose product is still to pick (a winner's pick):
+    # listed as rows to settle, never silently left out of the list.
+    return jsonify({"items": orders.pick_list(show), "toPick": orders.to_pick(show)})
 
 
 @bp.get("/shows/<int:show_id>/order-slips")

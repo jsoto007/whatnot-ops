@@ -47,7 +47,7 @@ class WhatnotConnection(db.Model):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Why the last call failed, as a short code the page turns into words
-    # (token_rejected | no_permission | unreachable); None while calls work.
+    # (token_rejected | no_permission | wrong_account | unreachable); None while calls work.
     problem: Mapped[str | None] = mapped_column(String(32))
     problem_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

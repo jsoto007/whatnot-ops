@@ -39,5 +39,5 @@ export function groupByShow(items: ReviewItem[]): ShowGroup[] {
 export function reasonKey(it: ReviewItem): string {
   const state = (it.proposal?.pick as { state?: string } | undefined)?.state
   if (it.reason !== 'unmatched_item' || !state || state === 'product') return it.reason
-  return state === 'none' ? 'did_not_pick' : state === 'unread' || state === 'no_layout' ? 'pick_unread' : 'pick_unclear'
+  return state === 'none' ? 'did_not_pick' : state === 'unread' || state === 'no_layout' || state === 'not_recorded' ? 'pick_unread' : 'pick_unclear'
 }

@@ -81,6 +81,10 @@ class Row:
     auction: bool = False
     listing: str | None = None
     hint_from_retry: bool = False
+    # From Whatnot's own orders: what the order took off in discounts. Its prices are stated
+    # after it, a win line's may not be (`pipeline.prices_agree`).
+    discount_cents: int | None = None
+    order_lines: int = 1
 
 
 @dataclass(frozen=True)
@@ -438,13 +442,16 @@ def _same_win_sale(row: Row, candidates: list[Sale], sku) -> Sale | None:
     best: tuple | None = None
     for sale in candidates:
         price, won = pipeline.paid_price(sale), pipeline.won_when(sale)
+        off = pipeline.unit_discount(row.discount_cents, row.quantity, row.order_lines)
         key = pipeline.same_win(
-            sale.item_text, price, won, row.item, row.price_cents, row.ordered_at
+            sale.item_text, price, won, row.item, row.price_cents, row.ordered_at, discount_b=off
         )
         if key is None and sku is not None and sale.sku_id == sku.id:
             # Worded differently, but both name the same product of the shop's.
-            key = pipeline.same_win("x", price, won, "x", row.price_cents, row.ordered_at)
-            key = (3, key[1]) if key is not None else None
+            key = pipeline.same_win(
+                "x", price, won, "x", row.price_cents, row.ordered_at, discount_b=off
+            )
+            key = (3, *key[1:]) if key is not None else None
         if key is None:
             continue
         # The surest first, then a sale still open over one already closed, then the oldest.
@@ -459,7 +466,24 @@ def _player_price_differs(sale: Sale, row: Row) -> bool:
     sales are left alone: their price is often the SKU's list price, not what was paid."""
     if sale.price_cents is None or row.price_cents is None or sale.price_cents == row.price_cents:
         return False
+    if _discount_explains(sale, row):
+        return False  # the order's price is after the buyer's discount: not a disagreement
     return sale.event is not None and sale.event.rule == "player_win"
+
+
+def _discount_explains(sale: Sale, row: Row) -> bool:
+    """The sale's price is the one before the discount Whatnot's order took off, so the buyer
+    paid the order's price and the two do not disagree. Only an order of ONE item says so:
+    with several, the order's discount cannot be placed on one of them (it may have been
+    taken off another), so a gap is left for a person. Nothing is rewritten either way: the
+    sale keeps the price the video player showed, which is what every later line about the
+    same win (a second laptop's copy, a decline) is looked up by."""
+    if sale.price_cents is None or row.price_cents is None or sale.price_cents == row.price_cents:
+        return False
+    if row.order_lines != 1:
+        return False
+    off = pipeline.unit_discount(row.discount_cents, row.quantity, 1)
+    return pipeline.prices_agree(sale.price_cents, row.price_cents, discount_b=off)
 
 
 def apply(

@@ -18,7 +18,7 @@ import logging
 import re
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import case, delete, func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from ...db import db
@@ -30,6 +30,7 @@ from ...models import (
     WhatnotOrder,
     WhatnotOrderItem,
     WhatnotShow,
+    WhatnotSyncState,
 )
 from .. import jobs, text
 from ..showdate import show_date
@@ -37,13 +38,16 @@ from . import connection, webhooks
 from .client import (
     MAX_CENTS,
     Forbidden,
+    Invalid,
     NotFound,
+    Unauthorized,
     WhatnotClient,
     WhatnotError,
     cents,
     client_for,
     price_cents,
     when,
+    worked,
 )
 
 log = logging.getLogger(__name__)
@@ -58,14 +62,46 @@ SHOW_LEAD = timedelta(hours=6)
 # it went live, two hours when all we have is the time it was scheduled for.
 RECORDING_LEAD = timedelta(minutes=30)
 RECORDING_LEAD_SCHEDULED = timedelta(hours=2)
-RECENT_SHOWS = timedelta(days=21)  # ended shows older than this are not re-read
+RECENT_SHOWS = timedelta(days=30)  # ended shows older than this are not re-read (the dashboard's
+# money is the last 30 days: every show in it must be read)
 OPEN_ORDER_AGE = timedelta(days=14)
 # A show that ended this lately gets its parcels read in full by the timer (the first
 # connection reads weeks of ended shows: only the latest need their Shipping page ready).
 PARCELS_AFTER = timedelta(days=3)
+# A parcel read that did not work is asked for again this much later, not on every pass:
+# each failed read tells the whole app the connection stopped working.
+PARCELS_RETRY = timedelta(minutes=15)
 MAX_ORDER_PAGES = 60  # 3,000 orders in one catch-up; a show has a few hundred
+# One catch-up read stores at most this many orders new to the app (each costs a call for its
+# items). A catch-up that reaches it ends there, and the shows it did not get down to are read
+# again by the next pass, which carries on past the orders the app already holds
+# (`sync_orders_of`).
+MAX_NEW_ORDERS = MAX_ORDER_PAGES * 50
+# While a show is on air a pass may store only this many new orders: a catch-up's item calls
+# must not eat the request budget the live show's orders need. It carries on after the show.
+MAX_NEW_ORDERS_ON_AIR = 300
+MAX_LISTED_PAGES = 400  # the most pages (50 orders each) one read walks, held or not
+# Orders the app holds with no items read again after a pass, at most (`repair_items`).
+MAX_ITEM_REPAIRS = 20
+# A catch-up that walked its page limit and stored nothing new is not tried again for the
+# older shows it did not reach for this long (it would walk the same orders again).
+STALLED_RETRY = timedelta(hours=6)
+# Orders Whatnot refuses one after another in the open-order re-read: it is not about those
+# orders (a token that lost its permission), so the pass ends instead of asking for the rest.
+REFUSED_IN_A_ROW = 5
+# An ended show's orders are listed again this long after it ended, then once more each
+# later time: a card declined at the win and retried is a NEW order, placed after the show
+# ended, and the first read after the end can come before it.
+LATE_READS = (timedelta(hours=1), timedelta(hours=6), timedelta(hours=24))
+LATE_READS_WITHIN = timedelta(days=2)  # a show older than this has had its late reads
+# A show Whatnot's own results count more orders for than the app holds is read again (at
+# most this often): the repair for a catch-up that once marked shows read that it never
+# reached, and for any order the reads missed.
+SHORT_REREAD_AFTER = timedelta(hours=6)
 MAX_OPEN_REFRESH = 150  # orders re-read one by one per timer run
 SHOWS_EVERY = timedelta(minutes=15)
+# A timed read that failed is due again this long after (`_run`), not a whole interval later.
+RETRY_AFTER_FAILURE = timedelta(minutes=2)
 OPEN_ORDERS_EVERY = timedelta(minutes=60)
 # With webhooks arriving (one within this long), the open-order re-read is a safety net
 # and runs this often instead.
@@ -226,6 +262,7 @@ def link_recordings(org_id: int) -> int:
     }
     now = datetime.now(UTC)
     linked = 0
+    sure: set[int] = set()  # Whatnot shows a recording is tied to by its own address
     for rec in recordings:
         # Its address names a stream: only that stream's show, or one nobody recorded.
         elsewhere = _stream_of(rec.source_url) is not None
@@ -249,6 +286,8 @@ def link_recordings(org_id: int) -> int:
             if seconds > 0 and (best is None or seconds > best[0]):
                 best = (seconds, ws)
         target = best[1].id if best else None
+        if target is not None and best[0] == float("inf"):
+            sure.add(target)  # new or not: the address may have arrived after the tie
         if target is not None and rec.whatnot_show_id != target:
             tie(rec, target, "auto")
             linked += 1
@@ -260,21 +299,86 @@ def link_recordings(org_id: int) -> int:
         ):
             # Tied by the clock earlier, before the show's own recording was known.
             tie(rec, None, None)
+    made = (
+        set(
+            db.session.scalars(
+                select(Show.whatnot_show_id).where(
+                    Show.organization_id == org_id,
+                    Show.whatnot_link == "made",
+                    Show.whatnot_show_id.in_(sure),
+                )
+            )
+        )
+        if sure
+        else set()
+    )
+    if made:
+        # One show here per Whatnot show: a show made for it before this laptop started
+        # recording folds into the recording (services/show_merge.py). Tried at every read
+        # while both are there: the recording may have learnt its address after it was
+        # tied, the made show may have been made just after, or a parse was running.
+        from .. import show_merge
+
+        for ws in db.session.scalars(select(WhatnotShow).where(WhatnotShow.id.in_(made))):
+            show_merge.fold_made(ws)
     return linked
 
 
-def recordings_of(ws: WhatnotShow) -> list[Show]:
-    """The app's shows that are this Whatnot show, the one holding most of its sales first."""
-    from ...models import Sale
+def by_address(show: Show, ws: WhatnotShow) -> bool:
+    """The recording's own page address names the Whatnot show."""
+    return bool(show.source_url) and ws.whatnot_id.lower() in show.source_url.lower()
 
-    rows = db.session.execute(
-        select(Show, func.count(Sale.id))
-        .outerjoin(Sale, Sale.show_id == Show.id)
-        .where(Show.organization_id == ws.organization_id, Show.whatnot_show_id == ws.id)
-        .group_by(Show.id)
-        .order_by(func.count(Sale.id).desc(), Show.id)
-    ).all()
-    return [show for show, _ in rows]
+
+def is_sure(show: Show, ws: WhatnotShow) -> bool:
+    """The recording is this Whatnot show's for good: a person said so, or its own page
+    address names the show. A tie by the clock alone may be re-decided at the next read."""
+    return show.whatnot_link == "manual" or by_address(show, ws)
+
+
+def _rank(whatnot_id):
+    """How sure a show is to stay this Whatnot show's (`is_sure` in SQL): 0 a recording a
+    person matched or whose address names the show, 1 a show made from Whatnot's record,
+    2 a recording tied by the clock alone."""
+    named = func.strpos(func.lower(func.coalesce(Show.source_url, "")), func.lower(whatnot_id))
+    return case(
+        (Show.whatnot_link == "manual", 0),
+        (named > 0, 0),
+        (Show.whatnot_link == "made", 1),
+        else_=2,
+    )
+
+
+def recordings_of(ws: WhatnotShow) -> list[Show]:
+    """The app's shows that are this Whatnot show. Normally one (services/show_merge.py);
+    while there are more, the first is where new order sales, Whatnot's lots and its
+    giveaways go: a recording that is the show's for good (`is_sure`), else the show made
+    from Whatnot's record, else a recording tied by the clock; then the oldest. Never into
+    a clock tie while the made show is there: the clock may be re-decided, and the sales
+    would leave the show with it. Never "the one holding most sales": that changed as
+    sales arrived, and a buyer's wins, lots and giveaways then landed in both."""
+    return list(
+        db.session.scalars(
+            select(Show)
+            .where(Show.organization_id == ws.organization_id, Show.whatnot_show_id == ws.id)
+            .order_by(_rank(ws.whatnot_id), Show.started_at, Show.id)
+        )
+    )
+
+
+def first_recordings(org_id: int, ws_ids) -> dict[int, int]:
+    """Whatnot show id → the first of its app shows (as `recordings_of` orders them), for
+    many Whatnot shows in one query."""
+    out: dict[int, int] = {}
+    if not ws_ids:
+        return out
+    for show_id, ws_id in db.session.execute(
+        select(Show.id, Show.whatnot_show_id)
+        .join(WhatnotShow, WhatnotShow.id == Show.whatnot_show_id)
+        .where(Show.organization_id == org_id, Show.whatnot_show_id.in_(set(ws_ids)))
+        .order_by(Show.whatnot_show_id, _rank(WhatnotShow.whatnot_id), Show.started_at, Show.id)
+    ):
+        out.setdefault(ws_id, show_id)
+    return out
 
 
 def ensure_recording(ws: WhatnotShow) -> Show | None:
@@ -351,12 +455,6 @@ def upsert_order(org_id: int, data: dict) -> tuple[int | None, bool]:
     values = _order_values(org_id, data)
     if values is None:
         return None, False
-    existing = db.session.execute(
-        select(WhatnotOrder.id, WhatnotOrder.buyer_username).where(
-            WhatnotOrder.organization_id == org_id,
-            WhatnotOrder.whatnot_id == values["whatnot_id"],
-        )
-    ).first()
     update = {k: v for k, v in values.items() if k not in ("organization_id", "whatnot_id")}
     if values["buyer_username"] is None:
         # A read without the buyer (a token that lost that permission) keeps who it was.
@@ -364,7 +462,7 @@ def upsert_order(org_id: int, data: dict) -> tuple[int | None, bool]:
         update.pop("buyer_id")
     stmt = insert(WhatnotOrder).values(**values)
     newer = stmt.excluded.whatnot_updated_at
-    row_id = db.session.execute(
+    got = db.session.execute(
         stmt.on_conflict_do_update(
             constraint="uq_whatnot_orders_org_id",
             set_=update,
@@ -373,10 +471,21 @@ def upsert_order(org_id: int, data: dict) -> tuple[int | None, bool]:
                 | newer.is_(None)
                 | (newer >= WhatnotOrder.whatnot_updated_at)
             ),
-        ).returning(WhatnotOrder.id)
-    ).scalar()
-    if row_id is None and existing is not None:
-        row_id = existing.id  # ours is the newer copy; nothing written
+        ).returning(WhatnotOrder.id, literal_column("(xmax = 0)").label("inserted"))
+    ).first()
+    # New is what THIS statement did (an insert), not what a select before it saw: two
+    # readers (a webhook and the timer) storing one new order at once would both think it new,
+    # and the loser would take the winner's committed order out again if its items failed.
+    inserted = bool(got is not None and got.inserted)
+    row_id = got.id if got is not None else None
+    if row_id is None:
+        # Ours is not the newer copy: nothing was written; the order is the one held.
+        row_id = db.session.scalar(
+            select(WhatnotOrder.id).where(
+                WhatnotOrder.organization_id == org_id,
+                WhatnotOrder.whatnot_id == values["whatnot_id"],
+            )
+        )
     elif values["status"] in ("cancelled", "failed"):
         # Nothing to pack any more: its lots leave the order slips' pick list.
         from ...models import WhatnotLot
@@ -388,7 +497,7 @@ def upsert_order(org_id: int, data: dict) -> tuple[int | None, bool]:
                 | WhatnotLot.whatnot_order_id.like(values["whatnot_id"] + "-%"),
             )
         )
-    return row_id, existing is None
+    return row_id, inserted
 
 
 def upsert_items(org_id: int, order_row_id: int, items: list[dict]) -> int:
@@ -435,12 +544,20 @@ def upsert_items(org_id: int, order_row_id: int, items: list[dict]) -> int:
 
 def store_order(org_id: int, client: WhatnotClient, data: dict, *, items: bool | None = None):
     """Upsert an order and, for one new to us (or when asked), its items.
-    Returns (row id, new)."""
+    Returns (row id, new). An order is stored whole or not at all: when its items cannot be
+    read, an order that was new here is taken out again, so a later read finds it new and
+    reads its items then (a stored order is never read for its items again unless asked)."""
     row_id, new = upsert_order(org_id, data)
     if row_id is None:
         return None, False
     if items if items is not None else new:
-        upsert_items(org_id, row_id, client.order_items(str(data["id"])))
+        try:
+            lines = client.order_items(str(data["id"]))
+        except WhatnotError:
+            if new:
+                db.session.execute(delete(WhatnotOrder).where(WhatnotOrder.id == row_id))
+            raise
+        upsert_items(org_id, row_id, lines)
     return row_id, new
 
 
@@ -464,26 +581,48 @@ def sync_show_orders(org_id: int, client: WhatnotClient, ws: WhatnotShow) -> dic
 def sync_orders_of(org_id: int, client: WhatnotClient, shows: list[WhatnotShow]) -> dict:
     """`sync_show_orders` for several shows in ONE newest-first read, down to the oldest
     show's start: reading them one by one would page through the newer shows' orders again
-    for each older one."""
+    for each older one.
+
+    A show counts as read in full only when the read got down to its own start. A catch-up
+    has a limit (`MAX_NEW_ORDERS` orders new to the app, `MAX_LISTED_PAGES` pages): when it
+    ends there, the shows it did not get down to stay unread, and the next pass carries on
+    (the orders already held are listed again, cheaply, and the new ones are those below).
+    When a call fails part-way, the orders read before it are kept (each is whole, see
+    `store_order`) and the shows are not marked read."""
     if not shows:
         return {"seen": 0, "new": 0}
     fallback = datetime.now(UTC) - timedelta(days=2)
-    floor = min((ws.begins_at - SHOW_LEAD) if ws.begins_at else fallback for ws in shows)
+    floors = {ws.id: (ws.begins_at - SHOW_LEAD) if ws.begins_at else fallback for ws in shows}
+    floor = min(floors.values())
     began = datetime.now(UTC)
+    air = on_air_now(org_id)
+    limit = MAX_NEW_ORDERS_ON_AIR if air else MAX_NEW_ORDERS
     seen = new = 0
-    for i, data in enumerate(client.orders()):
-        made = when(data.get("created_at"))
-        if made is not None and made < floor:
-            break
-        if i >= MAX_ORDER_PAGES * 50:
-            log.warning(
-                "whatnot order catch-up for show %s stopped at its cap",
-                ", ".join(str(ws.id) for ws in shows),
-            )
-            break
-        _, was_new = store_order(org_id, client, data)
-        seen += 1
-        new += was_new
+    oldest: datetime | None = None  # the oldest order time met: how far down the read got
+    reached = True  # the floor, or the end of Whatnot's list
+    try:
+        for i, data in enumerate(client.orders()):
+            made = when(data.get("created_at"))
+            if made is not None and made < floor:
+                break
+            if i >= MAX_LISTED_PAGES * 50 or new >= limit:
+                reached = False
+                log.warning(
+                    "whatnot order catch-up for show %s stopped at its limit",
+                    ", ".join(str(ws.id) for ws in shows),
+                )
+                break
+            _, was_new = store_order(org_id, client, data)
+            seen += 1
+            new += was_new
+            if made is not None and (oldest is None or made < oldest):
+                oldest = made
+    except WhatnotError:
+        # What was read is kept; the shows are not marked read, so the next pass reads them.
+        db.session.commit()
+        raise
+    if not air:
+        repair_items(org_id, client, [ws.whatnot_id for ws in shows])
     db.session.flush()
     firsts = dict(
         db.session.execute(
@@ -499,15 +638,70 @@ def sync_orders_of(org_id: int, client: WhatnotClient, shows: list[WhatnotShow])
         first = firsts.get(ws.whatnot_id)
         if first is not None and (ws.started_at is None or first < ws.started_at):
             ws.started_at = first
+        # Down to this show's own start? (A read that ended at its limit is down to the
+        # shows it passed, no further: the orders of the older ones are not all here.)
+        if not reached and (oldest is None or oldest >= floors[ws.id]):
+            continue
         # When the read BEGAN: an order placed while it ran may have been missed, so only a
         # read begun after the show ended counts as its final one.
         ws.orders_synced_at = began
-    return {"seen": seen, "new": new}
+    # A walk that hit its page limit without storing anything new went through the same held
+    # orders and will again: the caller spaces its next try (`STALLED_RETRY`).
+    return {"seen": seen, "new": new, "complete": reached, "stalled": not reached and new == 0}
+
+
+def repair_items(org_id: int, client: WhatnotClient, whatnot_show_ids: list[str]) -> int:
+    """Read again the items of orders of these shows that the app holds with none (Whatnot can
+    answer an order before its items exist, and an order stored is not asked for its items
+    again). A few per pass, taken in turn (a cursor on the order's id, so an order that really
+    has none costs a call now and then and never keeps the others from being asked), never
+    while a show is on air. This is a repair: an order Whatnot refuses or cannot answer is
+    left as it is and never stops the read it rides on."""
+    if not whatnot_show_ids:
+        return 0
+    state = connection.sync_state(org_id, "repair:items")  # (":" keeps it off Settings)
+    after = int((state.cursor or {}).get("after") or 0)
+
+    def bare(*conditions):
+        return db.session.execute(
+            select(WhatnotOrder.id, WhatnotOrder.whatnot_id)
+            .where(
+                WhatnotOrder.organization_id == org_id,
+                WhatnotOrder.whatnot_show_id.in_(whatnot_show_ids),
+                WhatnotOrder.status.not_in(("cancelled", "failed")),
+                ~select(WhatnotOrderItem.id)
+                .where(WhatnotOrderItem.order_id == WhatnotOrder.id)
+                .exists(),
+                *conditions,
+            )
+            .order_by(WhatnotOrder.id)
+            .limit(MAX_ITEM_REPAIRS)
+        ).all()
+
+    todo = bare(WhatnotOrder.id > after)
+    if len(todo) < MAX_ITEM_REPAIRS:  # the end of the line: start again from the first
+        todo += [row for row in bare() if row not in todo][: MAX_ITEM_REPAIRS - len(todo)]
+    done = 0
+    for row_id, whatnot_id in todo:
+        after = row_id
+        try:
+            upsert_items(org_id, row_id, client.order_items(whatnot_id))
+            done += 1
+        except (NotFound, Invalid, Forbidden) as e:
+            log.warning("whatnot order %s: items not read again: %s", whatnot_id, e)
+        except WhatnotError as e:
+            log.warning("whatnot items not read again (%s): they wait for the next pass", e)
+            break
+    state.cursor = {"after": after if len(todo) >= MAX_ITEM_REPAIRS else 0}
+    return done
 
 
 def refresh_open_orders(org_id: int, client: WhatnotClient) -> int:
     """Re-read the orders Whatnot had not settled when we last looked: a status change on
-    an old order does not bring it back to the top of the list."""
+    an old order does not bring it back to the top of the list. An order Whatnot refuses to
+    give (a request error about that one order) is skipped and put at the back of the line,
+    never the end of the pass; a failure that is not about one order (the token, Whatnot
+    being down, five refusals in a row) ends the pass, keeping the orders already re-read."""
     since = datetime.now(UTC) - OPEN_ORDER_AGE
     ids = db.session.scalars(
         select(WhatnotOrder.whatnot_id)
@@ -519,11 +713,39 @@ def refresh_open_orders(org_id: int, client: WhatnotClient) -> int:
         .order_by(WhatnotOrder.synced_at)
         .limit(MAX_OPEN_REFRESH)
     ).all()
+    refused = 0  # in a row: five means it is not about one order
+    forbidden = 0  # in all
+    last: Forbidden | None = None
     for whatnot_id in ids:
         try:
             upsert_order(org_id, client.order(whatnot_id))
+            refused = 0
         except NotFound:
             continue
+        except (Invalid, Forbidden) as e:
+            refused += 1
+            if isinstance(e, Forbidden):
+                forbidden += 1
+                last = e
+            if refused >= REFUSED_IN_A_ROW:
+                db.session.commit()  # the orders re-read so far are kept
+                raise
+            log.warning("whatnot order %s could not be re-read: %s", whatnot_id, e)
+            db.session.execute(
+                update(WhatnotOrder)
+                .where(
+                    WhatnotOrder.organization_id == org_id, WhatnotOrder.whatnot_id == whatnot_id
+                )
+                .values(synced_at=datetime.now(UTC))
+            )
+        except WhatnotError:
+            db.session.commit()  # the orders re-read so far are kept
+            raise
+    if last is not None and forbidden == len(ids):
+        # Every order was refused for want of permission (fewer than five of them): the token
+        # cannot read orders; that is not a pass that worked. (One order Whatnot finds
+        # invalid, alone, is that order's own trouble: it is skipped.)
+        raise last
     return len(ids)
 
 
@@ -546,6 +768,13 @@ def _after_orders(org_id: int, show_ids: set[str | None], client=None) -> None:
         except Exception:  # noqa: BLE001 - a listing not read never stops the orders
             log.exception("whatnot listings of new orders not read for shop %s", org_id)
     buyers.schedule_link(org_id)
+    queue_apply(org_id, show_ids)
+
+
+def queue_apply(org_id: int, show_ids) -> None:
+    """In "auto" mode, queue the apply of each of these Whatnot shows' orders (one queued
+    job per show). Whoever stores an order the app had not seen calls this: the order is
+    applied whether it came from a list read, a webhook or a parcel."""
     conn = connection.active(org_id)
     if conn is None or conn.orders_mode != "auto":
         return
@@ -618,32 +847,57 @@ def _on_show(event: WhatnotEvent) -> None:
 # ---------- jobs ----------
 
 
-def _run(org_id: int, resource: str, fn, *, flag: bool = True):
+def _run(org_id: int, resource: str, fn, *, flag: bool = True, spaced: timedelta | None = None):
     """Run one kind of reading and keep its bookkeeping: when it last worked, or why not.
     `flag=False` is for a reading the shop can live without (a show's results, the fee
     ledger): a missing permission is recorded for its own page and swallowed, instead of
-    telling every page that the connection stopped working."""
+    telling every page that the connection stopped working. `spaced` is for a reading the
+    timer spaces out by this interval (`_due` looks at when it STARTED): when it fails it is
+    due again `RETRY_AFTER_FAILURE` later, not a whole interval later for a call that never
+    worked. (Not at once: the job's own retry, seconds on, must find it spaced so the pass
+    goes on to the live show's orders.)"""
     state = connection.sync_state(org_id, resource)
     state.last_started_at = datetime.now(UTC)
     db.session.commit()
+    answered = worked()
     try:
         counts = fn()
     except WhatnotError as e:
         db.session.rollback()
         optional = not flag and isinstance(e, Forbidden)
         if not optional:
-            connection.note_failure(org_id, e)
+            connection.note_failure(org_id, e, resource)
         state = connection.sync_state(org_id, resource)
         state.last_error = f"{type(e).__name__} {e.problem}".strip()[:240]
+        if spaced is not None:
+            state.last_started_at = datetime.now(UTC) - spaced + RETRY_AFTER_FAILURE
         db.session.commit()
         if optional:
             return None
         raise
     state = connection.sync_state(org_id, resource)
+    before = state.last_error
     state.last_ok_at, state.last_error = datetime.now(UTC), None
     if isinstance(counts, dict):
         state.counts = counts
+    # A rejected token or a missing permission that this kind of read had hit is over.
+    connection.settle(org_id, resource, before, worked=worked() > answered)
     return counts
+
+
+def _attempt(org_id: int, resource: str, fn, spaced: timedelta | None):
+    """`_run` for a reading the timer's pass can do without: a failure is recorded (and the
+    connection flagged when it is the token's), the reading is due again in minutes, and the
+    pass carries on. Returns the failure, or None. A token Whatnot rejects is not carried on
+    from: nothing behind it can work, and the job's retry is how it is asked again."""
+    try:
+        _run(org_id, resource, fn, spaced=spaced)
+    except Unauthorized:
+        raise
+    except WhatnotError as e:
+        log.warning("whatnot %s read failed for shop %s: %s", resource, org_id, e)
+        return e
+    return None
 
 
 @jobs.handler("whatnot_sync_show")
@@ -683,9 +937,142 @@ def history(conn: WhatnotConnection, ws: WhatnotShow) -> bool:
     return over is None or over < (conn.auto_since or conn.connected_at)
 
 
+def on_air_now(org_id: int) -> bool:
+    """Whether a show of this shop is on air right now (see `on_air`)."""
+    return on_air(
+        db.session.scalars(
+            select(WhatnotShow).where(
+                WhatnotShow.organization_id == org_id, WhatnotShow.status.in_(ACTIVE)
+            )
+        ).all()
+    )
+
+
+def on_air(shows, now: datetime | None = None) -> bool:
+    """Whether any of these shows (live or stopped on Whatnot) is on air: begun lately
+    enough that it is not one left "stopped" for days (`ON_AIR_AT_MOST`)."""
+    now = now or datetime.now(UTC)
+    return any((ws.started_at or ws.begins_at or now) >= now - ON_AIR_AT_MOST for ws in shows)
+
+
+def begin_repair(org_id: int) -> datetime | None:
+    """The moment of the shop's one-time repair of reads the old catch-up cap spoiled, made
+    the first time it is asked for; None for a shop that never asked (tests that look at
+    `_unread_shows` alone). Until 2026-11-19 a catch-up that reached its 3,000-order cap
+    marked EVERY show it was reading as read, including those it never got down to, so a show
+    can hold a few of its orders, or none, and look complete (the dashboard's 30-day sales
+    then fall short of Whatnot's). Nothing says which shows those are (Whatnot's own order
+    count only comes for shows of the last week), so `_unread_shows` lists each ended show of
+    the last `RECENT_SHOWS` once more if it was last read before this moment. Orders already
+    held cost nothing (no items call); a catch-up that stops at its limit carries on next
+    pass (`sync_orders_of`). These re-reads wait while a show is on air, like the late reads,
+    and nothing about the shows is changed here: they stay read until the re-read."""
+    state = connection.sync_state(org_id, "repair:capped-reads")  # (":" keeps it off Settings)
+    if state.last_ok_at is None:
+        state.last_ok_at = datetime.now(UTC)
+        db.session.commit()
+    return state.last_ok_at
+
+
+def _unread_shows(org_id: int, live: list[WhatnotShow]) -> list[WhatnotShow]:
+    """Ended shows whose orders the timer reads in full: never read since they ended, or
+    (once, at each of `LATE_READS` after the end) not read since then, or short of the
+    orders Whatnot's own results count. A card declined at the win and retried is a new order
+    that can be placed after the show ended and after the first read of everything. The
+    late and repair reads wait while a show is on air: they are not the first read of
+    anything."""
+    now = datetime.now(UTC)
+    shows = db.session.scalars(
+        select(WhatnotShow).where(
+            WhatnotShow.organization_id == org_id,
+            WhatnotShow.status == "ended",
+            WhatnotShow.ended_at >= now - RECENT_SHOWS,
+        )
+    ).all()
+    late_ok = not on_air(live, now)
+    repair = connection.sync_state(org_id, "repair:capped-reads").last_ok_at
+    held = dict(
+        db.session.execute(
+            select(WhatnotOrder.whatnot_show_id, func.count())
+            .where(
+                WhatnotOrder.organization_id == org_id,
+                WhatnotOrder.whatnot_show_id.in_([ws.whatnot_id for ws in shows]),
+            )
+            .group_by(WhatnotOrder.whatnot_show_id)
+        ).all()
+    )
+    out = []
+    for ws in shows:
+        read = ws.orders_synced_at
+        if read is None or read < ws.ended_at:
+            out.append(ws)
+            continue
+        if not late_ok:
+            continue
+        if repair is not None and read < repair:
+            out.append(ws)  # the one-time repair (`begin_repair`)
+            continue
+        owed = [ws.ended_at + after for after in LATE_READS if ws.ended_at + after <= now]
+        if owed and read < max(owed) and ws.ended_at >= now - LATE_READS_WITHIN:
+            out.append(ws)
+            continue
+        counted = (ws.analytics or {}).get("orders_count")
+        if (
+            isinstance(counted, int)
+            and held.get(ws.whatnot_id, 0) < counted
+            and read < now - SHORT_REREAD_AFTER
+        ):
+            out.append(ws)  # Whatnot counts more orders than the app holds
+    return out
+
+
 def _due(org_id: int, resource: str, every: timedelta) -> bool:
     last = connection.sync_state(org_id, resource).last_started_at
     return last is None or datetime.now(UTC) - last >= every
+
+
+def _asked_lately(state: WhatnotSyncState | None, now: datetime) -> bool:
+    """The timer already asked for this show's parcels and should not ask again yet.
+    `state.last_started_at` is when it last asked; `state.last_ok_at` is the last read
+    that worked (None if none has)."""
+    asked = state.last_started_at if state is not None else None
+    return asked is not None and now - asked < PARCELS_RETRY
+
+
+def _parcels_owed(org_id: int, now: datetime) -> list[WhatnotShow]:
+    """Shows that ended lately with every order read since, whose parcels have not been
+    read in full after the end: the Shipping page offers no label until they are
+    (`shipping._complete`). Asked of what is stored, not of what this pass happened to
+    read: a show's orders can be read after it ended while the app still has it as live
+    (the show list is read every 15 minutes), and then it is never "unread" again."""
+    shows = db.session.scalars(
+        select(WhatnotShow).where(
+            WhatnotShow.organization_id == org_id,
+            WhatnotShow.status == "ended",
+            WhatnotShow.ended_at >= now - PARCELS_AFTER,
+            WhatnotShow.orders_synced_at >= WhatnotShow.ended_at,
+        )
+    ).all()
+    if not shows:
+        return []
+    states = {
+        state.resource: state
+        for state in db.session.scalars(
+            select(WhatnotSyncState).where(
+                WhatnotSyncState.organization_id == org_id,
+                WhatnotSyncState.resource.in_([f"shipments:{ws.id}" for ws in shows]),
+            )
+        )
+    }
+    owed = []
+    for ws in shows:
+        state = states.get(f"shipments:{ws.id}")
+        read = state is not None and state.last_ok_at is not None
+        if read and state.last_ok_at >= ws.ended_at:
+            continue
+        if not _asked_lately(state, now):
+            owed.append(ws)
+    return owed
 
 
 @jobs.handler("whatnot_sync")
@@ -698,7 +1085,10 @@ def sync_job(payload: dict) -> None:
         return
     client = client_for(org_id)
     if _due(org_id, "shows", SHOWS_EVERY):
-        _run(org_id, "shows", lambda: {"shows": sync_shows(org_id, client)})
+        # A failed list is recorded and tried again in minutes (`_run`); the pass goes on with
+        # the shows it already knows, so a list that keeps failing never starves the orders,
+        # results and parcels behind it.
+        _attempt(org_id, "shows", lambda: {"shows": sync_shows(org_id, client)}, SHOWS_EVERY)
         db.session.commit()
     conn = connection.active(org_id)
     quiet = conn.last_event_at is None or datetime.now(UTC) - conn.last_event_at > LIVE_POLL_QUIET
@@ -707,52 +1097,85 @@ def sync_job(payload: dict) -> None:
             WhatnotShow.organization_id == org_id, WhatnotShow.status.in_(ACTIVE)
         )
     ).all()
-    # An ended show whose orders were never read in full (its webhook never came).
-    unread = db.session.scalars(
-        select(WhatnotShow).where(
-            WhatnotShow.organization_id == org_id,
-            WhatnotShow.status == "ended",
-            WhatnotShow.ended_at >= datetime.now(UTC) - RECENT_SHOWS,
-            WhatnotShow.orders_synced_at.is_(None)
-            | (WhatnotShow.orders_synced_at < WhatnotShow.ended_at),
-        )
-    ).all()
+    # An ended show whose orders were never read in full (its webhook never came), or not
+    # again since a late order can have been placed (`LATE_READS`).
+    begin_repair(org_id)
+    unread = _unread_shows(org_id, live)
     changed: set[str | None] = set()
-    over: list[str] = []  # shows that ended lately and whose orders this pass read in full
     now = datetime.now(UTC)
+    if not _due(org_id, "orders:stalled", STALLED_RETRY):
+        # The last catch-up walked its limit and got nowhere: only the shows of the last few
+        # days (a short walk) are read until it is due again.
+        unread = [ws for ws in unread if ws.ended_at and ws.ended_at >= now - LATE_READS_WITHIN]
     to_read = (live if quiet else []) + unread
+    orders_failure = None
+    over: list[str] = []  # ended shows read again this pass: a late order can bring a parcel
     if to_read:
         # One read for all of them (`sync_orders_of`), not one newest-first read per show.
-        _run(org_id, "orders", lambda: sync_orders_of(org_id, client, to_read))
-        for ws in to_read:
-            changed.add(ws.whatnot_id)
-            if ws.status == "ended" and ws.ended_at and ws.ended_at >= now - PARCELS_AFTER:
-                over.append(ws.whatnot_id)
+        # A failure does not stop the rest of the pass: it is raised at the end, so the job
+        # is retried and nothing behind it (open orders, results, parcels) is starved.
+        orders_failure = _attempt(
+            org_id, "orders", lambda: sync_orders_of(org_id, client, to_read), None
+        )
+        if orders_failure is None:
+            if (connection.sync_state(org_id, "orders").counts or {}).get("stalled"):
+                connection.sync_state(org_id, "orders:stalled").last_started_at = now
+            for ws in to_read:
+                changed.add(ws.whatnot_id)
+                if ws.status == "ended" and ws.ended_at and ws.ended_at >= now - PARCELS_AFTER:
+                    over.append(ws.whatnot_id)
         db.session.commit()
+    # After the orders: a show this pass has just read in full is owed its parcels too. Not
+    # while a show is on air (its orders need the request budget): nothing is marked asked,
+    # so they are still owed, and asked for, at the first pass after it (`PARCELS_AFTER` is
+    # days, a show on air hours at most), with the one apply of a show that is over.
+    aired = on_air(live, now)
+    owed = [] if aired else _parcels_owed(org_id, datetime.now(UTC))
+    if aired:
+        over = []  # an ended show read for the first time is owed its parcels after the show
+    for ws in owed:
+        state = connection.sync_state(org_id, f"shipments:{ws.id}")
+        if state.last_started_at is None:
+            # Its orders are applied once more as those of a show that is over (what was
+            # missing is flagged, an auction settles on one win): the last apply may have
+            # run while the app still had it as live. Once, not on every retry of the read.
+            changed.add(ws.whatnot_id)
+        state.last_started_at = datetime.now(UTC)
     # Old orders Whatnot had not settled. Not while a show is on air: the show's orders
     # need the request budget, and these can wait an hour. While webhooks are arriving
     # they bring each change, so this safety net runs every few hours instead of hourly.
-    on_air = any((ws.started_at or ws.begins_at or now) >= now - ON_AIR_AT_MOST for ws in live)
     hooked = conn.last_event_at is not None and now - conn.last_event_at <= OPEN_ORDERS_HOOKED
-    if not on_air and _due(
+    if not aired and _due(
         org_id, "open_orders", OPEN_ORDERS_HOOKED if hooked else OPEN_ORDERS_EVERY
     ):
         before = _open_by_show(org_id)
-        _run(org_id, "open_orders", lambda: {"orders": refresh_open_orders(org_id, client)})
+        # Orders re-read before a failure are kept (`refresh_open_orders`), so the shows whose
+        # orders moved are found and applied even when the pass then failed; and the failure
+        # does not stop the rest of this pass.
+        _attempt(
+            org_id,
+            "open_orders",
+            lambda: {"orders": refresh_open_orders(org_id, client)},
+            OPEN_ORDERS_HOOKED if hooked else OPEN_ORDERS_EVERY,
+        )
         db.session.commit()
         after = _open_by_show(org_id)
+        # Any order that moved (settled, cancelled, or from one open state to the other).
         changed |= {show for show in before if before[show] != after.get(show)}
     _after_orders(org_id, changed, client)
     from . import results, shipping
 
-    for whatnot_show_id in over:
+    for ws in owed:
         # What the "show ended" webhook starts, for a shop whose webhooks are not set up
         # (or did not arrive): this show's parcels read in full after it ended, so its
         # Shipping page is ready without anyone pressing "Read again".
-        shipping.schedule(org_id, whatnot_show_id)
+        shipping.schedule(org_id, ws.whatnot_id)
         from .. import picks
 
-        picks.schedule(_show_row(org_id, whatnot_show_id))
+        picks.schedule(ws)
+    for whatnot_show_id in over:
+        if whatnot_show_id not in {ws.whatnot_id for ws in owed}:
+            shipping.schedule(org_id, whatnot_show_id)
     if shipping.due(org_id):
         shipping.schedule(org_id)
     for whatnot_show_id in results.results_due(org_id):
@@ -763,15 +1186,29 @@ def sync_job(payload: dict) -> None:
 
     if catalog.due(org_id):
         catalog.schedule(org_id)
+    # The orders older than this timer reads, and a daily top-up of the last days (the
+    # orders of a buy-now between shows): never while a show is on air; see backfill.py.
+    from . import backfill
+
+    if backfill.due(org_id):
+        backfill.schedule(org_id)
+    if orders_failure is not None:
+        db.session.commit()  # what the rest of the pass queued is kept; only the job retries
+        raise orders_failure  # the job is retried (everything else was spaced or done)
 
 
 def _open_by_show(org_id: int) -> dict:
+    """Each Whatnot show's open orders with their status: comparing before and after an
+    order refresh tells which shows had an order move, not only how many are open."""
     rows = db.session.execute(
-        select(WhatnotOrder.whatnot_show_id, func.count())
-        .where(WhatnotOrder.organization_id == org_id, WhatnotOrder.status.in_(OPEN_ORDER_STATUSES))
-        .group_by(WhatnotOrder.whatnot_show_id)
+        select(WhatnotOrder.whatnot_show_id, WhatnotOrder.whatnot_id, WhatnotOrder.status).where(
+            WhatnotOrder.organization_id == org_id, WhatnotOrder.status.in_(OPEN_ORDER_STATUSES)
+        )
     ).all()
-    return {show: n for show, n in rows}
+    out: dict = {}
+    for show, order_id, status in rows:
+        out.setdefault(show, set()).add((order_id, status))
+    return out
 
 
 def schedule_all() -> int:

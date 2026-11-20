@@ -35,7 +35,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PyPdfError
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from ...db import db
 from ...models import (
@@ -88,6 +88,9 @@ STATUS_WORDS = {
 SALE_TYPE = {"auction": "Auction", "buy_it_now": "Buy It Now", "giveaway": "Giveaway"}
 # Orders that still ship: cancelled and failed ones have nothing to pack.
 SHIPPABLE = ("pending", "pending_fulfillment", "completed")
+# An order Whatnot cancelled. A "failed" one is a declined card, often retried and paid as
+# another order: its item is not one to take out of a box.
+CLOSED_ORDERS = ("cancelled",)
 MAX_SHIPMENT_PAGES = 40
 SHIPMENTS_EVERY = timedelta(minutes=30)
 RECENT = timedelta(days=21)
@@ -145,6 +148,7 @@ def _tracking_text(tracking: dict) -> str:
 def _mirror_items(org_id: int, client: WhatnotClient, items: list[dict]):
     """The mirrored order items a shipment holds (reading an order we have not seen yet)."""
     out: list[tuple[WhatnotOrder, WhatnotOrderItem]] = []
+    stored: set[str | None] = set()  # shows an order was stored for here, new to the app
     for it in items:
         order_id, item_id = _str(it.get("order_id"), 20), _str(it.get("order_item_id"), 20)
         if not order_id or not item_id:
@@ -156,6 +160,7 @@ def _mirror_items(org_id: int, client: WhatnotClient, items: list[dict]):
                 WhatnotOrderItem.organization_id == org_id, WhatnotOrderItem.whatnot_id == item_id
             )
         ).first()
+        new_order = row is None
         if row is None:
             sync.sync_order(org_id, client, order_id)
             row = db.session.execute(
@@ -168,6 +173,11 @@ def _mirror_items(org_id: int, client: WhatnotClient, items: list[dict]):
             ).first()
         if row is not None:
             out.append((row[0], row[1]))
+            if new_order:
+                stored.add(row[0].whatnot_show_id)
+    # An order first stored by a parcel read (a paid retry placed after the show's last order
+    # read) is applied like any other: queued here, since nothing else will notice it.
+    sync.queue_apply(org_id, stored)
     return out
 
 
@@ -522,7 +532,20 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
             WhatnotOrder.status.in_(SHIPPABLE),
         )
     ).all()
+    # Items of cancelled or failed orders that still sit in a package: a label made before the
+    # cancellation lists them, and the shipment's items are not read again once labelled.
+    voided_rows = db.session.execute(
+        select(WhatnotOrder, WhatnotOrderItem)
+        .join(WhatnotOrderItem, WhatnotOrderItem.order_id == WhatnotOrder.id)
+        .where(
+            WhatnotOrder.organization_id == org_id,
+            WhatnotOrder.whatnot_show_id == ws.whatnot_id,
+            WhatnotOrder.status.in_(CLOSED_ORDERS),
+            WhatnotOrderItem.whatnot_shipment_id.is_not(None),
+        )
+    ).all()
     shipment_ids = {item.whatnot_shipment_id for _, item in rows if item.whatnot_shipment_id}
+    shipment_ids |= {item.whatnot_shipment_id for _, item in voided_rows}
     shipments = {
         s.whatnot_id: s
         for s in db.session.scalars(
@@ -532,13 +555,16 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
             )
         )
     }
-    # How many items each of those shipments holds in all (a bundle can span two shows).
+    # How many items each of those shipments holds in all (a bundle can span two shows). Only
+    # orders that still ship: a cancelled item is counted as cancelled, never as another show's.
     totals_in = dict(
         db.session.execute(
             select(WhatnotOrderItem.whatnot_shipment_id, func.sum(WhatnotOrderItem.quantity))
+            .join(WhatnotOrder, WhatnotOrder.id == WhatnotOrderItem.order_id)
             .where(
                 WhatnotOrderItem.organization_id == org_id,
                 WhatnotOrderItem.whatnot_shipment_id.in_(shipment_ids or [""]),
+                WhatnotOrder.status.in_(SHIPPABLE),
             )
             .group_by(WhatnotOrderItem.whatnot_shipment_id)
         ).all()
@@ -559,33 +585,83 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
     complete = _complete(org_id, ws)
     now = datetime.now(UTC)
     by_buyer: dict[str, dict] = {}
-    for order, item in rows:
+    # One Whatnot account that changed its username between two wins is one buyer: grouped by
+    # the account's id when the order carries it, else by the name (an order without an id
+    # joins the account that held its name).
+    id_of_name = {
+        (o.buyer_username or "").lstrip("@").lower(): o.buyer_id
+        for o, _ in rows
+        if o.buyer_id and o.buyer_username
+    }
+    for order, item in sorted(rows, key=lambda r: (r[0].ordered_at is None, r[0].ordered_at)):
         name = (order.buyer_username or "").lstrip("@")
+        account = order.buyer_id or id_of_name.get(name.lower())
         b = by_buyer.setdefault(
-            name.lower(), {"buyer": name, "items": 0, "unplaced": 0, "in": defaultdict(int)}
+            f"id:{account}" if account else name.lower(),
+            {
+                "buyer": name,
+                "names": set(),
+                "items": 0,
+                "unplaced": 0,
+                "in": defaultdict(int),
+                "void": defaultdict(int),
+            },
         )
+        b["buyer"] = name or b["buyer"]  # the name of the newest order
+        b["names"].add(name.lower())
         b["items"] += item.quantity
         if item.whatnot_shipment_id and item.whatnot_shipment_id in shipments:
             b["in"][item.whatnot_shipment_id] += item.quantity
         else:
             b["unplaced"] += item.quantity
+    for order, item in voided_rows:
+        shipment = shipments.get(item.whatnot_shipment_id)
+        if shipment is None or shipment.api_status != LABELLED:
+            continue  # an open package is read again; one with the carrier has left
+        name = (order.buyer_username or "").lstrip("@")
+        account = order.buyer_id or id_of_name.get(name.lower())
+        b = by_buyer.setdefault(
+            f"id:{account}" if account else name.lower(),
+            {
+                "buyer": name,
+                "names": set(),
+                "items": 0,
+                "unplaced": 0,
+                "in": defaultdict(int),
+                "void": defaultdict(int),
+            },
+        )
+        b["names"].add(name.lower())
+        b["in"].setdefault(item.whatnot_shipment_id, 0)  # a package of nothing that ships
+        b["void"][item.whatnot_shipment_id] += item.quantity
     out = []
-    for key, b in by_buyer.items():
+    for b in by_buyer.values():
         packs = []
         for whatnot_id, n in b["in"].items():
             s = shipments[whatnot_id]
+            other = max(0, int(totals_in.get(whatnot_id) or 0) - n)
             packs.append(
                 {
                     "id": s.id,
                     "status": s.api_status or "",
                     "items": n,
                     # Items in the same parcel that belong to another show.
-                    "otherItems": max(0, int(totals_in.get(whatnot_id) or 0) - n),
+                    "otherItems": other,
                     # …and that other show is live now: the bundle is still filling.
                     "liveElsewhere": whatnot_id in live_elsewhere,
                     "tracking": s.tracking_code,
                     "carrier": s.carrier,
-                    "labelReady": s.label_ready,
+                    # A cancelled or replaced package may keep its label links, but its label
+                    # is void: it is never offered, counted or printed.
+                    # A package with nothing left in it that ships (none of this show's, none
+                    # of another show's) is not printed either.
+                    "labelReady": s.label_ready
+                    and not _void(s.api_status, s.replaced_by)
+                    and (n > 0 or other > 0 or not b["void"].get(whatnot_id)),
+                    # Items of cancelled orders still listed in this labelled package: the label
+                    # and Whatnot's own slip may list them, so they must come out of the box.
+                    # (When in the label's life the cancel came is not known: no time is kept.)
+                    "cancelledItems": int(b["void"].get(whatnot_id, 0)),
                     "dueAt": s.dropoff_due.isoformat() if s.dropoff_due else None,
                     "holds": list(s.required_actions or []),
                     "pickup": s.fulfillment_method == "pickup",
@@ -602,7 +678,9 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
         for p in packs:
             # Exactly the packages "Make labels" would send for right now.
             p["askable"] = state in ("ready", "second") and _askable(p, now)
-        local = orders.get(key, [])
+        local = sorted(
+            {o.id: o for n in b["names"] for o in orders.get(n, [])}.values(), key=lambda o: o.id
+        )
         # The order still waiting to be picked, packed or marked shipped comes first.
         shown = next((o for o in local if o.status.value in ("paid", "picking", "packed")), None)
         shown = shown or (local[-1] if local else None)
@@ -661,9 +739,16 @@ def _label_code(e: WhatnotError) -> str:
         return "needs_verification"
     if isinstance(e, Forbidden):
         return "no_permission"
-    if isinstance(e, Conflict):
-        return "not_now"
+    if isinstance(e, Conflict) and e.problem == "label-generation-rejected":
+        return "not_now"  # Whatnot said it will not make this one: asking again is safe
+    # Any other 409 (a label already being made, a state the app does not know) does not say
+    # that nothing was started: it is waited out like a request that may have gone through.
     return UNKNOWN
+
+
+def _void(status: str | None, replaced_by: str | None) -> bool:
+    """A package Whatnot cancelled or replaced: whatever label it had must not be used."""
+    return (status or "") in GONE or bool(replaced_by)
 
 
 def _askable(package: dict, now: datetime) -> bool:
@@ -743,10 +828,34 @@ def request_labels(show: Show, *, user, buyers: list[str] | None = None) -> dict
         return {"requested": 0}
     jobs.enqueue(
         "whatnot_labels",
-        {"org_id": show.organization_id, "shipment_ids": ids, "user_id": user.id},
+        {
+            "org_id": show.organization_id,
+            "shipment_ids": ids,
+            "user_id": user.id,
+            # The job runs later than the press: it looks at the show again (labels_job).
+            "show_id": show.id,
+        },
         org_id=show.organization_id,
     )
     return {"requested": len(ids)}
+
+
+def _still_askable(org_id: int, show_id: int | None, shipment_ids: list[int]) -> set[int]:
+    """Of the packages a press chose, the ones that may still be asked for: the same rules as
+    the press (the show ended and was read in full, no other show still live in the bundle,
+    one open package for the buyer, nothing held), read again now because the job runs later.
+    A job queued without its show (before this check existed) sends nothing: a label cannot be
+    undone, and pressing "Make labels" again queues it with the show."""
+    if show_id is None:
+        return set()
+    show = db.session.scalar(select(Show).where(Show.id == show_id, Show.organization_id == org_id))
+    if show is None:
+        return set()
+    view = packages(show)  # read-only: no sale, order or package is changed
+    if not view.get("matched") or not view["show"]["ended"] or not view["show"]["complete"]:
+        return set()
+    wanted = set(shipment_ids)
+    return {p["id"] for b in view["buyers"] for p in b["packages"] if p["askable"]} & wanted
 
 
 @jobs.handler("whatnot_labels")
@@ -758,7 +867,11 @@ def labels_job(payload: dict) -> None:
     if connection.active(org_id) is None:
         return
     client = client_for(org_id)
-    for row_id in payload.get("shipment_ids", []):
+    ids = payload.get("shipment_ids", [])
+    allowed = _still_askable(org_id, payload.get("show_id"), ids)
+    for row_id in ids:
+        if row_id not in allowed:
+            continue  # the show or the buyer's packages changed since the press
         if not _claim(org_id, row_id, payload.get("user_id")):
             continue  # asked for already, labelled meanwhile, or not ours
         whatnot_id = db.session.scalar(
@@ -769,7 +882,7 @@ def labels_job(payload: dict) -> None:
             client.request("POST", f"/shipments/{whatnot_id}/generate_label")
         except WhatnotError as e:
             if isinstance(e, Unauthorized):
-                connection.note_failure(org_id, e)  # the token itself stopped working
+                connection.note_failure(org_id, e, "shipments")  # the token itself stopped working
             # A 429 was never processed (the client retried it first): definitely not made.
             problem = "not_now" if isinstance(e, Busy) else _label_code(e)
         if problem is not None:
@@ -856,6 +969,14 @@ def label_pdf(row: WhatnotShipment, *, slip: bool = True) -> tuple[bytes, str]:
     if not row.whatnot_id:
         raise ShippingError("This shipment was read from Seller Hub, not from Whatnot's API.")
     data = client_for(row.organization_id).shipment(row.whatnot_id)
+    # Asked of Whatnot now, not read from what is stored: it may have been cancelled since.
+    if _void(data.get("status"), data.get("replacement_shipment_id")) or _void(
+        row.api_status, row.replaced_by
+    ):
+        raise ShippingError(
+            "This package was cancelled or replaced on Whatnot, so its label is not valid. "
+            "Print the label of the package that replaced it."
+        )
     documents = data.get("documents") if isinstance(data.get("documents"), dict) else None
     if documents is None:
         if (data.get("status") or "") == OPEN:
@@ -960,7 +1081,7 @@ def print_labels(show: Show, *, slip: bool = True) -> dict:
         printed.append(row.id)
     if not printed:
         if isinstance(problem, Unauthorized):
-            connection.note_failure(show.organization_id, problem)
+            connection.note_failure(show.organization_id, problem, "shipments")
         raise ShippingError(
             str(problem)
             if isinstance(problem, ShippingError)
@@ -1197,6 +1318,39 @@ def sync_shipments_job(payload: dict) -> None:
                 WhatnotShipment.organization_id == org_id,
                 WhatnotShipment.whatnot_id.is_not(None),
                 WhatnotShipment.updated_at >= datetime.now(UTC) - timedelta(minutes=10),
+            )
+            .distinct()
+        )
+    )
+    # Also a show whose parcel left before the app could ship its order: a win waiting for
+    # its product (the winner's pick) keeps the order open, and naming it later changes no
+    # parcel, so nothing above would look at that show again. Only the parcel's own buyer's
+    # order counts, in any recording of the show (the parcel is kept on the first one, a
+    # buyer's order may be in another: `_view` reads them all).
+    parcel_show, recording = aliased(Show), aliased(Show)
+    shows |= set(
+        db.session.scalars(
+            select(WhatnotShipment.show_id)
+            .join(parcel_show, parcel_show.id == WhatnotShipment.show_id)
+            .join(
+                recording,
+                (recording.id == parcel_show.id)
+                | (recording.whatnot_show_id == parcel_show.whatnot_show_id),
+            )
+            .join(
+                Order,
+                (Order.show_id == recording.id)
+                & (
+                    func.lower(func.ltrim(Order.buyer_username, "@"))
+                    == func.lower(WhatnotShipment.recipient)
+                ),
+            )
+            .where(
+                WhatnotShipment.organization_id == org_id,
+                WhatnotShipment.whatnot_id.is_not(None),
+                WhatnotShipment.api_status.in_(WITH_CARRIER),
+                WhatnotShipment.captured_at >= datetime.now(UTC) - RECENT,
+                Order.status.in_((OrderStatus.paid, OrderStatus.picking, OrderStatus.packed)),
             )
             .distinct()
         )

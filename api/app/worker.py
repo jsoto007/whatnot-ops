@@ -113,20 +113,32 @@ def wait_for_schema(stopped: Callable[[], bool]) -> None:
 
 
 def _housekeeping() -> None:
-    """Give back jobs of a dead worker and prune old bookkeeping. Never raises: it must not
-    stop the queue, and whether the database is down is for the next poll to find out."""
-    try:
-        jobs.requeue_stale()
+    """Give back jobs of a dead worker, prune old bookkeeping and queue each shop's read of
+    Whatnot. Never raises: it must not stop the queue, and whether the database is down is
+    for the next poll to find out. Each step is its own try: a sweep that fails (a timeout
+    on a big DELETE, a lock) used to skip the line that queues the Whatnot read, so orders
+    stopped arriving with only a log line to say so."""
+    from .services.whatnot import sync as whatnot_sync
+
+    def pruned_log() -> None:
         pruned = {k: n for k, n in retention.sweep().items() if n}
         if pruned:
             log.info("pruned %s", pruned)
-        # The timer's read of Whatnot for each connected shop (one queued job per shop).
-        from .services.whatnot import sync as whatnot_sync
 
-        whatnot_sync.schedule_all()
-    except Exception:  # noqa: BLE001 - housekeeping must never stop the queue
-        _forget_connection()
-        log.exception("housekeeping failed; next try in %ss", SWEEP_SECONDS)
+    steps = (
+        ("requeue stale jobs", jobs.requeue_stale),
+        ("prune old rows", pruned_log),
+        # The timer's read of Whatnot for each connected shop (one queued job per shop).
+        ("queue the Whatnot read", whatnot_sync.schedule_all),
+    )
+    for what, step in steps:
+        try:
+            step()
+        except Exception:  # noqa: BLE001 - housekeeping must never stop the queue
+            _forget_connection()  # the failed statement leaves the session needing a rollback
+            log.exception(
+                "housekeeping failed (could not %s); next try in %ss", what, SWEEP_SECONDS
+            )
 
 
 def main() -> None:

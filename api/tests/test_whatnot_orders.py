@@ -17,6 +17,7 @@ from sqlalchemy import func, select, update
 from app.db import db
 from app.models import (
     AuditLog,
+    ChatMessage,
     InventoryMovement,
     Job,
     ReviewItem,
@@ -269,7 +270,16 @@ def test_comparing_shows_what_applying_would_do_and_changes_nothing(app, shop):
         ("quitter", "void", "skip"),
     ]
     assert len(uncovered) == 1 and result["complete"] is True  # ghost: a sale with no order
-    assert result["info"] == {"orders": 4, "giveaways": 0, "noBuyer": 0}
+    assert result["info"] == {
+        "orders": 4,
+        "giveaways": 0,
+        "noBuyer": 0,
+        "noBuyerPaid": 0,
+        "unreadable": 0,
+        "heldDeclines": 0,
+        "held": [],
+        "blind": False,
+    }
     assert snapshot(app) == before
 
 
@@ -487,7 +497,7 @@ def test_without_buyers_nothing_is_applied_or_called_out(app, shop):
     rows, _, result = compare(app, shop)
     assert rows == [("", "paid", "skip")] and result["info"]["noBuyer"] == 1
     with app.app_context():
-        with pytest.raises(whatnot_orders.OrdersError, match="who bought each order"):
+        with pytest.raises(whatnot_orders.OrdersError, match="who bought these orders"):
             whatnot_orders.apply(db.session.get(Show, shop["show"]))
         db.session.rollback()
     assert snapshot(app) == before
@@ -1028,6 +1038,70 @@ def test_a_win_line_worded_differently_from_the_order_is_still_the_same_win(
     assert (made, len(sale_rows(app))) == ((0, 1) if one_sale else (1, 2))
 
 
+def test_a_win_line_at_full_price_meets_the_discounted_order_that_made_the_sale(app, shop):
+    """Whatnot's order price is after the buyer's discount ($25.00 less $1.30 is $23.70);
+    the video player read the full $25.00. Same buyer, same lot, seconds apart: one win."""
+    order(shop, "lani808", "Red bundle", 2500, discount_cents=130)
+    read(app, shop)
+    assert apply(app, shop) == {"recorded": 1}
+    shop["say"](app, [win("lani808", "Red bundle", "25.00")])
+    assert run(app, shop["show"]).sales == 0 and len(sale_rows(app)) == 1
+    with app.app_context():
+        sale = db.session.scalar(select(Sale))
+        assert sale.event_id is not None and sale.price_cents == 2370
+
+
+def test_a_discounted_order_meets_the_sale_its_full_price_win_line_made(app, shop):
+    """The win line came first, at the full $25.00; the order says $23.70 after a discount."""
+    order(shop, "newbie", "Red bundle", 2500, discount_cents=130)
+    shop["say"](app, [win("newbie", "Red bundle", "25.00")])
+    assert run(app, shop["show"]).sales == 1
+    read(app, shop)
+    assert apply(app, shop) == {"unchanged": 1}
+    assert len(sale_rows(app)) == 1
+    assert all(r[4] for r in sale_rows(app))  # tied to its order, not a second sale
+    assert level(app, shop["red"]) == (2, 0)  # one unit reserved, not two
+    # Not a disagreement for a person to check; nothing about the sale is rewritten.
+    assert reviews(app) == []
+    with app.app_context():
+        assert db.session.scalar(select(Sale.price_cents)) == 2500
+    assert apply(app, shop) == {"unchanged": 1}  # and reading again changes nothing
+
+
+@pytest.mark.parametrize("line_price", ["30.00", "20.00", "23.00", "24.00", "25.01", "24.99"])
+def test_a_discount_never_makes_a_price_it_does_not_explain_the_same_win(app, shop, line_price):
+    """Order $23.70 after $1.30 off, a single item: it was $25.00 before the discount, not
+    $24.00 or $25.01. A line at $30.00 is far above it; $20.00 and $23.00 are below what was
+    paid, which no discount can raise. Each is another win, as without a discount."""
+    order(shop, "lani808", "Red bundle", 2500, discount_cents=130)
+    read(app, shop)
+    apply(app, shop)
+    shop["say"](app, [win("lani808", "Red bundle", line_price)])
+    assert run(app, shop["show"]).sales == 1 and len(sale_rows(app)) == 2
+
+
+def test_the_order_that_matches_without_a_discount_is_still_the_surest_match(app, shop):
+    """Two wins of one listing, one order with a discount and one without. A win line at the
+    price one order has exactly takes that order, not the discounted one."""
+    order(shop, "lani808", "Red bundle", 2500, discount_cents=130)
+    order(shop, "lani808", "Red bundle", 2500)
+    read(app, shop)
+    assert apply(app, shop) == {"recorded": 2}
+    shop["say"](app, [win("lani808", "Red bundle", "25.00")])
+    assert run(app, shop["show"]).sales == 0
+    with app.app_context():
+        tied = db.session.scalars(select(Sale).where(Sale.event_id.is_not(None))).all()
+        assert [s.price_cents for s in tied] == [2500]
+
+
+def test_a_discount_on_a_listing_with_two_buyers_never_crosses_buyers(app, shop):
+    order(shop, "lani808", "Red bundle", 2500, discount_cents=130)
+    read(app, shop)
+    apply(app, shop)
+    shop["say"](app, [win("someone_else", "Red bundle", "25.00")])
+    assert run(app, shop["show"]).sales == 1 and len(sale_rows(app)) == 2
+
+
 def test_a_win_line_long_after_the_order_is_another_win(app, shop):
     order(shop, "lani808", "Red bundle", created=shop["now"] - timedelta(hours=1))
     read(app, shop)
@@ -1533,6 +1607,99 @@ def test_without_a_webhook_the_timer_reads_an_ended_shows_parcels_in_full(
             assert shop["wshow"] not in asked and shipping._complete(shop["org"], ws) is False
 
 
+def test_a_show_whose_orders_were_read_just_after_it_ended_still_gets_its_parcels_read(
+    app, shop, monkeypatch
+):
+    """Production, 2026-11-15: the timer read a show's orders ten minutes after it ended,
+    while the app still had it as live (the show list is read every 15 minutes). When the
+    list then said "ended", the orders already counted as read in full, so nothing queued
+    the parcel read: the Shipping page said "still reading" for hours, with no labels to
+    make, and the orders were never applied as those of a show that is over."""
+    monkeypatch.delenv("JOBS_INLINE", raising=False)
+    from app.services import jobs
+    from app.services.whatnot import connection, shipping
+
+    set_mode(app, shop, "auto")
+    order(shop, "lani808", "Red bundle")
+    fake_show = shop["fake"].shows[shop["wshow"]]
+    ended_at = fake_show["ended_at"]
+    fake_show.update(status="live", ended_at=None)  # what the app last heard
+
+    def timer_pass():
+        sync.schedule_all()
+        while (job := jobs.run_once("t")) is not None:
+            assert job.status.value == "done"
+
+    def queued(kind):
+        return [
+            j.id
+            for j in db.session.scalars(select(Job).where(Job.kind == kind))
+            if j.payload.get("whatnot_show_id") == shop["wshow"]
+        ]
+
+    with app.app_context():
+        timer_pass()  # the orders are read; to the app the show is still on air
+        ws = db.session.scalar(select(WhatnotShow))
+        assert ws.status == "live" and ws.orders_synced_at is not None
+        assert queued("whatnot_sync_shipments") == []
+        # The orders are applied seconds later: long before the list says "ended".
+        db.session.execute(
+            update(Job)
+            .where(Job.kind == "whatnot_apply_show")
+            .values(run_at=datetime.now(UTC) - timedelta(seconds=1))
+        )
+        db.session.commit()
+        while jobs.run_once("t") is not None:
+            pass
+        applied = queued("whatnot_apply_show")
+        assert applied and not queued("pick_show")
+        # Whatnot's list now says it ended, before that read began.
+        fake_show.update(status="ended", ended_at=ended_at)
+        connection.sync_state(shop["org"], "shows").last_started_at = None  # the list is due
+        db.session.commit()
+        timer_pass()
+        db.session.expire_all()
+        ws = db.session.scalar(select(WhatnotShow))
+        assert ws.status == "ended" and ws.orders_synced_at >= ws.ended_at
+        assert len(queued("whatnot_sync_shipments")) == 1
+        assert shipping._complete(shop["org"], ws) is True
+        # Applied once more now that it is over, and its picks are read when they close.
+        assert len(queued("whatnot_apply_show")) == len(applied) + 1
+        assert queued("pick_show")
+        timer_pass()  # and only once: the next pass has nothing left to ask for
+        assert len(queued("whatnot_sync_shipments")) == 1
+
+
+def test_a_parcel_read_that_did_not_work_is_not_asked_for_again_on_every_pass(app, shop):
+    """The timer runs every five minutes for three days after a show. A read that keeps
+    failing is asked for again a quarter of an hour later, not on each pass."""
+    from app.services.whatnot import connection
+
+    read(app, shop)  # the show has ended and its orders were read after that
+    with app.app_context():
+        ws = db.session.scalar(select(WhatnotShow))
+        now = datetime.now(UTC)
+        owed = lambda at=now: [w.id for w in sync._parcels_owed(shop["org"], at)]  # noqa: E731
+        assert owed() == [ws.id]  # never asked for
+        state = connection.sync_state(shop["org"], f"shipments:{ws.id}")
+        state.last_started_at = now  # asked for, and no read has worked
+        db.session.flush()
+        assert owed() == []
+        assert owed(now + sync.PARCELS_RETRY - timedelta(seconds=1)) == []
+        assert owed(now + sync.PARCELS_RETRY) == [ws.id]
+        state.last_ok_at = ws.ended_at - timedelta(minutes=1)  # a read from before the end
+        db.session.flush()
+        assert owed(now + sync.PARCELS_RETRY) == [ws.id]
+        state.last_ok_at = ws.ended_at + timedelta(minutes=1)  # read in full since: settled
+        db.session.flush()
+        assert owed(now + sync.PARCELS_RETRY) == []
+        # A show that ended longer ago is left to the read of recent parcels.
+        state.last_ok_at = None
+        db.session.flush()
+        assert owed(ws.ended_at + sync.PARCELS_AFTER + timedelta(minutes=1)) == []
+        db.session.rollback()
+
+
 def test_only_the_next_few_shows_still_to_come_are_listed(app, client, shop, sign_in):
     """The live shop's list held 44 "scheduled" shows, several dated days ago: the Shows
     page opened with all of them above the shows the shop had recorded."""
@@ -1588,3 +1755,240 @@ def test_an_order_with_no_time_never_hides_a_failed_one():
     ]
     whatnot_orders._skip_retried(rows)
     assert rows[0].action == ""  # nothing bounds it in time: still a decline
+
+
+def test_a_buyer_whose_name_differs_only_in_case_has_one_order_for_the_show(app, shop):
+    """Chat says "Lani808", Whatnot's order says "lani808": one person, one Order (one slip,
+    one package), however the two spell the name."""
+    from app.models import Order
+
+    shop["say"](app, [win("Lani808", "Red bundle", "25.00")])
+    run(app, shop["show"])
+    order(shop, "lani808", LOT, 700, created=datetime.now(UTC) - timedelta(seconds=20))
+    read(app, shop)
+    assert apply(app, shop)["recorded"] == 1  # (the chat win has no order of its own)
+    with app.app_context():
+        orders = db.session.scalars(select(Order)).all()
+        assert len(orders) == 1
+        assert len(orders[0].sales) == 2
+        assert {s.buyer_username.lower() for s in orders[0].sales} == {"lani808"}
+
+
+@pytest.mark.parametrize("stage", ["picking", "shipped"])
+def test_an_order_cancelled_on_whatnot_after_picking_or_shipping_is_flagged_not_restocked(
+    app, shop, stage
+):
+    """The unit may be in a box or on its way: stock is not put back by itself and a person
+    is told (while picking: take it out and count it back; shipped: the sale stands)."""
+    from app.models import Order, OrderStatus
+
+    shop["say"](app, [win("lani808", "Red bundle")])
+    run(app, shop["show"])
+    o = order(shop, "lani808", "Red bundle")
+    read(app, shop)
+    assert apply(app, shop) == {"unchanged": 1}
+    assert level(app, shop["red"]) == (2, 0)
+    with app.app_context():
+        mine = db.session.scalar(select(Order))
+        mine.status = OrderStatus(stage)
+        mine.picked_at = datetime.now(UTC)
+        if stage == "shipped":
+            for s in mine.sales:
+                s.status = SaleStatus.fulfilled
+        for s in mine.sales:
+            s.paid_at = datetime.now(UTC) - timedelta(minutes=5)
+        db.session.commit()
+    shop["fake"].set_order_status(o["id"], "cancelled")
+    read(app, shop)
+    summary = apply(app, shop)
+    assert level(app, shop["red"]) == (2, 0)  # nothing went back on the shelf by itself
+    with app.app_context():
+        notes = [(r.reason, r.summary) for r in db.session.scalars(select(ReviewItem))]
+        if stage == "picking":
+            assert [n[0] for n in notes] == ["closed_after_picking"]
+            assert summary == {"cancel": 1}
+        else:  # a shipped sale is left standing and a person is told, in words
+            assert [n[0] for n in notes] == ["unmatched_payment"]
+            assert "already shipped here, but cancelled on Whatnot" in notes[0][1]
+            assert summary == {"unmatched": 1}
+            assert db.session.scalar(select(Sale.status)) is SaleStatus.fulfilled
+        assert db.session.scalar(select(Order)).status.value == stage  # the package is left alone
+
+
+def test_an_orders_discount_is_stored_and_its_prices_are_the_discounted_ones(app, shop):
+    order(shop, "lani808", "Red bundle", 2500, discount_cents=130)
+    order(shop, "newbie", "Red bundle", 2500)  # no discount at all
+    read(app, shop)
+    with app.app_context():
+        got = {
+            o.buyer_username: (o.discount_cents, o.subtotal_cents, o.items[0].unit_price_cents)
+            for o in db.session.scalars(select(WhatnotOrder))
+        }
+    assert got == {"lani808": (130, 2370, 2370), "newbie": (None, 2500, 2500)}
+
+
+def test_a_discount_on_an_order_of_several_items_or_several_units(app, shop):
+    """One item, two units: the discount is split over the units ($2.60 / 2 = $1.30 each).
+    Several items: how Whatnot splits the order's discount is not known, so a line may sit
+    anywhere from a cent up to the whole discount below the order's price, and no further."""
+    shop["fake"].add_order(
+        show_id=shop["wshow"],
+        buyer="lani808",
+        items=[{"title": "Red bundle", "price_cents": 2500, "quantity": 2}],
+        discount_cents=260,
+        created=datetime.now(UTC) - timedelta(seconds=20),
+    )
+    shop["fake"].add_order(
+        show_id=shop["wshow"],
+        buyer="newbie",
+        items=[{"title": "Red bundle", "price_cents": 2500}, {"title": LOT, "price_cents": 900}],
+        discount_cents=200,
+        created=datetime.now(UTC) - timedelta(seconds=20),
+    )
+    read(app, shop)
+    assert apply(app, shop) == {"recorded": 3}
+    shop["say"](
+        app,
+        [
+            win("lani808", "Red bundle", "25.00"),  # $23.70 + $1.30 a unit: the same win
+            win("newbie", "Red bundle", "25.00"),  # $23.00 + up to $2.00: the same win
+        ],
+    )
+    assert run(app, shop["show"]).sales == 0
+    shop["say"](app, [win("newbie", "Red bundle", "25.50")])  # $2.50 above: more than it took off
+    assert run(app, shop["show"]).sales == 1
+
+
+def _two_item_order(shop, discount):
+    """lot #73 at $9.00 beside a $10.00 item; the fake takes the discount off the first item."""
+    shop["fake"].add_order(
+        show_id=shop["wshow"],
+        buyer="lani808",
+        items=[{"title": "Blue thing", "price_cents": 1000}, {"title": LOT, "price_cents": 900}],
+        discount_cents=discount,
+        created=datetime.now(UTC) - timedelta(seconds=20),
+    )
+
+
+@pytest.mark.parametrize("discount", [0, 200])
+def test_a_price_gap_on_an_order_of_several_items_still_goes_to_a_person(app, shop, discount):
+    """The lot-numbered auction night: the player read $11.00, Whatnot's order says $9.00 for
+    the lot. With several items the order's discount cannot be placed on one of them, so it
+    never explains a gap: a person looks, with or without a discount on the order."""
+    shop["say"](app, [win("lani808", LOT, "11.00")])
+    run(app, shop["show"])
+    _two_item_order(shop, discount)
+    read(app, shop)
+    apply(app, shop)
+    assert "price_mismatch" in [r[0] for r in reviews(app)]
+    with app.app_context():
+        assert db.session.scalar(select(Sale.price_cents).where(Sale.item_text == LOT)) == 1100
+
+
+def test_an_order_discount_changes_no_sale_price(app, shop):
+    """A discount that explains a gap is no disagreement, and nothing is rewritten (a changed
+    price would need its own audit row and would no longer match what the player shows)."""
+    shop["say"](app, [win("newbie", "Red bundle", "25.00")])
+    run(app, shop["show"])
+    order(shop, "newbie", "Red bundle", 2500, discount_cents=130)
+    read(app, shop)
+    with app.app_context():
+        before = db.session.scalar(select(func.count()).select_from(AuditLog))
+    assert apply(app, shop) == {"unchanged": 1}
+    with app.app_context():
+        assert db.session.scalar(select(Sale.price_cents)) == 2500
+        assert db.session.scalar(select(func.count()).select_from(AuditLog)) == before
+
+
+def _second_laptop(app, shop, body, at):
+    with app.app_context():
+        first = db.session.get(Show, shop["show"])
+        second = Show(
+            organization_id=shop["org"],
+            show_key="second-laptop",
+            started_at=first.started_at + timedelta(minutes=1),
+            show_date=first.show_date,
+        )
+        db.session.add(second)
+        db.session.flush()
+        db.session.add(
+            ChatMessage(
+                show_id=second.id,
+                client_id="b" * 16,
+                seq=1,
+                username="",
+                body=body,
+                raw_text=body,
+                source="player",
+                captured_at=at,
+            )
+        )
+        db.session.commit()
+        return second.id
+
+
+def test_a_second_laptops_full_price_line_after_an_order_made_a_discounted_sale(app, shop):
+    """Order first: the sale carries $23.70, and the first laptop's win line claims it. The
+    second laptop's copy of the banner reads $25.00: still the same win, not a second sale."""
+    order(shop, "lani808", "Red bundle", 2500, discount_cents=130)
+    read(app, shop)
+    apply(app, shop)
+    shop["say"](app, [win("lani808", "Red bundle", "25.00")])
+    run(app, shop["show"])
+    with app.app_context():
+        at = db.session.scalar(select(ChatMessage.captured_at).order_by(ChatMessage.id.desc()))
+    second = _second_laptop(app, shop, "lani808 won the auction for Red bundle for $25.00", at)
+    run(app, second)
+    assert len(sale_rows(app)) == 1
+
+
+def test_a_second_laptops_full_price_line_after_a_discounted_order_is_the_same_win(app, shop):
+    """The sale keeps the full price the player showed, so another laptop's copy of that
+    banner (same buyer, lot and price, late upload) finds it and no second sale is made."""
+    shop["say"](app, [win("lani808", "Red bundle", "25.00")])
+    assert run(app, shop["show"]).sales == 1
+    order(shop, "lani808", "Red bundle", 2500, discount_cents=130)
+    read(app, shop)
+    apply(app, shop)
+    with app.app_context():
+        at = db.session.scalar(select(ChatMessage.captured_at).order_by(ChatMessage.id.desc()))
+    second_id = _second_laptop(app, shop, "lani808 won the auction for Red bundle for $25.00", at)
+    run(app, second_id)
+    assert len(sale_rows(app)) == 1
+
+
+def test_a_full_price_decline_after_a_discounted_order_finds_its_sale(app, shop):
+    """Whatnot's player shows the decline at the price the win showed, $25.00. The order is
+    still settling: one Whatnot says is paid is never closed by the stream (see
+    test_money_review_fixes)."""
+    shop["say"](app, [win("lani808", "Red bundle", "25.00")])
+    run(app, shop["show"])
+    order(shop, "lani808", "Red bundle", 2500, discount_cents=130, status="pending")
+    read(app, shop)
+    apply(app, shop)
+    shop["say"](app, [("", "lani808 payment declined for Red bundle for $25.00", "player")])
+    run(app, shop["show"])
+    with app.app_context():
+        sale = db.session.scalar(select(Sale))
+        notes = [(r.reason, r.sale_id) for r in db.session.scalars(select(ReviewItem))]
+    assert ("no_open_sale", None) not in notes
+    assert any(sale_id == sale.id for _, sale_id in notes)
+
+
+def test_a_full_price_decline_after_an_order_made_a_discounted_sale(app, shop):
+    """Order first: the sale the order made carries what Whatnot charged ($23.70); the stream
+    then shows the decline at the price the win showed ($25.00). It finds that sale (the order
+    still settling: one Whatnot says is paid is left standing)."""
+    order(shop, "lani808", "Red bundle", 2500, discount_cents=130, status="pending")
+    read(app, shop)
+    apply(app, shop)
+    shop["say"](app, [win("lani808", "Red bundle", "25.00")])  # claimed by the order's sale
+    run(app, shop["show"])
+    shop["say"](app, [("", "lani808 payment declined for Red bundle for $25.00", "player")])
+    run(app, shop["show"])
+    with app.app_context():
+        sale = db.session.scalar(select(Sale))
+        notes = [(r.reason, r.sale_id) for r in db.session.scalars(select(ReviewItem))]
+    assert len(sale_rows(app)) == 1
+    assert ("no_open_sale", None) not in notes
+    assert any(sale_id == sale.id for _, sale_id in notes)

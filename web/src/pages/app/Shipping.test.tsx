@@ -196,6 +196,22 @@ test('pickups, unknown statuses and unconfirmed requests each read in words', as
   expect(screen.getByTestId('shipping-make-labels').textContent).toBe('No labels to make')
 })
 
+test('an order cancelled in a labelled package says so on the package', async () => {
+  open(
+    doc([
+      buyer('lani808', 'labelled', [pack({ status: 'label_generated', items: 2, cancelledItems: 1 })]),
+      buyer('kat', 'labelled', [pack({ id: 12, status: 'label_generated', items: 0, cancelledItems: 2 })]),
+      buyer('mo', 'labelled', [pack({ id: 13, status: 'label_generated', items: 0, otherItems: 2, cancelledItems: 1 })]),
+    ]),
+    ALL,
+  )
+  const lani = await screen.findByTestId('ship-lani808')
+  expect(within(lani).getByTestId('ship-cancelled').textContent).toBe('1 item in this package was cancelled, and its label may still list it. Take it out of the box if it is there.')
+  expect(within(screen.getByTestId('ship-kat')).getByTestId('ship-cancelled').textContent).toBe('Everything in this package was cancelled. Do not ship it.')
+  // The parcel still holds another show's paid items: it ships, minus the cancelled one.
+  expect(within(screen.getByTestId('ship-mo')).getByTestId('ship-cancelled').textContent).toBe('1 item in this package was cancelled, and its label may still list it. Take it out of the box if it is there.')
+})
+
 test('a parcel shared with a show that is live now waits, and says so', async () => {
   open(doc([buyer('lani808', 'shared', [pack({ otherItems: 1, liveElsewhere: true })])]), ALL)
   const row = await screen.findByTestId('ship-lani808')

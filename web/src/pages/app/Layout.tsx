@@ -184,7 +184,7 @@ export function AppLayout() {
       <div className="main-col">
         <main className="content">
           <LicenceBanner />
-          <WhatnotBanner show={!!counts?.whatnotProblem} />
+          <WhatnotBanner show={!!counts?.whatnotProblem} notice={counts?.whatnotNotice} manager={can('whatnot.view')} />
           <UpdateBanner enabled={can('shows.view')} />
           <Outlet />
         </main>

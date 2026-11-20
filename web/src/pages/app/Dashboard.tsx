@@ -4,8 +4,10 @@ import { Link } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { BuyerFlagChip } from '../../components/BuyerFlag'
 import { Icon, type IconName } from '../../components/Icon'
+import { LiveGaps } from '../../components/LiveGaps'
 import { apiGet, money, type Attention, type Overview, type ShowTiles, type TopBuyer, type TopSku, type WhatnotMoney, type WhatnotMoneyData, type WhatnotShowMoney, type WhatnotTopBuyer } from '../../lib/api'
 import { fmtDate, fmtWhen, SHOP_TZ } from '../../lib/format'
+import { salesLineUpWords } from '../../lib/labels'
 
 const shortMoney = (cents: number) => (cents % 100 === 0 ? `$${(cents / 100).toLocaleString()}` : money(cents))
 const weekdayDate = (iso: string) => new Date(iso + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
@@ -19,9 +21,20 @@ function duration(startIso: string, endIso: string): string {
 
 /** The four numbers an owner asks about first (used on a show page). */
 export function Kpis({ t, totals, label }: { t?: ShowTiles; totals?: Record<string, number>; label?: string }) {
-  const v = (k: keyof ShowTiles) => (t ? (t[k] as number) : (totals?.[k] ?? 0))
+  const v = (k: keyof ShowTiles) => (t ? ((t[k] as number | undefined) ?? 0) : (totals?.[k] ?? 0))
   const buyers = v('buyers')
-  const avg = buyers ? Math.round(v('revenuePaidCents') / buyers) : 0
+  // "Paid revenue" is what is paid here: the same figure as the Revenue sheet and the Buyers
+  // page. Wins Whatnot says are paid whose product is still to pick (the winner's pick) are
+  // shown apart, in the note (dashboard.py adds nothing to "paid" for them).
+  const toPick = v('revenueToPickCents')
+  const paid = v('revenuePaidCents')
+  const avg = buyers ? Math.round(paid / buyers) : 0
+  const paidNote = toPick
+    ? `${money(toPick)} more paid on Whatnot, ${v('toPick') === 1 ? 'product' : 'products'} to pick`
+    : v('revenuePendingCents')
+      ? `${money(v('revenuePendingCents'))} in older sales awaiting the payment file`
+      : 'charged at the win'
+
   const tile = (title: string, value: string | number, id: string, note: string) => (
     <div className="tile" data-testid={`tile-${id}`}>
       <div className="tile-label">{title}</div>
@@ -31,7 +44,7 @@ export function Kpis({ t, totals, label }: { t?: ShowTiles; totals?: Record<stri
   )
   return (
     <div className="tiles primary" aria-label={label ?? 'Key numbers'}>
-      {tile('Paid revenue', money(v('revenuePaidCents')), 'paid', v('revenuePendingCents') ? `${money(v('revenuePendingCents'))} in older sales awaiting the payment file` : 'charged at the win')}
+      {tile('Paid revenue', money(paid), 'paid', paidNote)}
       {tile('Items sold', v('itemsSold'), 'items', `${v('cancelled')} cancelled or failed`)}
       {tile('Buyers', buyers, 'buyers', buyers ? `${money(avg)} paid per buyer` : 'no buyers yet')}
       {tile('Messages', v('messages'), 'messages', `${v('gifts')} gifts · ${v('noPicks')} no-picks · ${v('noWinner')} no winner`)}
@@ -247,8 +260,14 @@ function WhatnotMoneyCard({ m, chosen, onDays, stale }: { m: WhatnotMoneyData; c
   const days = m.days
   const c = m.customers
   const split = c.new.paidCents + c.returning.paidCents
+  const lineUp = salesLineUpWords(s)
   const pct = (x: number) => `${split ? (100 * x) / split : 0}%`
-  const since = c.knownSince ? new Date(c.knownSince).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: SHOP_TZ }) : null
+  const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: SHOP_TZ })
+  const since = c.knownSince ? day(c.knownSince) : null
+  // Null: the older orders are still being read. Missing (an older server) says nothing.
+  const catchingUp = m.ordersCompleteSince === null
+  const completeSince = m.ordersCompleteSince ? day(m.ordersCompleteSince) : null
+  const completeUntil = m.ordersCompleteUntil ? day(m.ordersCompleteUntil) : null
   return (
     <section className={'dcard money' + (stale ? ' stale' : '')} aria-labelledby="money-title" aria-busy={stale} data-testid="whatnot-money">
       <div data-testid="tile-paid">
@@ -260,6 +279,16 @@ function WhatnotMoneyCard({ m, chosen, onDays, stale }: { m: WhatnotMoneyData; c
         </div>
         <div className="money-big">{money(s.paidCents)}</div>
         <div className="muted small">{s.orders ? `${plural(s.orders, 'paid order', 'paid orders')} · ${money(s.averageOrderCents)} per order` : 'no paid orders yet'}</div>
+        {lineUp && (
+          <div className="muted small" data-testid="sales-line-up">
+            {lineUp}
+          </div>
+        )}
+        {catchingUp && (
+          <div className="muted small" data-testid="orders-catching-up">
+            Still reading Whatnot’s older orders, so the earlier days of these {days} may be short.
+          </div>
+        )}
       </div>
       {split > 0 && (
         <div data-testid="customers">
@@ -308,6 +337,7 @@ function WhatnotMoneyCard({ m, chosen, onDays, stale }: { m: WhatnotMoneyData; c
       <div className="money-foot muted small">
         <span>
           {m.ordersReadAt ? `Orders read from Whatnot ${fmtWhen(m.ordersReadAt)}` : 'Orders not read from Whatnot yet'}
+          {completeSince ? ` · all orders read from ${completeSince}${completeUntil ? ` to ${completeUntil}` : ''}` : ''}
           {s.otherCurrencyOrders ? ` · ${plural(s.otherCurrencyOrders, 'order', 'orders')} in another currency not added in` : ''}
         </span>
         <Link to="/app/reports">Fees and payouts →</Link>
@@ -339,6 +369,8 @@ const REASON_WORDS: Record<string, [string, string]> = {
   order_declined: ['declined payment with no sale', 'declined payments with no sale'],
   closed_after_picking: ['item to take out of a package', 'items to take out of a package'],
   swapped_after_picking: ['item to swap in a package', 'items to swap in a package'],
+  orders_left_out: ['show with orders left out', 'shows with orders left out'],
+  won_after_shipping: ['win after its order shipped', 'wins after their order shipped'],
   unmatched_payment: ['payment with no sale', 'payments with no sale'],
   cancel_sale: ['possible cancellation', 'possible cancellations'],
   payment_failed: ['payment problem', 'payment problems'],
@@ -474,7 +506,7 @@ function LiveBand({ live, host }: { live: NonNullable<Attention['live']>; host: 
         </div>
         <div>
           <span>Sales so far</span>
-          <b>{shortMoney(live.revenuePaidCents + live.revenuePendingCents)}</b>
+          <b>{shortMoney(live.revenueSoldCents ?? live.revenuePaidCents + live.revenuePendingCents)}</b>
         </div>
       </div>
       <div className="live-side">
@@ -647,6 +679,8 @@ function ShowsCard({ shows, wn }: { shows: ShowTiles[]; wn?: Map<number, Whatnot
 
 function MoneyCard({ totals }: { totals: Record<string, number> }) {
   const paid = totals.revenuePaidCents ?? 0
+  // Paid on Whatnot, product still to pick: shown apart, never added to "Paid" here.
+  const toPick = totals.revenueToPickCents ?? 0
   const pending = totals.revenuePendingCents ?? 0
   const sold = paid + pending
   const share = sold ? Math.round((100 * paid) / sold) : 0
@@ -659,6 +693,11 @@ function MoneyCard({ totals }: { totals: Record<string, number> }) {
         </h2>
         <div className="money-big">{money(paid)}</div>
         <div className="muted small">{sold ? `of ${money(sold)} sold · ${share}% collected` : 'no sales yet'}</div>
+        {toPick > 0 && (
+          <div className="muted small" data-testid="money-to-pick">
+            {money(toPick)} more paid on Whatnot, {(totals.toPick ?? 0) === 1 ? 'product' : 'products'} to pick
+          </div>
+        )}
       </div>
       {sold > 0 && (
         <div>
@@ -744,6 +783,7 @@ export function Dashboard() {
         )}
       </header>
 
+      <LiveGaps gaps={d.attention.liveGaps ?? []} link />
       {d.attention.live && <LiveBand live={d.attention.live} host={me?.organization.hostUsername ?? null} />}
 
       <div className="dash-row">

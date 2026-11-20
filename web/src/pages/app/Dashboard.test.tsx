@@ -44,6 +44,8 @@ const whatnot = (days: number): WhatnotMoney => ({
   days,
   currency: 'USD',
   ordersReadAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+  ordersCompleteSince: '2026-08-21T12:00:00+00:00',
+  ordersCompleteUntil: '2026-11-18T15:00:00+00:00',
   sales: {
     paidCents: days === 7 ? 1700 : 5045,
     orders: 3,
@@ -54,6 +56,9 @@ const whatnot = (days: number): WhatnotMoney => ({
     pendingOrders: 1,
     cancelledCents: 500,
     cancelledOrders: 1,
+    discountCents: 130,
+    cancelledDiscountCents: 0,
+    grossCents: 5045 + 130 + 500,
     giveaways: 1,
     otherCurrencyOrders: 0,
   },
@@ -111,6 +116,8 @@ test("connected to Whatnot, the money, the shows' sales and the top buyers are W
   expect(split.textContent).toContain('Returning $8.45 · 1 buyer')
   expect(split.textContent).toContain('Returning: bought here before these 30 days, as far back as Whatnot’s orders in the app go (Oct 4).')
   expect(split.textContent).toContain('$10.00 more is still being paid.')
+  // What lies between Sales and Whatnot's Gross Sales; a declined payment is never said (Javier's call 2026-11-14).
+  expect(screen.getByTestId('sales-line-up').textContent).toBe('Before discounts and cancellations: $56.75 (Sales plus $1.30 in discounts and $5.00 from 1 cancelled order).')
   expect(card.textContent).not.toMatch(/failed|Failed|declined/)
   expect(screen.getByTestId('tile-net').textContent).toContain('$19.97')
   expect(screen.getByTestId('tile-net').textContent).toContain('ledger lines of these 30 days, through Nov 13')
@@ -160,6 +167,32 @@ test("connected to Whatnot, the money, the shows' sales and the top buyers are W
   expect(screen.getByRole('button', { name: '7 days' })).toHaveAttribute('aria-pressed', 'true')
 })
 
+test('the card says which days every order is read for, and nothing worrying once it is', async () => {
+  page(['shows.view', 'reports.view'], whatnot)
+  const card = await screen.findByTestId('whatnot-money')
+  expect(card.textContent).toContain('Orders read from Whatnot 5 min ago · all orders read from Aug 21 to Nov 18')
+  expect(screen.queryByTestId('orders-catching-up')).toBeNull()
+})
+
+test('while the older orders are still being read the card says the earlier days may be short', async () => {
+  page(['shows.view', 'reports.view'], (days) => ({ ...(whatnot(days) as object), ordersCompleteSince: null }))
+  const card = await screen.findByTestId('whatnot-money')
+  expect(screen.getByTestId('orders-catching-up').textContent).toBe('Still reading Whatnot’s older orders, so the earlier days of these 30 may be short.')
+  expect(card.textContent).not.toContain('all orders read from')
+  expect(screen.getByTestId('tile-paid').textContent).toContain('$50.45') // the figure itself is unchanged
+})
+
+test('a server that does not say how far back orders are read adds no note', async () => {
+  page(['shows.view', 'reports.view'], (days) => {
+    const older: Record<string, unknown> = { ...(whatnot(days) as object) }
+    delete older.ordersCompleteSince
+    return older
+  })
+  const card = await screen.findByTestId('whatnot-money')
+  expect(screen.queryByTestId('orders-catching-up')).toBeNull()
+  expect(card.textContent).not.toContain('all orders read from')
+})
+
 test('a shop not connected to Whatnot keeps the app’s own numbers', async () => {
   page(['shows.view', 'reports.view'], () => ({ connected: false }))
   expect((await screen.findByTestId('tile-paid')).textContent).toContain('Paid revenue · all shows')
@@ -179,4 +212,43 @@ test('when Whatnot’s numbers cannot be read the page says so over the app’s 
   page(['shows.view', 'reports.view'], () => ({ error: 'Try again in a minute.' }), 429)
   expect(await screen.findByText(/Could not load Whatnot’s numbers/)).toBeInTheDocument()
   expect(screen.getByTestId('tile-paid').textContent).toContain('Paid revenue · all shows')
+})
+
+test("a show's paid wins still waiting for the winner's pick are shown apart from Paid revenue", async () => {
+  const { Kpis } = await import('./Dashboard')
+  const t = { ...tiles(9, '2026-11-15', 0), toPick: 3, revenueToPickCents: 3300 }
+  render(<Kpis t={t} />)
+  const paid = screen.getByTestId('tile-paid')
+  // "Paid revenue" is what is paid here, the same figure as the sheet and the Buyers page.
+  expect(paid).toHaveTextContent('Paid revenue$0.00')
+  expect(paid).toHaveTextContent('$33.00 more paid on Whatnot, products to pick')
+  expect(screen.getByTestId('tile-buyers')).toHaveTextContent('$0.00 paid per buyer')
+})
+
+test('a live show with no laptop recording it is said on the dashboard, with a way to the show', async () => {
+  const withGaps = {
+    ...overview,
+    attention: {
+      ...overview.attention,
+      liveGaps: [
+        { showId: 7, title: 'Friday night', code: 'no_recording', minutes: 0 },
+        { showId: 7, title: 'Friday night', code: 'late_recording', minutes: 12 },
+      ],
+    },
+  }
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.startsWith('/api/dashboard/whatnot') ? json({ connected: false }) : json(withGaps))))
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <AuthContext.Provider value={auth(['shows.view'])}>
+        <MemoryRouter>
+          <Dashboard />
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+  const card = await screen.findByTestId('live-gaps')
+  expect(card.textContent).toContain('No laptop is recording the chat.')
+  expect(card.textContent).toContain('started recording 12 minutes after the show went live')
+  expect(within(card).getAllByRole('link', { name: 'Open the show' })[0]).toHaveAttribute('href', '/app/shows/7')
+  expect(card.textContent).not.toMatch(/no_recording|late_recording/)
 })

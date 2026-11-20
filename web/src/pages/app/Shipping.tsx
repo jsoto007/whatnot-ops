@@ -296,6 +296,13 @@ function Package({ p, canPrint, many, onPrinted }: { p: ShippingPackage; canPrin
           Also holds {plural(p.otherItems, 'item', 'items')} from another show{p.liveElsewhere ? ' that is live now: wait for it to end before making the label.' : ': pack them together.'}
         </div>
       )}
+      {!!p.cancelledItems && (
+        <div className="form-error small" data-testid="ship-cancelled">
+          {p.items === 0 && !p.otherItems
+            ? 'Everything in this package was cancelled. Do not ship it.'
+            : `${plural(p.cancelledItems, 'item', 'items')} in this package ${p.cancelledItems === 1 ? 'was' : 'were'} cancelled, and its label may still list ${p.cancelledItems === 1 ? 'it' : 'them'}. Take ${p.cancelledItems === 1 ? 'it' : 'them'} out of the box if ${p.cancelledItems === 1 ? 'it is' : 'they are'} there.`}
+        </div>
+      )}
       {p.labelProblem ? (
         <div className="form-error small">{labelProblemLabel(p.labelProblem)}.</div>
       ) : (

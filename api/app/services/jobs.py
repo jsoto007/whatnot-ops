@@ -21,6 +21,10 @@ HANDLERS: dict[str, Callable[[dict], object]] = {}
 # Claimed ahead of the rest: a live show's parse, and a reset email someone is waiting
 # for (both quick), never behind AI checks that each wait on a vendor.
 FIRST = ("parse_show", "reset_mail")
+# Next: the timer's read of Whatnot and what follows it. A few quick jobs per shop every
+# few minutes; behind a hundred AI checks they used to wait until the checks were done, so
+# paid orders reached the app far later than the poll interval says.
+WHATNOT_READS = ("whatnot_sync", "whatnot_sync_show", "whatnot_apply_show", "whatnot_event")
 
 
 def handler(kind: str):
@@ -70,12 +74,13 @@ def enqueue(
 def claim(worker: str) -> Job | None:
     """Take the next due job, or None. Runs in its own short transaction. Parsing goes
     first: it keeps a live show's numbers current, and one lane must not leave it queued
-    behind AI checks that each wait on a vendor."""
+    behind AI checks that each wait on a vendor. Whatnot's reads come second, ahead of the
+    AI checks for the same reason (never ahead of a parse)."""
     now = datetime.now(UTC)
     job = db.session.scalar(
         select(Job)
         .where(Job.status == JobStatus.queued, Job.run_at <= now)
-        .order_by(case((Job.kind.in_(FIRST), 0), else_=1), Job.id)
+        .order_by(case((Job.kind.in_(FIRST), 0), (Job.kind.in_(WHATNOT_READS), 1), else_=2), Job.id)
         .limit(1)
         .with_for_update(skip_locked=True)
     )

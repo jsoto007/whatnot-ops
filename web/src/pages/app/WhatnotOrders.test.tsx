@@ -94,10 +94,21 @@ test('a show still live does not call out sales with no order, and they do not c
   expect(screen.getByText('Their orders may simply not have arrived yet.')).toBeTruthy()
 })
 
-test('without buyers the page says what is missing and Apply is off', async () => {
-  open({ ...compared, info: { orders: 3, giveaways: 0, noBuyer: 3 } }, true)
-  expect((await screen.findByTestId('whatnot-no-buyers')).textContent).toContain('permission to read customers')
+test('with hardly a buyer named the page says so and Apply is off', async () => {
+  open({ ...compared, info: { orders: 3, giveaways: 0, noBuyer: 3, blind: true } }, true)
+  const note = (await screen.findByTestId('whatnot-no-buyers')).textContent ?? ''
+  expect(note).toContain('none of this show')
+  expect(note).not.toContain('permission')
   expect((screen.getByTestId('whatnot-apply') as HTMLButtonElement).disabled).toBe(true)
+})
+
+test('one order with no buyer is left out and the rest can still be applied', async () => {
+  open({ ...compared, info: { orders: 40, giveaways: 0, noBuyer: 1, blind: false, unreadable: 2 } }, true)
+  const note = (await screen.findByTestId('whatnot-no-buyers')).textContent ?? ''
+  expect(note).toContain('left out')
+  expect(note).not.toContain('permission')
+  expect(screen.getByTestId('whatnot-unreadable').textContent).toContain('2 items named no listing')
+  expect((screen.getByTestId('whatnot-apply') as HTMLButtonElement).disabled).toBe(false)
 })
 
 test('an unmatched show can be matched by hand', async () => {

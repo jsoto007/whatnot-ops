@@ -451,3 +451,22 @@ test("a win still waiting for its winner's pick can be made a two for one, and b
     orders.pop()
   }
 })
+
+test("a lot whose title says the winner chooses is never offered as 'name it once'", async () => {
+  // Each winner of "CHOOSE ANY PRODUCT YOU WANT #N" picked their own product in chat.
+  const choose = (id: number, buyer: string, lot: number) =>
+    order({
+      id,
+      buyer,
+      toPick: 1,
+      sales: [sale({ buyer, orderId: id, item: `CHOOSE ANY PRODUCT YOU WANT #${lot}`, itemTitle: 'CHOOSE ANY PRODUCT YOU WANT', lot, choiceTitle: true, toPick: true, externalOrderId: `9${lot}`, review: { id: 100 + id, reason: 'unmatched_item' } })],
+    })
+  mount(undefined, '/app/orders?view=all', [choose(21, 'made_up_ann', 1), choose(22, 'made_up_bo', 2), choose(23, 'made_up_cy', 3)])
+  const row = await screen.findByTestId('order-made_up_ann')
+  expect(screen.queryByTestId('stuck-banner')).toBeNull()
+  // The order is open, but it is paid: it waits for the winner's pick, not for money.
+  expect(within(row).getByTestId('to-pick-made_up_ann')).toHaveTextContent('paid on Whatnot · 1 product to pick')
+  fireEvent.click(within(row).getByRole('button', { name: 'Name the product' }))
+  const dialog = await screen.findByRole('dialog')
+  expect(within(dialog).queryByTestId('apply-similar')).toBeNull()
+})

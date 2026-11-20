@@ -65,12 +65,21 @@ class OrdersError(Exception):
     status = 409
 
 
+class ShowsChanged(OrdersError):
+    """The app's shows of the Whatnot show changed while the apply waited for them (a made
+    show folded into a recording): nothing was changed; start again."""
+
+    def __init__(self):
+        super().__init__("This show changed just now. Try again in a few seconds.")
+
+
 def whatnot_show_of(show: Show) -> WhatnotShow | None:
     return db.session.get(WhatnotShow, show.whatnot_show_id) if show.whatnot_show_id else None
 
 
-# The token no longer reads the shop's orders: a person has to act before any arrive.
-BLIND = ("token_rejected", "no_permission")
+# The token no longer reads the shop's orders (or reads another seller's): a person has to
+# act before any arrive.
+BLIND = ("token_rejected", "no_permission", "wrong_account")
 
 
 def decides(show: Show) -> bool:
@@ -84,24 +93,40 @@ def decides(show: Show) -> bool:
 
     False in every other case, where the stream's decline closes the sale as it always did:
     "Compare only", a recording not matched yet, a token Whatnot rejects, orders with no
-    buyer (`apply` refuses those, so no order would ever close the sale)."""
+    buyer to speak of (`apply` refuses those, so no order would ever close the sale)."""
     conn = connection.active(show.organization_id)
     if conn is None or conn.orders_mode != "auto" or conn.problem in BLIND:
         return False
     ws = whatnot_show_of(show)
     if ws is None or sync.history(conn, ws):
         return False
-    nameless = db.session.scalar(
-        select(WhatnotOrder.id)
-        .where(
-            WhatnotOrder.organization_id == ws.organization_id,
-            WhatnotOrder.whatnot_show_id == ws.whatnot_id,
-            WhatnotOrder.transaction_type.is_distinct_from(GIVEAWAY),
-            func.coalesce(WhatnotOrder.buyer_username, "") == "",
+    return not blind(ws)
+
+
+# More nameless orders than this share (one in five) of a show's orders mean Whatnot is not
+# telling the app who buys at all (a token that lost its permission to read customers), not
+# that a buyer's account is gone.
+NAMELESS_ONE_IN = 5
+
+
+def is_blind(nameless: int, total: int) -> bool:
+    return nameless > 0 and nameless * NAMELESS_ONE_IN > total
+
+
+def blind(ws: WhatnotShow) -> bool:
+    """The show's orders mostly say nothing about who bought them: none can be matched to a
+    sale, so nothing is applied and no sale is called out as unpaid. A few nameless orders
+    (a closed account) are left out one by one instead (`rows_for`)."""
+    o = WhatnotOrder
+    unnamed = func.coalesce(o.buyer_username, "") == ""
+    nameless, total = db.session.execute(
+        select(func.count().filter(unnamed), func.count()).where(
+            o.organization_id == ws.organization_id,
+            o.whatnot_show_id == ws.whatnot_id,
+            o.transaction_type.is_distinct_from(GIVEAWAY),
         )
-        .limit(1)
-    )
-    return nameless is None
+    ).one()
+    return is_blind(nameless, total)
 
 
 def _chunks(ids: list[int], size: int = 1000):
@@ -130,13 +155,27 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
     """Whatnot's orders for a show as payment rows, oldest first, and what was left out.
     Giveaways are not sales (the order slips list them as gifts)."""
     rows: list[Row] = []
-    info = {"orders": 0, "giveaways": 0, "noBuyer": 0}
+    # noBuyer / unreadable: items left out for want of a buyer / of something the app can
+    # read (a listing title, a state it knows). noBuyerPaid: of the first, those of a paid or
+    # settling order: only they can hide a sale's payment (`apply`).
+    info = {
+        "orders": 0,
+        "giveaways": 0,
+        "noBuyer": 0,
+        "noBuyerPaid": 0,
+        "unreadable": 0,
+        "heldDeclines": 0,
+        "held": [],
+        "blind": False,
+    }
+    nameless = 0
     sku_for = catalog.resolver(ws.organization_id)
     for order in _orders(ws):
         if order.transaction_type == GIVEAWAY:
             info["giveaways"] += 1
             continue
         info["orders"] += 1
+        nameless += not order.buyer_username
         status = PAYMENT.get(order.status, "unknown")
         for item in order.items:
             row = Row(
@@ -151,17 +190,26 @@ def rows_for(ws: WhatnotShow) -> tuple[list[Row], dict]:
                 ordered_at=order.ordered_at,
                 auction=order.transaction_type == AUCTION,
                 listing=item.product_id,
+                discount_cents=order.discount_cents,
+                order_lines=len(order.items),
             )
             row.sku_id, row.listing_off = sku_for(item)
             if not row.buyer:
                 info["noBuyer"] += 1
+                info["noBuyerPaid"] += status in ("paid", "pending")
                 row.action, row.note = "skip", "Whatnot did not say who bought it"
             elif not row.item:
+                info["unreadable"] += 1
                 row.action, row.note = "skip", "the order names no listing"
             elif status == "unknown":
+                info["unreadable"] += 1
                 row.action, row.note = "skip", "an order state the app does not know"
             rows.append(row)
+    info["blind"] = is_blind(nameless, info["orders"])
     _skip_retried(rows)
+    held = [r for r in rows if r.note == MAYBE_RETRIED]
+    info["heldDeclines"] = len(held)
+    info["held"] = [f"{r.buyer}'s {r.item}" for r in held[:3]]  # named, so a person can check
     return rows, info
 
 
@@ -180,36 +228,109 @@ def _skip_retried(rows: list[Row]) -> None:
     one, then a paid (or settling) one for the same win (the 2026-11-13 show: 10 of 20 lots).
     The failed order is history, not a decline: left in, it would decline the win's sale while
     the paid order recorded the win a second time. `rows` is oldest first; one pass from the
-    newest keeps each buyer's later payments, so the cost is linear in practice."""
+    newest keeps each buyer's later payments, so the cost is linear in practice.
+
+    A paid order with no buyer (a closed account, or a name Whatnot stopped giving) may be
+    that retry: the failed order is then NOT a decline, because declining would take back a
+    sale the buyer paid (`MAYBE_RETRIED`; a person is told in Review). Only where it can
+    really be one (`_hold_for_nameless`): placed after the failed orders, and one such payment
+    holds back one buyer's attempts at one win at most."""
     paid_later: dict[str, list[Row]] = {}
+    unpaired: list[Row] = []
     for row in reversed(rows):
         if row.action:  # already left out
             continue
         buyer = row.buyer.lower()
         if row.status in ("paid", "pending"):
             paid_later.setdefault(buyer, []).append(row)
-        elif row.status == "failed" and row.ordered_at is not None:
-            # The payment nearest after it: with two wins of one listing by one buyer, the
-            # declined attempt belongs to the first payment that follows, not the latest.
-            for paid in reversed(paid_later.get(buyer, ())):
-                # Two listings are two auctions: a payment for one is never the retry of a
-                # card declined on the other, however alike their titles and prices.
-                if row.listing and paid.listing and row.listing != paid.listing:
-                    continue
-                # Both times known, so a retry is always within `same_win`'s half hour.
-                if paid.ordered_at is not None and pipeline.same_win(
-                    row.item, row.price_cents, row.ordered_at,
-                    paid.item, paid.price_cents, paid.ordered_at,
-                ) is not None:  # fmt: skip
-                    # The win's sale may already be tied to the failed order: the payment is its.
-                    if paid.sale_hint is None and row.sale_hint is not None:
-                        paid.sale_hint, paid.hint_from_retry = row.sale_hint, True
-                    # The win happened when the first order was placed, not when a retry paid.
-                    paid.first_ordered_at = min(
-                        paid.first_ordered_at or row.ordered_at, row.ordered_at
-                    )
-                    row.action, row.note = "skip", RETRIED
-                    break
+        elif row.status == "failed":
+            if row.ordered_at is not None:
+                # The payment nearest after it: with two wins of one listing by one buyer,
+                # the declined attempt belongs to the first payment that follows, not the
+                # latest.
+                for paid in reversed(paid_later.get(buyer, ())):
+                    # Two listings are two auctions: a payment for one is never the retry of
+                    # a card declined on the other, however alike their titles and prices.
+                    if row.listing and paid.listing and row.listing != paid.listing:
+                        continue
+                    # Both times known, so a retry is always within `same_win`'s half hour.
+                    if paid.ordered_at is not None and pipeline.same_win(
+                        row.item, row.price_cents, row.ordered_at,
+                        paid.item, paid.price_cents, paid.ordered_at,
+                    ) is not None:  # fmt: skip
+                        # The win's sale may already be tied to the failed order: the
+                        # payment is its.
+                        if paid.sale_hint is None and row.sale_hint is not None:
+                            paid.sale_hint, paid.hint_from_retry = row.sale_hint, True
+                        # The win happened when the first order was placed, not when a retry
+                        # paid.
+                        paid.first_ordered_at = min(
+                            paid.first_ordered_at or row.ordered_at, row.ordered_at
+                        )
+                        row.action, row.note = "skip", RETRIED
+                        break
+            if not row.action:
+                unpaired.append(row)
+    _hold_for_nameless(rows, unpaired)
+
+
+def _hold_for_nameless(rows: list[Row], failed: list[Row]) -> None:
+    """Failed orders no named payment answered, held back as `MAYBE_RETRIED` where a paid
+    order with no buyer can be their retry: the same win (`same_win`, never across two
+    listings) and ONE buyer's. A card declined twice and then paid is two failed orders and
+    one payment, so a payment holds every attempt of that one buyer's win once one of them
+    was placed before it (a retry comes later), and never the failed orders of two buyers (one
+    payment cannot have paid two buyers' wins): the buyer whose attempt is the closest before
+    it (payments taken oldest first). The others are declines as usual.
+
+    A payment with no order time cannot be placed after anything. It holds the failed
+    orders of its win only when they are all one buyer's (as before 2026-11-19: undoing a
+    sale the buyer paid is worse than a decline a person chases); with two buyers' it holds
+    none. Payments with a time are taken first."""
+    nameless = [r for r in rows if not r.buyer and r.status in ("paid", "pending")]
+    timed = sorted((r for r in nameless if r.ordered_at is not None), key=lambda r: r.ordered_at)
+    untimed = [r for r in nameless if r.ordered_at is None]
+
+    def same_win(a: Row, b: Row) -> bool:
+        if a.listing and b.listing and a.listing != b.listing:
+            return False
+        key = pipeline.same_win(
+            a.item, a.price_cents, a.ordered_at, b.item, b.price_cents, b.ordered_at
+        )
+        return key is not None
+
+    def hold(held: list[Row]) -> None:
+        for row in held:
+            row.action, row.note = "skip", MAYBE_RETRIED
+
+    for paid in timed:
+        same = [row for row in failed if not row.action and same_win(row, paid)]
+        before = [
+            row for row in same if row.ordered_at is not None and row.ordered_at < paid.ordered_at
+        ]
+        if not before:
+            # A failed order with no time cannot be placed before anything: held as for a
+            # payment with no time, when such orders are all one buyer's.
+            unplaced = [row for row in same if row.ordered_at is None]
+            if unplaced and len({row.buyer.lower() for row in unplaced}) == 1:
+                hold(unplaced)
+            continue
+        closest = max(before, key=lambda r: r.ordered_at)
+        buyer = closest.buyer.lower()
+        # That buyer's attempts at the one win: each also the same win as the closest. Once
+        # the payment may be this buyer's, an attempt Whatnot dates after it (or not at all)
+        # is held too: the payment cannot claim the sale, so that attempt would decline it.
+        hold(
+            [
+                row
+                for row in same
+                if row.buyer.lower() == buyer and (row is closest or same_win(row, closest))
+            ]
+        )
+    for paid in untimed:
+        could_be = [row for row in failed if not row.action and same_win(row, paid)]
+        if could_be and len({row.buyer.lower() for row in could_be}) == 1:
+            hold(could_be)
 
 
 def _complete(ws: WhatnotShow) -> bool:
@@ -229,7 +350,10 @@ REOPEN = "reopen"
 # Why a failed order is left out: its win was paid in a later order, or the app never had
 # a sale for it. The second is a declined payment nobody else would hear of (`_flag_unrecorded`).
 RETRIED = "declined, then paid in a later order"
+MAYBE_RETRIED = "declined, and an order with no buyer may be its retry"
 NEVER_RECORDED = "never recorded here, and not paid on Whatnot"
+# Paid on Whatnot, no product named yet: the win waits for its product (the winner's pick).
+WAITING = "waiting for its product to be named"
 # The review item for a payment Whatnot declined when the app has no sale for the win.
 ORDER_DECLINED = "order_declined"
 # Items that doubt whether a standing sale was paid: the stream showed its card declined
@@ -353,7 +477,7 @@ def _plan(show: Show, ws: WhatnotShow) -> tuple[Plan, dict, list[Show]]:
             else:
                 # Paid on Whatnot, but nobody has said which product it is: its own review
                 # item is already waiting, and naming the product is what marks it paid.
-                row.action, row.note = "unchanged", "waiting for its product to be named"
+                row.action, row.note = "unchanged", WAITING
     return plan, info, recordings
 
 
@@ -423,6 +547,7 @@ def _unclaimed_win(org_id: int, show_ids: list[int], row: Row, taken: set[int]) 
             row.item,
             row.price_cents,
             row.ordered_at,
+            discount_b=pipeline.unit_discount(row.discount_cents, row.quantity, row.order_lines),
         )
         if key is not None and (best is None or key < best[0]):
             best = (key, sale)
@@ -446,14 +571,20 @@ def apply(show: Show, *, user=None) -> dict:
     # One at a time per show, and never while the parser is in the middle of the same
     # show: both make sales from the same wins. The parser's own lock is taken for every
     # recording of the show, in a fixed order, before anything is read.
-    for show_id in sorted(s.id for s in (sync.recordings_of(ws) or [show])):
+    locked = sorted(s.id for s in (sync.recordings_of(ws) or [show]))
+    for show_id in locked:
         pipeline._lock_show(show_id, wait=True)
     plan, info, recordings = _plan(show, ws)
-    if info["noBuyer"]:
+    if not {s.id for s in recordings} <= set(locked):
+        # A show was folded into a recording while this waited: sales made now would go
+        # into a show whose parse this does not hold. Taking that lock now, out of order,
+        # could deadlock; the caller starts again (the job at once, a person by pressing).
+        raise ShowsChanged()
+    if info["blind"]:
         # Without buyers nothing can be matched, and every sale would look unpaid.
         raise OrdersError(
-            "Whatnot is not telling the app who bought each order, so they cannot be matched. "
-            "The access token needs the permission to read customers."
+            "Whatnot is not telling the app who bought these orders, so they cannot be "
+            "matched. Ask your developer to check the connection to Whatnot."
         )
     primary = recordings[0]
     org_id = primary.organization_id
@@ -515,7 +646,7 @@ def apply(show: Show, *, user=None) -> dict:
         ):
             db.session.refresh(waiting)
             if waiting.sku_id is None:  # not named by a person meanwhile either
-                row.action, row.note = "unchanged", "waiting for its product to be named"
+                row.action, row.note = "unchanged", WAITING
 
     for row in plan.rows:
         if row.action != REOPEN:
@@ -533,6 +664,31 @@ def apply(show: Show, *, user=None) -> dict:
                 # Its listing is linked to a product here: named at once, like any such win.
                 pipeline.name_from_listing(sale, row.sku_id, price_cents=row.price_cents)
 
+    # A paid win waiting for its product must keep its "which product is that?" question:
+    # it is the only way it gets named. One left with none (ignored before "Ignore" was
+    # refused for it) gets it back here; never one on a listing a person marked "none of
+    # ours", which may be ignored for good (`pipeline.must_name` decides, row by row).
+    waiting = {
+        row.sale_id
+        for row in plan.rows
+        if row.action == "unchanged"
+        and row.note == WAITING
+        and row.sale_id is not None
+        and not row.listing_off
+    }
+    if waiting:  # the few with no open question are found in one query, not one per row
+        asked = set(
+            db.session.scalars(
+                select(ReviewItem.sale_id).where(
+                    ReviewItem.sale_id.in_(waiting),
+                    ReviewItem.status == ReviewStatus.open,
+                    ReviewItem.reason == "unmatched_item",
+                )
+            )
+        )
+        for sale in reconcile.load_sales(waiting - asked).values():
+            pipeline.ask_for_product(sale)
+
     reconcile.apply(
         primary,
         plan,
@@ -541,7 +697,7 @@ def apply(show: Show, *, user=None) -> dict:
         import_id=IMPORT_ID,
         words=reconcile.WHATNOT,
         on_unmatched=record,
-        flag_uncovered=_complete(ws),
+        flag_uncovered=_complete(ws) and not info["noBuyerPaid"],
     )
     # Remember which sale each order item is, and when it was ordered. The items and sales
     # are read in one query each, not one per row.
@@ -568,14 +724,18 @@ def apply(show: Show, *, user=None) -> dict:
                 sale.external_order_id = row.external_id
     del items, sales  # the steps below read what they need themselves
     _flag_declines(primary, plan, show_ids)
-    gave_way = _one_win(primary, plan, show_ids, _complete(ws))
+    # While an order that may be paid has no buyer, no sale is called out as unpaid and none
+    # gives way to another win of its lot: that order may be the one that pays it.
+    whole = _complete(ws) and not info["noBuyerPaid"]
+    gave_way = _one_win(primary, plan, show_ids, whole)
     # A sale that gave way is no longer "a sale with no order": it is settled.
     plan.uncovered = [i for i in plan.uncovered if i not in gave_way]
     summary = plan.summary
     if gave_way:
         summary["gave_way"] = len(gave_way)
-    if not _complete(ws):
+    if not whole:
         summary.pop("uncovered", None)
+    _flag_left_out(primary, info, show_ids)
     return {"summary": summary, "created": created, "info": info, "plan": plan}
 
 
@@ -803,7 +963,10 @@ def _flag_unrecorded(show: Show, plan: Plan, show_ids: list[int]) -> None:
         elif row.action == "skip" and row.sale_id is None and row.note == NEVER_RECORDED:
             standing[row.ref] = row
         else:
-            settled[row.ref] = "paid on Whatnot" if row.note == RETRIED else "its sale says so"
+            settled[row.ref] = {
+                RETRIED: "paid on Whatnot",
+                MAYBE_RETRIED: "may be paid on Whatnot",
+            }.get(row.note, "its sale says so")
     if not standing and not settled:
         return
     known: dict[int, list[ReviewItem]] = {}
@@ -846,6 +1009,95 @@ def _flag_unrecorded(show: Show, plan: Plan, show_ids: list[int]) -> None:
                 item.resolved_at = datetime.now(UTC)
 
 
+LEFT_OUT = "orders_left_out"
+
+
+def _flag_left_out(
+    show: Show, info: dict | None, show_ids: list[int], *, why: str | None = None
+) -> None:
+    """Tell a person that some of Whatnot's orders were not applied, and why in the shop's
+    words: no buyer (a closed account), nothing the app can read, or (`why`) the whole show
+    refused. One open item per show, rewritten as the figures change and resolved when
+    nothing is left out. Never blames the access token for a few orders."""
+    if why is None:
+        parts = []
+        if info and info["noBuyer"]:
+            n = info["noBuyer"]
+            parts.append(f"Whatnot did not say who bought {n} item{'s' if n != 1 else ''}")
+        if info and info["unreadable"]:
+            n = info["unreadable"]
+            parts.append(
+                f"{n} item{'s' if n != 1 else ''} named no listing or an order state the app "
+                "does not know"
+            )
+        summary = None
+        if parts:
+            summary = (
+                "; ".join(parts) + ". They are left out; every other order of the show was applied."
+            )
+            if info["heldDeclines"]:
+                n = info["heldDeclines"]
+                summary += (
+                    f" {n} declined payment{'s were' if n != 1 else ' was'} not undone ("
+                    + ", ".join(info["held"])
+                    + (", …" if n > len(info["held"]) else "")
+                    + "): a payment with no buyer may be the retry that paid. Check them."
+                )
+            if info["noBuyerPaid"]:
+                summary += (
+                    " While a paid order has no buyer, sales with no order are not called out "
+                    "for this show."
+                )
+    else:
+        summary = f"None of this show's orders could be applied. {why}"
+    items = db.session.scalars(
+        select(ReviewItem).where(
+            ReviewItem.organization_id == show.organization_id,
+            ReviewItem.show_id.in_(show_ids),
+            ReviewItem.reason == LEFT_OUT,
+        )
+    ).all()
+    open_items = [i for i in items if i.status is ReviewStatus.open]
+    if summary is None:
+        for item in open_items:
+            item.status = ReviewStatus.resolved
+            item.resolution = {"by": "every order read and applied"}
+            item.resolved_at = datetime.now(UTC)
+        return
+    if open_items:
+        open_items[0].summary = summary
+        return
+    if any(i.summary == summary and i.resolved_by_id is not None for i in items):
+        return  # a person already said "got it" to these very figures: not asked again
+    pipeline.open_review(
+        show.organization_id,
+        LEFT_OUT,
+        summary,
+        show_id=show.id,
+        proposal={"action": "none"},
+        source="reconcile",
+        dedupe=False,  # one per show, checked above
+    )
+
+
+# How long an apply whose shows kept changing (or whose made show was merged away) waits
+# before it runs again: the merge that changed them is over in well under this.
+APPLY_AGAIN_AFTER_S = 15
+
+
+def _apply_again(org_id: int, whatnot_show_id: str) -> None:
+    """Queue the apply of this show once more, a little later (the same job `sync.queue_apply`
+    queues: one waiting per show), instead of giving up on orders nobody else would apply."""
+    jobs.enqueue(
+        "whatnot_apply_show",
+        {"org_id": org_id, "whatnot_show_id": whatnot_show_id},
+        org_id=org_id,
+        dedupe_key=f"whatnot_apply:{org_id}:{whatnot_show_id}",
+        delay_s=APPLY_AGAIN_AFTER_S,
+    )
+    db.session.commit()
+
+
 @jobs.handler("whatnot_apply_show")
 def apply_show_job(payload: dict) -> None:
     """ "auto" mode: apply a show's orders after they changed. Skipped quietly when the
@@ -862,15 +1114,43 @@ def apply_show_job(payload: dict) -> None:
     )
     if ws is None or sync.history(conn, ws):
         return  # over before the shop connected: a person may apply it, nothing else does
-    show = sync.ensure_recording(ws)
-    if show is None:
-        return  # too early to tell whether a laptop is recording it; the next order retries
-    try:
-        result = apply(show)
-    except OrdersError as e:
-        db.session.rollback()
-        log.warning("whatnot orders not applied for show %s: %s", show.id, e)
-        return
+    whatnot_show_id = payload["whatnot_show_id"]
+    for attempt in range(3):
+        show = sync.ensure_recording(ws)
+        if show is None:
+            return  # too early to tell whether a laptop is recording it; the next order retries
+        show_id = show.id
+        try:
+            result = apply(show)
+        except ShowsChanged:
+            db.session.rollback()  # a made show folded meanwhile: once more, on what is there
+            if attempt == 2:
+                log.warning(
+                    "whatnot orders not applied for show %s: its shows kept changing; queued again",
+                    whatnot_show_id,
+                )
+                _apply_again(org_id, whatnot_show_id)
+                return
+            continue
+        except OrdersError as e:
+            db.session.rollback()
+            # Read again after the rollback: a made show may have been folded into a
+            # recording (and deleted) while this ran. Then the next run says it there.
+            show = db.session.get(Show, show_id)
+            if show is None:
+                log.info(
+                    "whatnot orders for show %s not applied: its made show was merged; "
+                    "queued again",
+                    whatnot_show_id,
+                )
+                _apply_again(org_id, whatnot_show_id)
+                return
+            log.warning("whatnot orders not applied for show %s: %s", show_id, e)
+            # Not only a log line: a person is told in Review (it clears when they apply).
+            _flag_left_out(show, None, [s.id for s in sync.recordings_of(ws) or [show]], why=str(e))
+            db.session.commit()
+            return
+        break
     changed = {k: v for k, v in result["summary"].items() if k not in ("unchanged", "skip")}
     if changed:
         from .. import audit

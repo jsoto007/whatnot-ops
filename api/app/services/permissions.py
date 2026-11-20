@@ -20,6 +20,8 @@ PERMISSIONS: dict[str, frozenset[Role]] = {
     "shows.view": ALL,
     # Delete what a laptop recorded for a show (services/recordings.py); cannot be undone.
     "shows.delete": OWNER,
+    # Merge the shows here of one Whatnot show into one (services/show_merge.py).
+    "shows.merge": OWNER,
     "inventory.view": ALL,
     "inventory.write": MANAGERS,
     "orders.view": ALL,

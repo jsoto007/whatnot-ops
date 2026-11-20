@@ -96,7 +96,8 @@ def _down():
 
 
 def _job(kind="parse_show", **kw):
-    j = Job(kind=kind, payload={"show_id": 1}, run_at=datetime.now(UTC) - timedelta(seconds=1))
+    kw.setdefault("payload", {"show_id": 1})
+    j = Job(kind=kind, run_at=datetime.now(UTC) - timedelta(seconds=1))
     for k, v in kw.items():
         setattr(j, k, v)
     db.session.add(j)
@@ -246,3 +247,61 @@ def test_a_request_whatnot_refused_fails_the_job_at_once(app, monkeypatch):
     for status in (408, 425):
         err = WhatnotClient._error(Response(status, {}, {}), "GET", "/x", "r")
         assert isinstance(err, Unavailable) and not err.final
+
+
+def test_a_failing_retention_sweep_does_not_stop_the_whatnot_timer(app, world, monkeypatch, caplog):
+    """The sweep failing (a timeout on a big DELETE, a lock) used to skip the line that queues
+    each shop's Whatnot read, every five minutes, with nothing said but a log line. The failed
+    statement also leaves the session needing a rollback: the next step must still work."""
+    from app.models import WhatnotConnection
+
+    monkeypatch.setattr(worker.log, "disabled", False)
+    with app.app_context():
+        db.session.add(WhatnotConnection(organization_id=world["org"], seller_id="1234567"))
+        db.session.commit()
+
+    def sweep():
+        db.session.execute(text("DELETE FROM no_such_table"))  # fails, session now aborted
+        return {}
+
+    stopped = []
+
+    def run_once():
+        stopped.append(1)
+        raise SystemExit
+
+    with caplog.at_level(logging.WARNING, logger="worker"):
+        _main_until(app, monkeypatch, run_once, sweep)
+    with app.app_context():
+        queued = db.session.scalars(select(Job).where(Job.kind == "whatnot_sync")).all()
+        assert len(queued) == 1 and queued[0].status is JobStatus.queued
+    assert any("housekeeping" in r.getMessage() for r in caplog.records)
+
+
+def test_a_failing_requeue_does_not_stop_the_sweep_or_the_timer(app, monkeypatch):
+    from app.services.whatnot import sync as whatnot_sync
+
+    seen = []
+
+    def requeue():
+        raise OperationalError("UPDATE", {}, Exception("lock timeout"))
+
+    monkeypatch.setattr(worker.jobs, "requeue_stale", requeue)
+    monkeypatch.setattr(worker.retention, "sweep", lambda: seen.append("sweep") or {})
+    monkeypatch.setattr(whatnot_sync, "schedule_all", lambda: seen.append("whatnot") or 0)
+    with app.app_context():
+        worker._housekeeping()
+    assert seen == ["sweep", "whatnot"]
+
+
+def test_whatnot_reads_are_not_stuck_behind_ai_checks_but_parsing_still_goes_first(app):
+    with app.app_context():
+        _job("ai_review_item")
+        _job("ai_audit_show")
+        sync = _job("whatnot_sync", payload={"org_id": 1})
+        apply_ = _job("whatnot_apply_show", payload={"org_id": 1})
+        parse = _job("parse_show")
+        db.session.commit()
+        assert jobs.claim("w").id == parse
+        assert jobs.claim("w").id == sync
+        assert jobs.claim("w").id == apply_

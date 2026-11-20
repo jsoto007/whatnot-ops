@@ -28,6 +28,7 @@ from ..services import (
     sale_chat,
     sale_mode,
     shelves,
+    show_merge,
 )
 from ..services.whatnot import WhatnotError, connection
 from ..services.whatnot import orders as whatnot_orders
@@ -89,6 +90,50 @@ def delete_laptop_data(show_id: int):
     return jsonify(result)
 
 
+def _whatnot_show_or_404(show_id: int) -> WhatnotShow | None:
+    show = _show_or_404(show_id)
+    if show is None or show.whatnot_show_id is None:
+        return None
+    return db.session.get(WhatnotShow, show.whatnot_show_id)
+
+
+@bp.get("/<int:show_id>/merge")
+@require("shows.merge", heavy=True)
+def merge_preview(show_id: int):
+    """What merging the app shows of this show's Whatnot show into one would move (owner
+    only; services/show_merge.py)."""
+    ws = _whatnot_show_or_404(show_id)
+    if ws is None:
+        return jsonify({"error": "show not found"}), 404
+    out = show_merge.preview(ws)
+    db.session.rollback()  # a preview never writes
+    return jsonify(out)
+
+
+@bp.post("/<int:show_id>/merge")
+@require("shows.merge")
+def merge(show_id: int):
+    """Merge the app shows of this show's Whatnot show into one (owner only). It cannot be
+    undone, so the request must say "merge"."""
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") != "merge":
+        return jsonify({"error": "Confirm the merge to go on."}), 400
+    ws = _whatnot_show_or_404(show_id)
+    if ws is None:
+        return jsonify({"error": "show not found"}), 404
+    try:
+        result = show_merge.merge(ws, user=g.u, wait=False)
+    except show_merge.MergeError as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), e.status
+    except OperationalError:
+        # A deadlock with the parser or Whatnot's orders: Postgres rolled this one back.
+        db.session.rollback()
+        return jsonify({"error": "These sales were changing just now. Try again in a minute."}), 409
+    db.session.commit()
+    return jsonify(result)
+
+
 @bp.get("")
 @require("shows.view")
 def list_shows():
@@ -144,6 +189,13 @@ def _stats(show: Show) -> dict:
     }
 
 
+def _live_gaps(show: Show) -> list[dict]:
+    from ..services.whatnot import watch
+
+    ws = db.session.get(WhatnotShow, show.whatnot_show_id) if show.whatnot_show_id else None
+    return watch.gaps_of(ws) if ws is not None else []
+
+
 @bp.get("/<int:show_id>")
 @require("shows.view")
 def get_show(show_id: int):
@@ -160,10 +212,15 @@ def get_show(show_id: int):
             "noShelves": (
                 sale_mode.of_show(show)[0] == sale_mode.WINNERS_PICK and not shelves.spots(show)
             ),
+            # More than one show here for its Whatnot show: the owner can merge them.
+            "split": show_merge.split_of(show),
             # False: winners, items and payments all come from Whatnot's orders.
             "laptopNeeded": sale_mode.laptop_needed(
                 sale_mode.of_show(show)[0], show.organization_id
             ),
+            # While Whatnot says this show is live: no laptop recording it, one that began
+            # late, or one whose chat stopped (`whatnot.watch`).
+            "liveGaps": _live_gaps(show),
         }
     )
 
@@ -508,6 +565,8 @@ def whatnot_link(show_id: int):
         if ws is None or ws.organization_id != g.u.organization_id:
             return jsonify({"error": "that Whatnot show was not found"}), 404
     # A link is not chat arriving: the show's "last update" stays as it was.
+    # Never a merge: one show made for the same Whatnot show stays until the owner merges
+    # them on the show page (services/show_merge.py), with its preview.
     whatnot_sync.tie(show, ws.id if ws is not None else None, "manual")
     audit.record(
         g.u.organization_id,

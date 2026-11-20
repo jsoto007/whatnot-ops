@@ -101,3 +101,12 @@ test('badges: live show on Shows, counts on Orders and Review', async () => {
   expect(screen.getByRole('link', { name: /Orders/ })).toHaveTextContent('Orders7')
   expect(screen.getByRole('link', { name: /Review/ })).toHaveTextContent('Review6')
 })
+
+test('every page carries the notice that Whatnot reads went quiet, in words for this role', async () => {
+  mount('/app', { openReviews: 0, toFulfil: 0, live: false, whatnotNotice: { code: 'reads_failing', minutes: 50 } } as never)
+  const banner = await screen.findByTestId('whatnot-banner')
+  expect(banner).toHaveTextContent('Sales Ops cannot read Whatnot right now.')
+  // This role cannot open Settings → Whatnot: it is told to ask a manager, not sent there.
+  expect(banner).toHaveTextContent('Tell a manager')
+  expect(banner).not.toHaveTextContent('Settings')
+})

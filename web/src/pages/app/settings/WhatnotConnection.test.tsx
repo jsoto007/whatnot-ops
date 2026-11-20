@@ -25,6 +25,7 @@ const connected: WhatnotStatus = {
   sync: [
     { resource: 'orders', lastOkAt: new Date().toISOString(), failing: false },
     { resource: 'shipments', lastOkAt: null, failing: true },
+    { resource: 'orders_backfill', lastOkAt: null, failing: false },
     { resource: 'some_new_thing', lastOkAt: null, failing: false },
   ],
 }
@@ -80,6 +81,8 @@ test('connected: who, the address to give Whatnot, and what was read, all in wor
   const rows = screen.getByTestId('whatnot-sync').textContent ?? ''
   expect(rows).toContain('Orders and payments')
   expect(rows).toContain('Shipments and trackingnot yet · the last try did not work')
+  expect(rows).toContain('Orders from earlier days')
+  expect(rows).not.toContain('orders_backfill')
   expect(rows).toContain('Other') // an unknown code never shows as itself
   expect(rows).not.toContain('some_new_thing')
 })
@@ -93,11 +96,45 @@ test('a rejected token reads as what to do, never as a code', async () => {
   expect(screen.queryByTestId('whatnot-webhook-url')).toBeNull()
 })
 
+test('a token for another Whatnot account reads as what to do, never as a code', async () => {
+  open({ ...connected, problem: 'wrong_account' }, false)
+  const state = await screen.findByTestId('whatnot-state')
+  expect(state.textContent).toContain('different Whatnot account')
+  expect(state.textContent).not.toContain('wrong_account')
+})
+
 test('the banner shows only when the connection needs a person', () => {
   const { rerender } = render(<WhatnotBanner show={false} />)
   expect(screen.queryByTestId('whatnot-banner')).toBeNull()
   rerender(<WhatnotBanner show />)
   expect(screen.getByTestId('whatnot-banner').textContent).toContain('stopped working')
+})
+
+test('the banner says in words when reading Whatnot went quiet, to a manager and to packing alike', () => {
+  const { rerender } = render(<WhatnotBanner show={false} notice={{ code: 'orders_behind', minutes: 27 }} manager />)
+  const banner = screen.getByTestId('whatnot-banner')
+  expect(banner.textContent).toContain("Whatnot's newest orders have not reached Sales Ops yet.")
+  expect(banner.textContent).toContain('last 27 minutes')
+  expect(banner.textContent).toContain('Settings → Whatnot')
+  rerender(<WhatnotBanner show={false} notice={{ code: 'orders_behind', minutes: 27 }} manager={false} />)
+  expect(screen.getByTestId('whatnot-banner').textContent).toContain('Tell a manager before packing from the slips.')
+  expect(screen.getByTestId('whatnot-banner').textContent).not.toContain('Settings')
+  rerender(<WhatnotBanner show={false} notice={{ code: 'reads_failing', minutes: 120 }} manager={false} />)
+  const failing = screen.getByTestId('whatnot-banner').textContent ?? ''
+  expect(failing).toContain('cannot read Whatnot right now')
+  expect(failing).toContain('2 hours')
+  expect(failing).not.toMatch(/reads_failing|orders_behind|token|Unavailable/)
+  rerender(<WhatnotBanner show={false} notice={null} manager />)
+  expect(screen.queryByTestId('whatnot-banner')).toBeNull()
+})
+
+test('a stopped connection does not send packing to Settings, and wins over a notice', () => {
+  render(<WhatnotBanner show notice={{ code: 'orders_behind', minutes: 30 }} manager={false} />)
+  const text = screen.getByTestId('whatnot-banner').textContent ?? ''
+  expect(text).toContain('stopped working')
+  expect(text).toContain("Tell the shop's owner or a manager.")
+  expect(text).not.toContain('Settings')
+  expect(text).not.toContain('newest orders')
 })
 
 test('the owner chooses compare-only or apply-as-they-arrive; a manager only reads it', async () => {

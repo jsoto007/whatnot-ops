@@ -156,6 +156,30 @@ commands.
   paid on Whatnot goes back to waiting for its product (`pipeline.await_product`, the
   one allowed step back: no stock was ever held, and never once the buyer's order has
   shipped); with a product it is paid again through `_repay`.
+- **Paid wins waiting for their product** ("CHOOSE ANY…": the winner picks in chat). Such a
+  sale stays `detected` (no stock held, not paid here, its order `open`, picking refused)
+  until its product is named; what Whatnot says about its money is derived, never stored.
+  ONE rule decides it, `orders.to_pick_sales()` / `to_pick_ids()`: detected, no product,
+  its Whatnot order (`external_order_id`) is paid, and its listing is not one a person
+  marked "Not one of ours" (link `off`) unless the title says the winner chooses
+  (`rules.is_choice_title`: such a listing is a lot, never one product). Tiles carry `toPick` / `revenueToPickCents` apart:
+  "Paid revenue" is `revenuePaidCents` on every screen, the Revenue sheet (its own last
+  column) and the Buyers page; the screens show the to-pick money as a note, and "Sales so
+  far" reads `revenueSoldCents` (added in dashboard.py, never on a screen). Orders and sales
+  carry `toPick`; the pick list pulls every paid named item, even of an open order, and
+  lists the wins to pick (`orders.to_pick`). Only for a sale that rule matches is "Ignore"
+  refused (`pipeline.must_name`, 409; Review hides it from `sale.toPick`) and its question
+  reopened at the next orders read (`pipeline.ask_for_product`); an AI "dismiss" is
+  refused the same way (`pipeline.refuse_ignoring`). The way out is naming the product, or,
+  for a title that is not a winner's choice, marking the listing "Not one of ours". A win read from chat alone (Compare
+  only, not connected) keeps "Ignore"; nothing on that screen offers to cancel a sale.
+  "Name it once" is never offered (the Orders banner, the picker's box) and is refused by
+  the review route for a title that says the winner chooses (`rules.is_choice_title`). No
+  AI call for such a title, from a chat line or an order. A win made more than
+  `picks.NEAR_WINDOW` before the first recorded chat line reads `not_recorded`, never "did
+  not pick". An order whose parcel the carrier already has is shipped by the next
+  shipments pass once its last product is named (`shipping.sync_shipments_job`: the
+  parcel's own buyer, in any recording of the show), never before.
 - **One win per auction** (Javier's rule, 2026-11-13). An auction is a numbered lot of
   one show ("$1 BEAUTY PULLS #520": `pipeline.auction_of`; a title with no lot number
   names none and may be won many times), and only within half an hour: lot numbers start
@@ -307,6 +331,39 @@ commands.
   (`clock_problems`). Anything that assigns a product from chat must go through `unsafe`. Do
   not read chat or a layout by `show_id` alone: use `sale_chat.around` / `shelves.read` /
   `suggest`.
+- **Reads from Whatnot are complete and mend themselves** (`services/whatnot/sync.py`,
+  `results.py`; the rules are in `docs/WHATNOT_API.md`, "How reads stay complete"). The
+  dashboard's 30-day money is only as good as the orders held, so:
+  - A show counts as read (`orders_synced_at`) only when the read got down to its own start:
+    a catch-up that stops at its limit (`MAX_NEW_ORDERS`) never marks the shows it did not
+    reach. The timer reads ended shows back `RECENT_SHOWS` (30 days, the dashboard's window).
+    Shows the old cap wrongly marked read are read again once per shop (`begin_repair`,
+    bookkeeping row `repair:capped-reads`; it waits while a show is on air, like the late
+    reads). A walk that hits its page limit storing nothing new is spaced six hours.
+  - A read that fails part-way keeps the orders already read (each stored whole, `store_order`;
+    "new" is what the insert did, never a select before it) and marks nothing read. A repair
+    never fails the read it rides on (`repair_items` skips an order Whatnot refuses).
+  - A failed show-list or open-order read is recorded and due again after
+    `RETRY_AFTER_FAILURE` (2 minutes), **and the pass goes on** (`_attempt`): the shows it
+    did learn about are applied, and the orders, results, ledger, catalog and parcels behind
+    it are never starved by it. The pass finishes first; a failed orders read is raised at
+    its END (so the job is retried), never in the middle of it. Never let one failing read
+    stop the reads behind it.
+  - An ended show's orders are listed again at 1, 6 and 24 hours after the end
+    (`LATE_READS`), because a declined card's retry is a NEW order; whoever stores an order the
+    app had not seen (a list read, a webhook, a parcel) queues its apply through
+    `sync.queue_apply`. Whatnot's GENERATED show results are asked again until 3 days after the
+    show (`results.results_due`) and are only replaced by newer GENERATED figures, never by
+    "still working", "will not be calculated" or an empty answer.
+  - None of these re-reads runs while a show is on air (`sync.on_air`): the live show's
+    orders need the 8 req/s budget.
+  - **An order the app cannot read never stops the show** (no buyer, no listing, a state it
+    does not know): it is left out, counted in `info`, and Review says so in words
+    (`orders_left_out`); only a show where more than one order in five has no buyer is "blind"
+    and applies nothing. Never word that as the token's fault. While a paid order has no buyer,
+    no sale is called out as unpaid, none gives way to another win, **and a failed order is
+    not a decline when a paid order with no buyer could be its retry** (`MAYBE_RETRIED`):
+    undoing a sale a buyer paid is worse than leaving a decline for a person.
 - **Whatnot listings** (`services/whatnot/catalog.py`, `/app/inventory/whatnot`). The
   shop's Whatnot inventory is mirrored (`whatnot_variants`) and each listing linked to a
   SKU: by an exact code match, or by a person ("off" = none of ours, never re-linked).
@@ -362,6 +419,27 @@ commands.
   of the package" note stays). Kept sales lose their chat, so an unnamed product is named
   by hand (Javier's call, 2026-11-14: sales are tracked from Whatnot's API). Refused while chat arrived in the last 10 minutes or the show is being parsed.
   `deleted_recordings` keeps the key: ingest drops a late upload (200, `deleted: true`).
+- **One show here per Whatnot show** (`services/show_merge.py`). A Whatnot show nobody
+  records gets a "made" show after `UNRECORDED_GRACE`; when a laptop then records the same
+  show, the made show FOLDS into the laptop's recording and is deleted: sales, Orders,
+  Review questions, Whatnot lots and parcels, the AI call log, and the selling way and
+  shelves in use are re-pointed (never cancelled and made again: sale ids, ledger keys and
+  stock stay as they are), and a buyer's two Orders become one. On its own
+  (`show_merge.fold_made`, retried at every read of Whatnot's shows by
+  `sync.link_recordings`) only MADE shows fold, and only into a recording whose own page
+  address names the show. Everything else is the owner's "Merge into one show" on the show
+  page (`shows.merge`, preview + confirm, audited `show.merged` as the owner): a recording
+  tied by the clock alone (it may be re-decided), one a person matched ("Match" never
+  merges), one whose laptop data was deleted. Nothing sweeps old shows: a split already on
+  production stays until the owner merges it. Refused (nothing changes) while a buyer's box
+  is being picked, packed or shipped in one half and has items in the other. Only a show
+  with no laptop chat is folded: two laptops that both recorded stay two recordings (no
+  split card). While a Whatnot show has several app shows, `sync.recordings_of` orders
+  them: a recording that is the show's for good (`sync.is_sure`: matched by a person or by
+  its address), then the made show, then a recording tied by the clock, then the oldest;
+  never by sales count. Its first is where new order sales, Whatnot's lots and giveaways
+  go, and only it counts and prints Whatnot's giveaways. Whatnot's apply re-reads the shows
+  after taking their parse locks and starts again (`ShowsChanged`) if a fold moved them.
 - **Numbers.** Dashboard tiles and the Excel sheets both read
   `services/dashboard.py`; add a metric there, never inline in a route or
   the workbook builder. The gifts tile counts Whatnot's giveaway orders for a
@@ -371,11 +449,28 @@ commands.
   (`dashboard.whatnot_money`, `GET /api/dashboard/whatnot?days=7|30|90`): paid orders
   split by new and returning customers (`_customers`: returning = a paid order from
   the same Whatnot account before the period; the app only holds orders since the
-  connection, said as `knownSince`), no failed payments (Javier's call 2026-11-14), net
+  connection, said as `knownSince`), no failed payments (Javier's call 2026-11-14: neither
+  their dollars nor their count is on the dashboard), the discounts
+  Whatnot took off (`discountCents`) and the cancelled orders, so Sales lines up with
+  Whatnot's own "Gross Sales" (before discounts and cancellations: `grossCents`, words in
+  `labels.salesLineUpWords`), net
   from the ledger only (`results.nets_by_show` = `figures` per show), top buyers by
   Whatnot account. The packing role, the show pages, the live band and the Excel
   sheet keep the app's own counts. Reports are built synchronously with openpyxl
   (`services/reports.py`); move them to a job if a shop outgrows that.
+- **Discounts.** Whatnot states an order's price AFTER the discount the buyer used, a win
+  line's may be before it. `pipeline.same_win(..., discount_a/discount_b=unit_discount(...))`
+  accepts a price gap only when the order's own discount explains it (one item: exactly its
+  discount per unit; several items: anywhere up to the whole discount, only to tell whether
+  two lines are one win; never a higher order price) and ranks an exact price above a
+  discounted one. A matched sale's price is NEVER rewritten (a second laptop's copy and a
+  decline are looked up by the price the player showed). Reconcile keeps quiet about a price
+  gap only for an order of ONE item whose discount explains it; with several items the gap
+  opens the usual price review. A sale an order made carries the discounted price, so the
+  lookups that read a banner's price (`_declined_win`, `_same_win_elsewhere`) fall back to
+  `pipeline.priced_before_discount` (one-item orders only). An order is one per buyer per
+  show whatever the case of the name (`orders.attach`). A win added to an order that already
+  shipped opens a `won_after_shipping` note.
 - **Query cost.** A page or job must not cost a statement per row: eager-load what the
   serializer reads (`selectinload`), and batch-load what a loop reads
   (`reconcile.load_sales`) instead of `session.get` per row. `tests/test_query_counts.py`

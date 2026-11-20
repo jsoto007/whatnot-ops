@@ -1,4 +1,5 @@
-import type { OrderStatus, Role, Sale, SaleMode, SaleStatus } from './api'
+import { money, type OrderStatus, type Role, type Sale, type SaleMode, type SaleStatus, type WhatnotSales } from './api'
+import { plural } from './format'
 
 /**
  * The words the shop reads for the server's codes. A page never prints a raw
@@ -105,15 +106,43 @@ export const reviewSourceLabel = (s: string): string => (s === 'ai' ? 'AI sugges
 const WHATNOT_PROBLEM: Record<string, string> = {
   token_rejected: 'Whatnot no longer accepts the access token. The account owner needs to make a new one in Seller Hub.',
   no_permission: 'The access token is missing a permission. The account owner can add it to the token in Seller Hub.',
+  wrong_account: 'The access token belongs to a different Whatnot account than this shop. The account owner needs to make a new one for the right account in Seller Hub.',
   unreachable: 'Whatnot could not be reached the last time we tried.',
 }
 export const whatnotProblemLabel = (p: string): string => WHATNOT_PROBLEM[p] ?? 'Something is wrong with the connection.'
+
+/** "12 minutes", "3 hours": how long something has been so, for a sentence. */
+export const minutesWords = (m: number): string => (m < 90 ? `${Math.max(1, m)} ${m === 1 ? 'minute' : 'minutes'}` : `${Math.round(m / 60)} hours`)
+
+/** What to tell people when reading Whatnot has gone quiet. `manager`: the person may open Settings → Whatnot. */
+export const whatnotNoticeWords = (code: string, minutes: number, manager: boolean): { title: string; detail: string } => {
+  const who = manager ? 'Settings → Whatnot shows what last worked.' : 'Tell a manager before packing from the slips.'
+  if (code === 'reads_failing') {
+    return {
+      title: 'Sales Ops cannot read Whatnot right now.',
+      detail: `It has not worked for ${minutesWords(minutes)}. Orders and shipments here may be out of date; it keeps trying by itself. ${who}`,
+    }
+  }
+  return {
+    title: "Whatnot's newest orders have not reached Sales Ops yet.",
+    detail: `Orders from the last ${minutesWords(minutes)} or so may be missing from the lists and slips. ${who}`,
+  }
+}
+
+/** One line for a live show nobody is recording well. */
+export const liveGapWords = (code: string, minutes: number): string => {
+  if (code === 'no_recording') return 'No laptop is recording the chat. Open Chat Scraper on the laptop, on the show’s page, so wins, gifts and picks are captured.'
+  if (code === 'no_chat') return `No chat has come in from the laptop for ${minutesWords(minutes)}. Check it is awake, online and still on the show’s page.`
+  if (code === 'late_recording') return `The laptop started recording ${minutesWords(minutes)} after the show went live, so the chat before that was not captured.`
+  return 'The laptop recording needs a look.'
+}
 
 /** What each kind of reading from Whatnot is called. */
 const WHATNOT_SYNC: Record<string, string> = {
   shows: 'Shows',
   orders: 'Orders and payments',
   open_orders: 'Orders Whatnot had not settled',
+  orders_backfill: 'Orders from earlier days',
   shipments: 'Shipments and tracking',
   catalog: 'Products and stock',
   analytics: 'Show results',
@@ -279,8 +308,29 @@ export function pickWords(pick: { state: string; spot?: string; spots?: string[]
       return "This show's picks could not be read: a laptop's clock was out. Read the chat."
     case 'no_layout':
       return 'This show has no shelf layout, so no pick could be read.'
+    case 'not_recorded':
+      return 'No laptop was recording the chat yet when this lot was won, so nobody can tell whether the winner picked. Read the chat on Whatnot or ask the winner.'
     default:
       return 'Did not pick: no shelf spot from this winner before the show ended.'
+  }
+}
+
+/** The pick worker's finding in a few words, for a list row (the pick list's "Winner's pick"). */
+export function pickStateWords(state: string): string {
+  switch (state) {
+    case 'none':
+      return 'did not pick'
+    case 'unknown_code':
+      return 'typed a spot with no product'
+    case 'several':
+      return 'typed several spots'
+    case 'unread':
+    case 'no_layout':
+      return 'picks not read'
+    case 'not_recorded':
+      return 'chat not recorded'
+    default:
+      return 'see Review'
   }
 }
 
@@ -289,8 +339,23 @@ export function pickWords(pick: { state: string; spot?: string; spots?: string[]
 export function unknownWords(unk: { saleMode?: string | null; review?: { pick?: string | null } | null }[]): string {
   const n = unk.length
   if (unk.every((s) => s.review?.pick === 'none')) return n === 1 ? 'did not pick' : `${n} did not pick`
+  // The chat was not recorded when they won: nobody can say whether they picked.
+  if (unk.every((s) => s.review?.pick === 'not_recorded')) return n === 1 ? 'chat not recorded' : `${n} with no chat recorded`
   if (unk.every((s) => s.saleMode === 'winners_pick' && !s.review?.pick)) return n === 1 ? 'waiting for pick' : `${n} waiting for pick`
   // Where each listing is one product, an unnamed win is a listing nobody has linked to a product yet.
   if (unk.every((s) => s.saleMode === 'listing')) return n === 1 ? 'listing not linked' : `${n} listings not linked`
   return n === 1 ? 'item not recognised' : `${n} items not recognised`
+}
+
+/**
+ * What lies between the dashboard's Sales and Whatnot's own "Gross Sales" (before discounts and
+ * cancellations), in words; '' when nothing does. The parts always add up to the gross: a
+ * cancelled order is said at the price it had before its own discount. Declined payments are
+ * never said (Javier's call 2026-11-14).
+ */
+export function salesLineUpWords(s: Pick<WhatnotSales, 'paidCents' | 'grossCents' | 'discountCents' | 'cancelledCents' | 'cancelledDiscountCents' | 'cancelledOrders'>): string {
+  const parts: string[] = []
+  if (s.discountCents > 0) parts.push(`${money(s.discountCents)} in discounts`)
+  if (s.cancelledOrders > 0) parts.push(`${money(s.cancelledCents + s.cancelledDiscountCents)} from ${plural(s.cancelledOrders, 'cancelled order', 'cancelled orders')}`)
+  return parts.length ? `Before discounts and cancellations: ${money(s.grossCents)} (Sales plus ${parts.join(' and ')}).` : ''
 }

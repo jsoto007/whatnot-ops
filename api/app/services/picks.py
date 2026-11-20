@@ -64,6 +64,7 @@ from ..models import (
 )
 from . import audit, catalog, jobs, offers, pipeline, rules, sale_chat, sale_mode, shelves
 from .inventory import Actor
+from .orders import WHATNOT_PAID
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ PICK_ACTOR = Actor("pick", None, "the winner's pick")
 # and the last orders have reached the app.
 CLOSE_AFTER = timedelta(minutes=10)
 # The order states Whatnot holds as paid (services/whatnot/orders.PAYMENT).
-PAID = ("pending_fulfillment", "completed")
+PAID = WHATNOT_PAID
 DOUBTS = (pipeline.DECLINE_SEEN, pipeline.LOT_WON_TWICE)
 
 # `proposal["pick"]["state"]`
@@ -80,6 +81,9 @@ PRODUCT, NONE, UNKNOWN_CODE, SEVERAL = "product", "none", "unknown_code", "sever
 # The picks could not be read at all, so nothing is said about what anyone picked (it is not
 # "did not pick"): a laptop's clock was out during the show, or the show has no shelf layout.
 UNREAD, NO_LAYOUT = "unread", "no_layout"
+# No laptop was recording the chat yet when this win was made (it started late), and no
+# pick of the winner's was found: nobody can tell whether they picked. Not "did not pick".
+NOT_RECORDED = "not_recorded"
 # `proposal["pick"]["held"]`: why a product the winner picked was not assigned by itself.
 OFF, UNCONFIRMED, CLOCK, DOUBT = "off", "unconfirmed", "clock", "doubt"
 # The line may be for the winner's next win; the winner typed more than could be matched.
@@ -367,6 +371,7 @@ def run(show: Show, *, now: datetime | None = None) -> dict | None:
     layout = shelves.spots(recordings[0])
     found: dict[int, dict] = {}
     unclear: set[str] = set()
+    begins: dict[int, datetime] = {}  # sale id → when its picks begin
     if layout and not unread:
         # Every standing sale of the buyers who are waiting: a line goes to one of a
         # buyer's wins, so all of them decide where it goes.
@@ -388,6 +393,7 @@ def run(show: Show, *, now: datetime | None = None) -> dict | None:
                 unclear.add(sale.buyer_username.lower())  # a win nobody can place in time
                 continue
             wins[sale.buyer_username.lower()].append((start, sale))
+            begins[sale.id] = start
         # How many products each win may hold: an offer the host or a trusted moderator
         # typed for its lot ("#45 is two for one"), or what a person set on the sale.
         said = offers.of_show(ids, org, until=ws.ended_at)
@@ -425,12 +431,24 @@ def run(show: Show, *, now: datetime | None = None) -> dict | None:
             )
         )
     )
+    # When the first chat line of any recording of the show was recorded: a win before it
+    # was made while no laptop was recording.
+    first_line = db.session.scalar(
+        select(func.min(ChatMessage.captured_at)).where(ChatMessage.show_id.in_(ids))
+    )
     summary: Counter = Counter()
     for item, sale in waiting:
         if unread or not layout:
             pick = {"state": UNREAD if unread else NO_LAYOUT}
+        elif sale.id in found:
+            pick = dict(found[sale.id])
         else:
-            pick = dict(found.get(sale.id) or {"state": NONE})
+            # Only a win well before the first line: Whatnot stamps its order some seconds
+            # after the hammer and a laptop in step may be 15 seconds out, so a win a few
+            # seconds "before" recording began was one the laptop saw the chat for.
+            start = begins.get(sale.id)
+            unseen = start is not None and (first_line is None or start + NEAR_WINDOW < first_line)
+            pick = {"state": NOT_RECORDED if unseen else NONE}
         if pick["state"] == PRODUCT:
             near, short = pick.pop("near", False), pick.pop("short", False)
             pick["held"] = [

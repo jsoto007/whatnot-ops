@@ -124,7 +124,7 @@ def test_a_token_for_another_account_does_not_take_over_the_shop(
     h = sign_in(world["org"])
     client.post("/api/whatnot/connect", headers=h)
     fake_whatnot.seller.update(id="999", username="someone_else")
-    assert client.post("/api/whatnot/check", headers=h).get_json()["problem"] == "token_rejected"
+    assert client.post("/api/whatnot/check", headers=h).get_json()["problem"] == "wrong_account"
     client.post("/api/whatnot/disconnect", headers=h)
     r = client.post("/api/whatnot/connect", headers=h)
     assert r.status_code == 409 and "@host_shop before" in r.get_json()["error"]

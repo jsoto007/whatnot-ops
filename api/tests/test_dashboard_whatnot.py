@@ -89,6 +89,9 @@ def test_sales_are_whatnots_paid_orders_item_prices_in_cents(app, shop):
         "pendingOrders": 1,
         "cancelledCents": 500,
         "cancelledOrders": 1,
+        "discountCents": 0,
+        "cancelledDiscountCents": 0,
+        "grossCents": 5045 + 500,  # paid + cancelled, no discounts
         "giveaways": 1,
         "otherCurrencyOrders": 1,
     }
@@ -318,3 +321,50 @@ def test_paid_sales_are_split_between_new_and_returning_customers(app, shop):
     }
     # Seen over 90 days, vee's first order is inside the period: a new customer then.
     assert money(app, shop, days=90)["customers"]["returning"]["buyers"] == 0
+
+
+def test_discounts_and_cancelled_orders_line_the_sales_up_with_whatnots_gross_sales(app, shop):
+    """Sales are after discounts and without cancelled orders, so they sit below Whatnot's
+    own "Gross Sales". The page says what is between: the discounts given, the cancelled
+    orders, in cents. A declined payment is never said (Javier's call 2026-11-14). A giveaway
+    never counts, whatever it holds."""
+    add(shop, "mika_r", 2500, discount_cents=130)  # paid 2370 after a discount of 130
+    add(shop, "vee", 1000)  # paid, no discount
+    add(shop, "lu.w", 5000, status="cancelled")  # a Buy It Now cancelled mid-show
+    add(shop, "rey", 800, status="failed")  # declined card
+    add(shop, "pia", 900, status="pending", discount_cents=50)  # still being paid: not in gross
+    add(shop, "kat", 0, transaction_type="giveaway", discount_cents=0)
+    read(app, shop)
+    s = money(app, shop)["sales"]
+    assert s["paidCents"] == 2370 + 1000
+    assert s["discountCents"] == 130
+    assert (s["cancelledOrders"], s["cancelledCents"]) == (1, 5000)
+    assert not [k for k in s if "fail" in k.lower()]  # no failed payment, in dollars or count
+    # Whatnot's Gross Sales: before discounts and before cancellations (never a failed one).
+    assert s["grossCents"] == 2370 + 130 + 1000 + 5000
+    assert s["grossCents"] - s["discountCents"] - s["cancelledCents"] == s["paidCents"]
+
+
+def test_a_discount_on_a_cancelled_order_is_part_of_the_gross_not_of_the_discounts_given(app, shop):
+    add(shop, "lu.w", 5000, status="cancelled", discount_cents=250)  # cancelled at 4750
+    add(shop, "vee", 1000)
+    read(app, shop)
+    s = money(app, shop)["sales"]
+    assert (s["cancelledCents"], s["discountCents"], s["cancelledDiscountCents"]) == (4750, 0, 250)
+    assert s["grossCents"] == 1000 + 4750 + 250
+    assert s["grossCents"] == (
+        s["paidCents"] + s["discountCents"] + s["cancelledCents"] + s["cancelledDiscountCents"]
+    )
+
+
+def test_the_new_figures_follow_the_period_and_start_at_zero(app, shop):
+    add(shop, "vee", 1000, discount_cents=100)
+    read(app, shop)
+    with app.app_context():
+        db.session.execute(
+            update(WhatnotOrder).values(ordered_at=datetime.now(UTC) - timedelta(days=40))
+        )
+        db.session.commit()
+    s = money(app, shop, days=7)["sales"]
+    assert (s["discountCents"], s["grossCents"]) == (0, 0)
+    assert money(app, shop, days=90)["sales"]["discountCents"] == 100

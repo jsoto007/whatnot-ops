@@ -134,15 +134,23 @@ class FakeWhatnot:
         created: datetime | None = None,
         shipping_cents: int = 525,
         buyer_id: str | None = None,
+        discount_cents: int = 0,
+        cancelled_at: datetime | None = None,
     ) -> dict:
         """One order with its items. Each item: title, price_cents (default 100), quantity,
-        and optionally sku / product_id / variant_id."""
+        and optionally sku / product_id / variant_id. `price_cents` is the price BEFORE a
+        discount; `discount_cents` is taken off the first item (as Whatnot's `unit_price`
+        and subtotal are after `applied_discount`) and reported as the applied discount."""
         now = created or self.tick()
         order_id = self._next_id()
         subtotal = 0
+        left = discount_cents
         for spec in items:
             price = spec.get("price_cents", 100)
             qty = spec.get("quantity", 1)
+            off = min(left, price * qty)
+            left -= off
+            price -= off // qty
             subtotal += price * qty
             item_id = self._next_id()
             self.order_items[item_id] = {
@@ -173,12 +181,12 @@ class FakeWhatnot:
                 "subtotal": money(subtotal),
                 "shipping": money(shipping_cents),
                 "tax": money(0),
-                "applied_discount": None,
+                "applied_discount": {"amount": money(discount_cents)} if discount_cents else None,
                 "total": money(subtotal + shipping_cents),
             },
             "created_at": _iso(now),
             "updated_at": _iso(now),
-            "cancelled_at": None,
+            "cancelled_at": _iso(cancelled_at) if cancelled_at else None,
         }
         self.orders[order_id] = order
         return order

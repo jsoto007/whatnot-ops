@@ -18,6 +18,7 @@ There is no sandbox: every call is the live shop. Tests never get here (see `cli
 
 import logging
 import random
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -212,6 +213,16 @@ def http_transport(session: requests.Session | None = None) -> Transport:
     return send
 
 
+# Answers Whatnot accepted (a 2xx), counted per thread: a reading that made none (nothing open
+# to refresh, nothing to ask) shows nothing about whether the token works (`sync._run`).
+_worked = threading.local()
+
+
+def worked() -> int:
+    """How many calls this thread has had a 2xx answer to so far."""
+    return getattr(_worked, "count", 0)
+
+
 class WhatnotClient:
     def __init__(
         self,
@@ -266,6 +277,7 @@ class WhatnotClient:
                     continue
                 raise
             if r.status < 300:
+                _worked.count = getattr(_worked, "count", 0) + 1
                 return r.body
             if r.status == 429 and attempt < self._max_attempts:
                 self._sleep(self._retry_after(r, attempt))

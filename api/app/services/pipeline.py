@@ -265,6 +265,12 @@ def _titles_match(a: str | None, b: str | None) -> bool:
     return same_listing(a, b) == 0
 
 
+def _same_lot(a: str | None, b: str | None) -> bool:
+    """`_titles_match`, or the same title once Whatnot's trailing lot number is set aside
+    ("Red bundle" / "Red bundle #752"). Two different lot numbers are never the same lot."""
+    return same_listing(a, b) in (0, 1)
+
+
 def same_listing(a: str | None, b: str | None) -> int | None:
     """How surely two titles name the same lot: 0 the same text (case, spacing and
     punctuation aside), 1 the same once Whatnot's trailing lot number is set aside ("Red
@@ -303,23 +309,59 @@ def won_when(sale: Sale):
     return sale.ordered_at
 
 
+def prices_agree(
+    price_a, price_b, discount_a: tuple[int, int] | None = None, discount_b=None
+) -> bool:
+    """Whether two stated prices of one win agree. Equal always does. Whatnot states an
+    order's price AFTER the discount the buyer used, while the video player or a chat line
+    read the price before it. A side that carries a discount (`discount_*`, the (least,
+    most) the order took off one unit, see `unit_discount`; None for a line or an order
+    with none) may be lower than the other by an amount inside that band: never higher
+    (a discount cannot raise a price), never by an amount its discount does not explain,
+    and a side with no discount never explains a gap."""
+    if price_a == price_b:
+        return True
+    if discount_a is not None and discount_a[0] <= price_b - price_a <= discount_a[1]:
+        return price_b > price_a
+    return (
+        discount_b is not None
+        and discount_b[0] <= price_a - price_b <= discount_b[1]
+        and (price_a > price_b)
+    )
+
+
 def same_win(
-    title_a, price_a, at_a, title_b, price_b, at_b, *, window: timedelta = SAME_WIN_WINDOW
+    title_a,
+    price_a,
+    at_a,
+    title_b,
+    price_b,
+    at_b,
+    *,
+    window: timedelta = SAME_WIN_WINDOW,
+    discount_a: tuple[int, int] | None = None,
+    discount_b: tuple[int, int] | None = None,
 ) -> tuple | None:
     """Whether a sale and a win line / order are one and the same win, as a sort key (the
-    smaller, the surer) or None. Same lot by title, the same price when both are known,
-    and close in time when both times are known. Used both ways round (a win line meeting
-    the sale an order made; an order meeting the sale a win line made), so the two paths
-    cannot disagree and make two sales of one win."""
+    smaller, the surer) or None. Same lot by title, the same price when both are known
+    (`prices_agree`: an order's price is after its discount, so a gap its discount
+    explains is no gap), and close in time when both times are known. Used both ways round
+    (a win line meeting the sale an order made; an order meeting the sale a win line made),
+    so the two paths cannot disagree and make two sales of one win. The key is (title
+    rank, 1 when only a discount made the prices agree else 0, seconds apart): an exact
+    price is surer than a discounted one."""
     rank = same_listing(title_a, title_b)
     if rank is None:
         return None
+    discounted = 0
     if None not in (price_a, price_b) and price_a != price_b:
-        return None
+        if not prices_agree(price_a, price_b, discount_a, discount_b):
+            return None
+        discounted = 1
     apart = abs((at_a - at_b).total_seconds()) if None not in (at_a, at_b) else None
     if apart is not None and apart > window.total_seconds():
         return None
-    return (rank, apart if apart is not None else window.total_seconds())
+    return (rank, discounted, apart if apart is not None else window.total_seconds())
 
 
 def _recordings_of_the_same_show(show: Show) -> list[int]:
@@ -591,6 +633,67 @@ def create_sale_from_order(
     return sale
 
 
+def order_discounts(org_id: int, order_ids: list[str | None]) -> dict[str, tuple[int, int]]:
+    """Whatnot order id -> (what the order took off in discounts, how many items it has), for
+    the orders that took something off: for matching a price Whatnot stated after it."""
+    from ..models import WhatnotOrder, WhatnotOrderItem
+
+    ids = {i for i in order_ids if i}
+    if not ids:
+        return {}
+    lines = func.count(WhatnotOrderItem.id)
+    return {
+        whatnot_id: (int(cents), int(n))
+        for whatnot_id, cents, n in db.session.execute(
+            select(WhatnotOrder.whatnot_id, WhatnotOrder.discount_cents, lines)
+            .outerjoin(WhatnotOrderItem, WhatnotOrderItem.order_id == WhatnotOrder.id)
+            .where(
+                WhatnotOrder.organization_id == org_id,
+                WhatnotOrder.whatnot_id.in_(ids),
+                WhatnotOrder.discount_cents > 0,
+            )
+            .group_by(WhatnotOrder.id)
+        )
+    }
+
+
+def unit_discount(
+    order_discount: int | None, quantity: int | None, lines: int | None = 1
+) -> tuple[int, int] | None:
+    """The (least, most) one unit of an order can have had taken off, or None when it took
+    nothing off. An order of one item that took D off took it off that item: per unit D over
+    its quantity, rounded down and up (the rounding Whatnot's own cents may carry). How
+    Whatnot spreads a discount over an order of several items is not known, so there one
+    item can have had anything from a cent up to all of it."""
+    if not order_discount or order_discount <= 0:
+        return None
+    if lines is not None and lines > 1:
+        return (1, int(order_discount))
+    q = max(int(quantity or 1), 1)
+    return (order_discount // q, -(-order_discount // q))
+
+
+def priced_before_discount(sales: list[Sale], price_cents: int | None) -> list[Sale]:
+    """The sales whose order's price is after a discount that explains `price_cents`, the price
+    the video player showed for the win: a sale an order made carries what Whatnot charged
+    ($23.70), the stream's banner (a second laptop's copy of the win, a declined card) shows
+    the price before ($25.00). Only an order of ONE item says so, as in reconcile: with several
+    its discount cannot be placed on one of them."""
+    took = order_discounts(
+        sales[0].organization_id if sales else 0, [s.external_order_id for s in sales]
+    )
+    out = []
+    for sale in sales:
+        off = took.get(sale.external_order_id or "")
+        if off is None or off[1] != 1 or sale.price_cents is None or price_cents is None:
+            continue
+        if prices_agree(
+            sale.price_cents, price_cents, discount_a=unit_discount(off[0], sale.quantity, 1)
+        ):
+            out.append(sale)
+    return out
+
+
 def claim_order_sale(show: Show, ev: ParsedEvent) -> Sale | None:
     """The win a chat or video-player line is about, when Whatnot's order for it already
     made the sale (create_sale_from_order): the same buyer and the same win (`same_win`:
@@ -616,12 +719,23 @@ def claim_order_sale(show: Show, ev: ParsedEvent) -> Sale | None:
         .order_by(Sale.id)
         .with_for_update()
     ).all()
+    # The order's price is after the discount the buyer used; the line read the full price.
+    discounts = order_discounts(show.organization_id, [s.external_order_id for s in candidates])
     best: tuple | None = None
     for sale in candidates:
         if sale.ordered_at is None and sale.show_id not in same_show:
             continue  # nothing says when it was won: only this show's own
+        took_off = discounts.get(sale.external_order_id)
         key = same_win(
-            sale.item_text, sale.price_cents, sale.ordered_at, ev.item_text, ev.price_cents, at
+            sale.item_text,
+            sale.price_cents,
+            sale.ordered_at,
+            ev.item_text,
+            ev.price_cents,
+            at,
+            discount_a=unit_discount(*took_off[:1], sale.quantity, took_off[1])
+            if took_off
+            else None,
         )
         if key is not None and (best is None or key < best[0]):
             best = (key, sale)
@@ -748,14 +862,44 @@ def flag_decline(sale: Sale, ev: ParsedEvent) -> ReviewItem:
     )
 
 
-def _declined_win(show: Show, ev: ParsedEvent, *, quiet: bool = False):
-    """The win a decline read from Whatnot's own UI is about: the same buyer, at exactly that
-    price, on that show day (another laptop's recording may hold it), the same title first.
-    Never a sale at another price. Returns the sale already declined (the same decline seen
-    again: nothing to do), None after opening a review, or the candidates to close.
-    `quiet`: no review when no sale at that price exists (see `close_sale`'s `flag_only`)."""
-    rows = list(
+def paid_on_whatnot(sales: list[Sale]) -> set[int]:
+    """The ids of these sales whose own Whatnot order (`external_order_id`) Whatnot says is
+    paid. Whatnot's word on its own order stands over anything the stream showed about it: a
+    card declined at the win and paid a moment later is paid. A sale with no Whatnot order
+    held here (none, or a payment file's id) is in none."""
+    from ..models import WhatnotOrder
+    from .whatnot.orders import PAYMENT
+
+    ids = {s.external_order_id for s in sales if s.external_order_id}
+    if not ids:
+        return set()
+    paid = set(
         db.session.scalars(
+            select(WhatnotOrder.whatnot_id).where(
+                WhatnotOrder.organization_id == sales[0].organization_id,
+                WhatnotOrder.whatnot_id.in_(ids),
+                WhatnotOrder.status.in_([k for k, v in PAYMENT.items() if v == "paid"]),
+            )
+        )
+    )
+    return {s.id for s in sales if s.external_order_id in paid}
+
+
+def _declined_win(show: Show, ev: ParsedEvent, *, quiet: bool = False):
+    """The win a decline read from Whatnot's own UI is about: the same buyer and the same lot
+    (`_titles_match`: case, spacing and punctuation aside), at exactly that price, on that
+    show day (another laptop's recording may hold it). Failing the price, a sale an order
+    made at the price after its discount, won within `SAME_WIN_WINDOW` of the decline. Never
+    a sale of another lot or at another price, and never one whose own Whatnot order Whatnot
+    says is paid (`paid_on_whatnot`: found, and left standing). When every such sale is paid
+    on Whatnot, there is nothing to do; when one is and another is not, a person picks
+    (nothing closes or is flagged: the decline may be the paid win's card seen late). Returns
+    the sale the decline is already settled for (declined already, or paid on Whatnot:
+    nothing to do), None after opening a review, or the candidates to close.
+    `quiet`: no review when no such sale exists (see `close_sale`'s `flag_only`)."""
+    rows = [
+        s
+        for s in db.session.scalars(
             select(Sale)
             .join(Show, Sale.show_id == Show.id)
             .where(
@@ -767,11 +911,65 @@ def _declined_win(show: Show, ev: ParsedEvent, *, quiet: bool = False):
             )
             .order_by(Sale.show_id != show.id, Sale.id)
         )
-    )
-    titled = [s for s in rows if (s.item_text or "").lower() == (ev.item_text or "").lower()]
-    rows = titled or rows
-    open_ = [s for s in rows if s.status in CLOSABLE]
+        if _same_lot(s.item_text, ev.item_text)
+    ]
+    if not rows:
+        # A sale an order made carries the discounted price; the stream shows the full one.
+        # The same lot, and won close to the decline: lot titles repeat through a show.
+        at = _won_at(ev)
+        rows = priced_before_discount(
+            [
+                s
+                for s in db.session.scalars(
+                    select(Sale)
+                    .join(Show, Sale.show_id == Show.id)
+                    .where(
+                        Sale.organization_id == show.organization_id,
+                        Show.show_date == show.show_date,
+                        func.lower(Sale.buyer_username) == ev.buyer_username.lower(),
+                        Sale.external_order_id.is_not(None),
+                        Sale.price_cents < ev.price_cents,
+                        Sale.status.in_(CLOSABLE + (SaleStatus.payment_failed,)),
+                    )
+                    .order_by(Sale.show_id != show.id, Sale.id)
+                )
+                if _same_lot(s.item_text, ev.item_text)
+                and at is not None
+                and (won := won_when(s)) is not None
+                and abs(won - at) <= SAME_WIN_WINDOW
+            ],
+            ev.price_cents,
+        )
+    settled = paid_on_whatnot(rows)
+    open_ = [s for s in rows if s.status in CLOSABLE and s.id not in settled]
     done = [s for s in rows if s.status is SaleStatus.payment_failed]
+    if not open_ and settled:
+        # Whatnot says that win was paid: the decline is history (a retried card).
+        return next(s for s in rows if s.id in settled)
+    if open_ and settled:
+        # The same lot at that price twice: one Whatnot says is paid, one it has not. The
+        # decline may be the paid one's retried card seen late, or the other's: a person
+        # picks. Nothing closes or is flagged meanwhile (as for several open candidates).
+        open_review(
+            show.organization_id,
+            "ambiguous_sale",
+            f"Whatnot showed {ev.buyer_username}'s payment declined for {ev.item_text} "
+            f"({money(ev.price_cents)}), but they won that lot at that price more than once "
+            "and Whatnot's own order says one of those wins is paid on Whatnot. Which one was "
+            "declined, if any?",
+            show_id=show.id,
+            message_id=ev.message_id,
+            event_id=ev.id,
+            proposal={
+                "status": SaleStatus.payment_failed.value,
+                # Never a win Whatnot says is paid: its own order answers for it.
+                "candidates": [
+                    {"saleId": s.id, "label": f"#{s.id} {s.item_text} ({s.status.value})"}
+                    for s in open_
+                ],
+            },
+        )
+        return None
     if done and not open_:
         return done[0]
     if open_ and not done:
@@ -783,7 +981,7 @@ def _declined_win(show: Show, ev: ParsedEvent, *, quiet: bool = False):
         f"Whatnot showed {ev.buyer_username}'s payment declined for {ev.item_text} "
         f"({money(ev.price_cents)}), but "
         + (
-            "no sale at that price was found"
+            "no sale of that lot at that price was found"
             if not rows
             else "one such sale is already declined and another is not — which one was it?"
         )
@@ -913,8 +1111,10 @@ def set_sale_status(
                 )
     elif new_status is SaleStatus.fulfilled:
         if sale.status is not SaleStatus.paid:
-            raise ValueError(
-                f"sale {sale.id} is {sale.status.value}, only paid sales can be fulfilled"
+            # Said in the shop's words (a 409 in Review, never a 500): no status codes.
+            raise ReviewError(
+                "Only a paid sale can be marked shipped, and this one is not paid here yet.",
+                409,
             )
     sale.status = new_status
     sale.status_reason = reason
@@ -932,6 +1132,10 @@ def set_sale_status(
             # with that unit, whatever happens to the sale.
             continue
         if new_status in (SaleStatus.cancelled, SaleStatus.payment_failed):
+            if item.reason == "closed_after_picking":
+                # Declined, then cancelled: the unit may still be in a box, and the note (and
+                # the reprinted slip's marker) stands until a person has dealt with it.
+                continue
             item.status = ReviewStatus.dismissed
             item.resolution = {"by": "sale closed"}
         elif new_status is SaleStatus.paid and item.reason in (
@@ -1484,8 +1688,13 @@ def _same_win_elsewhere(show: Show, ev: ParsedEvent, m: ChatMessage) -> Sale | N
     if m.device_id is not None:
         near.append(or_(ChatMessage.device_id.is_(None), ChatMessage.device_id != m.device_id))
 
-    def find(window, *same):
-        return db.session.scalar(
+    def find(window, *same, discounted=False):
+        price = (
+            (Sale.price_cents < ev.price_cents, Sale.external_order_id.is_not(None))
+            if discounted
+            else (Sale.price_cents == ev.price_cents,)
+        )
+        q = (
             select(Sale)
             .join(ParsedEvent, Sale.event_id == ParsedEvent.id)
             .join(ChatMessage, ParsedEvent.message_id == ChatMessage.id)
@@ -1494,19 +1703,29 @@ def _same_win_elsewhere(show: Show, ev: ParsedEvent, m: ChatMessage) -> Sale | N
                 Sale.show_id != show.id,
                 ParsedEvent.rule == "player_win",
                 func.lower(Sale.buyer_username) == ev.buyer_username.lower(),
-                Sale.price_cents == ev.price_cents,
+                *price,
                 ChatMessage.captured_at.between(m.captured_at - window, m.captured_at + window),
                 *same,
             )
             .order_by(
                 func.abs(func.extract("epoch", ChatMessage.captured_at - m.captured_at)), Sale.id
             )
-            .limit(1)
         )
+        if not discounted:
+            return db.session.scalar(q.limit(1))
+        # A sale an order made carries the discounted price; this laptop read the full one.
+        got = priced_before_discount(list(db.session.scalars(q.limit(20))), ev.price_cents)
+        return got[0] if got else None
 
     exact = find(
         PLAYER_DUPLICATE_WINDOW, func.lower(Sale.item_text) == (ev.item_text or "").lower()
     )
+    if exact is None:
+        exact = find(
+            PLAYER_DUPLICATE_WINDOW,
+            func.lower(Sale.item_text) == (ev.item_text or "").lower(),
+            discounted=True,
+        )
     return exact if exact is not None else find(PLAYER_NEAR_WINDOW, *near)
 
 
@@ -1656,8 +1875,75 @@ def record_sale_from_event(item: ReviewItem) -> Sale:
         raise ReviewError(f"this line is already sale #{existing}", 409)
     if not ev.buyer_username:
         raise ReviewError("the line names no buyer; nothing to record")
+    # The buyer's order is looked up case-blind and made if missing: under the buyer's lock,
+    # like the parser and the order sync, or two spellings could each make one.
+    _lock_buyer(show.organization_id, ev.buyer_username)
     sku = match_sku(show.organization_id, ev.item_text) if ev.item_text else None
     return create_sale(show, ev, sku=sku)
+
+
+def must_name(sale: Sale | None) -> bool:
+    """Whatnot says this win is paid and nobody has named its product yet
+    (`orders.to_pick_sales`: never on a listing a person marked "Not one of ours", unless its
+    title says the winner chooses). Its "which product is that?" item (reason
+    unmatched_item) is the only way it gets named, so that item must stay open. A win read
+    from chat alone, which Whatnot's order has not claimed (Compare only, not connected, or
+    not applied yet), is not one: it may still be ignored."""
+    from .orders import to_pick_ids
+
+    return sale is not None and bool(to_pick_ids([sale.id]))
+
+
+def refuse_ignoring(item: ReviewItem) -> None:
+    """Raise when this item may not be ignored (`must_name`): a person's "Ignore" and an AI's
+    "dismiss" suggestion alike."""
+    if item.reason != "unmatched_item" or not must_name(item.sale):
+        return
+    # Paid on Whatnot, no product yet: this item is the only way anyone names it, so
+    # ignoring it left the order open for good (nothing reopened it).
+    _refuse_leaving_unnamed(item.sale)
+
+
+def refuse_cancelling(sale: Sale | None) -> None:
+    """Raise when a person's "set status: cancelled" in Review, or an AI's cancel suggestion
+    applied by a person or by the AI (`supervisor.apply_proposal`), would cancel a win Whatnot
+    says is paid and whose product is still to be named (`must_name`). Cancelling is not its
+    way out any more than "Ignore" is: Whatnot has the buyer's money and the winner's pick
+    waits. The ways out are naming the product, or marking the listing "Not one of ours".
+    Whatnot's own cancel and a lot that went to another buyer (`give_way`) still close it:
+    they do not come through here."""
+    if must_name(sale):
+        _refuse_leaving_unnamed(sale)
+
+
+def _refuse_leaving_unnamed(sale: Sale) -> None:
+    message = (
+        "This win is paid on Whatnot and still waiting for its product. Name the product "
+        "the winner picked."
+    )
+    if not rules.is_choice_title(sale.item_text or ""):
+        message += (
+            " If its Whatnot listing is none of the shop's products, mark that listing \"Not "
+            'one of ours" under Inventory, Whatnot listings.'
+        )
+    raise ReviewError(message, 409)
+
+
+def ask_for_product(sale: Sale) -> ReviewItem | None:
+    """Open the sale's "which product is that?" question again when it must be named
+    (`must_name`) and has no open one (an "Ignore" before that was refused left such wins
+    with no way to be named). Once per sale: `open_review` keeps one open item per sale and
+    reason."""
+    if not must_name(sale):
+        return None
+    return open_review(
+        sale.organization_id,
+        "unmatched_item",
+        f'{sale.buyer_username} bought "{sale.item_text or "(no item named)"}" — '
+        "which product is that?",
+        show_id=sale.show_id,
+        sale_id=sale.id,
+    )
 
 
 def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> ReviewItem:
@@ -1666,6 +1952,13 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
     # One decision at a time per item, taken on its committed state: two people settling the
     # same lot with different products must not both move stock. The item and its sale are
     # locked before anything is checked, so the second person gets a 409 and moves nothing.
+    if action == "confirm_sale" and item.event_id:
+        # The buyer's lock comes BEFORE the row locks, as in the parser and the order sync
+        # (they take it first and may then touch rows): the opposite order could deadlock.
+        # Taken again inside `record_sale_from_event`, which the AI's confirm reaches alone.
+        line = db.session.get(ParsedEvent, item.event_id)
+        if line is not None and line.buyer_username:
+            _lock_buyer(item.organization_id, line.buyer_username)
     db.session.refresh(item, with_for_update=True)
     if item.status is not ReviewStatus.open:
         raise ReviewError("already resolved", 409)
@@ -1673,6 +1966,7 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
         db.session.refresh(item.sale, with_for_update=True)
     actor = actor or Actor.user(user)
     if action == "dismiss":
+        refuse_ignoring(item)
         item.status = ReviewStatus.dismissed
         item.resolution = {"action": "dismiss"}
     elif action == "confirm_sale":
@@ -1762,6 +2056,9 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
         sale = item.sale
         if sale is None:
             raise ReviewError("this item has no sale")
+        status = _status(body.get("status"))
+        if status is SaleStatus.cancelled:
+            refuse_cancelling(sale)  # a paid win still to name: named, never cancelled here
         if body.get("skuId") and sale.sku_id is None and sale.status is SaleStatus.payment_failed:
             # A declined win whose item was never recognised: say what it was, then restore it.
             sku = catalog.get_sku(item.organization_id, _id(body["skuId"]))
@@ -1770,7 +2067,7 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
             sale.flagged = False
             if sale.price_cents is None:
                 sale.price_cents = sku.price_cents
-        set_sale_status(sale, _status(body.get("status")), reason=f"review #{item.id}", actor=actor)
+        set_sale_status(sale, status, reason=f"review #{item.id}", actor=actor)
         item.status = ReviewStatus.resolved
         item.resolution = {"action": "set_status", "status": sale.status.value}
         if item.reason == LOT_WON_TWICE and sale.status not in CLOSABLE:

@@ -3,7 +3,7 @@ import { invalidateSales } from '../../lib/invalidate'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
 import { api, apiGet, money, type BuyerSlip, type OrderSlips as Doc, type SlipRow } from '../../lib/api'
-import { fmtLongDate, sheetDate } from '../../lib/format'
+import { fmtLongDate, fmtWhen, sheetDate } from '../../lib/format'
 import { orderStatusLabel } from '../../lib/labels'
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
@@ -71,11 +71,18 @@ export function OrderSlips() {
             <span className="tab-count">{ready}</span>
           </button>
         </div>
+        <OrdersRead read={doc.ordersRead ?? null} />
         <WhatnotCheck doc={doc} />
         {review > 0 && (
           <p className="card small" data-testid="slips-review">
             {count(review, 'buyer')} still {review === 1 ? 'has' : 'have'} an item nobody has picked (shown as "No Pick").{' '}
-            <Link to={`/app/review/${showId}`}>Open Review</Link> to name it before printing.
+            {can('review.act') ? (
+              <>
+                <Link to={`/app/review/${showId}`}>Open Review</Link> to name it before printing.
+              </>
+            ) : (
+              'A manager names it in Review: ask one before packing it.'
+            )}
           </p>
         )}
       </div>
@@ -93,6 +100,36 @@ export function OrderSlips() {
         </>
       )}
     </section>
+  )
+}
+
+/**
+ * Whether the slips hold every order Whatnot has for the show. Read-only, for every role: the
+ * people packing cannot open Settings, and a list read before the show ended may be short.
+ */
+function OrdersRead({ read }: { read: Doc['ordersRead'] }) {
+  if (!read) return null
+  if (read.live) {
+    return (
+      <p className="card small" data-testid="orders-read">
+        The show is still on air: orders keep arriving{read.at ? ` (last read ${fmtWhen(read.at)})` : ''}. Print the slips again once it has ended.
+      </p>
+    )
+  }
+  if (read.final) {
+    return (
+      <p className="card small muted" data-testid="orders-read">
+        Whatnot's orders were read in full after the show ended{read.at ? ` (${fmtWhen(read.at)})` : ''}.
+      </p>
+    )
+  }
+  return (
+    <div className="card small warn-card" data-testid="orders-read">
+      <b>These slips may be missing orders.</b>
+      <div>
+        Whatnot's orders for this show have not been read since it ended{read.at ? ` (last read ${fmtWhen(read.at)})` : ' (not read yet)'}. This usually sorts itself out within a few minutes; if it does not, tell a manager.
+      </div>
+    </div>
   )
 }
 

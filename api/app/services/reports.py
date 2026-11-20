@@ -298,6 +298,8 @@ def build(
             "Ultra",
             "Mega",
             "Quick Hit",
+            # Last, so the columns people already read keep their place.
+            "Paid on Whatnot, product to pick",
         ],
         [
             [
@@ -316,10 +318,11 @@ def build(
                 t["ultra"],
                 t["mega"],
                 t["quickHit"],
+                t["revenueToPickCents"],
             ]
             for t in tiles
         ],
-        money_cols=(5, 6),
+        money_cols=(5, 6, 16),
     )
 
     # 7. Winners with nothing to pack (same rows as the show page's "Walked away" tab)

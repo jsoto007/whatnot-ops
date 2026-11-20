@@ -229,8 +229,10 @@ def _listing(s) -> dict | None:
     }
 
 
-def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
-    """`review` is the open review item waiting on this sale, when the caller looked it up."""
+def sale(s, chat: list[dict] | None = None, *, review=None, to_pick: bool | None = None) -> dict:
+    """`review` is the open review item waiting on this sale, when the caller looked it up.
+    `to_pick`: whether Whatnot says it is paid while its product is still to pick
+    (`orders.to_pick_ids`), when the caller looked it up; None otherwise."""
     # A sale the app learnt of from Whatnot's order has no chat line: its order time.
     won = s.event.message.captured_at if s.event else s.ordered_at
     out = {
@@ -259,6 +261,9 @@ def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
         "lot": rules.lot_number(s.item_text or ""),
         # False when the title names one lot of one show: "remember this name" is not offered.
         "rememberName": bool(s.item_text) and not rules.names_a_lot(s.item_text),
+        # The title says the winner chooses ("CHOOSE ANY…"): every such lot is a different
+        # product, so "name it once" for the similar lots is never offered.
+        "choiceTitle": rules.is_choice_title(s.item_text or ""),
         # How the sale's show sells. In a winner's-pick show the product a person chooses
         # is that winner's pick, so the screens do not tick "remember this name" by default.
         "saleMode": sale_mode.of_show_id(s.show_id),
@@ -266,6 +271,9 @@ def sale(s, chat: list[dict] | None = None, *, review=None) -> dict:
         "priceCents": s.price_cents,
         "auctionType": s.auction_type,
         "status": s.status.value,
+        # Paid on Whatnot, product to pick: still `detected` here (no stock held until its
+        # product is named), but not unpaid.
+        "toPick": to_pick,
         "statusReason": s.status_reason,
         "flagged": s.flagged,
         "giftCount": s.gift_count,
@@ -306,8 +314,10 @@ def chat_message(m) -> dict:
     }
 
 
-def review_item(r, context, shelf: dict | None = None) -> dict:
-    """`shelf`: the spot the winner named in chat, on a show with shelves (services/shelves.py)."""
+def review_item(r, context, shelf: dict | None = None, *, to_pick: set[int] | None = None) -> dict:
+    """`shelf`: the spot the winner named in chat, on a show with shelves (services/shelves.py).
+    `to_pick`: the ids of the sales Whatnot says are paid with their product still to pick
+    (`orders.to_pick_ids`), when the caller looked them up."""
     return {
         "id": r.id,
         "showId": r.show_id,
@@ -321,7 +331,9 @@ def review_item(r, context, shelf: dict | None = None) -> dict:
         "context": [
             {"seq": m.seq, "username": m.username, "body": m.body} for m in context["lines"]
         ],
-        "sale": sale(r.sale) if r.sale else None,
+        "sale": sale(r.sale, to_pick=(r.sale.id in to_pick) if to_pick is not None else None)
+        if r.sale
+        else None,
         "shelf": shelf,
         "createdAt": r.created_at.isoformat(),
     }
@@ -334,9 +346,12 @@ def order(
     with_gifts: bool = False,
     reviews=None,
     parcel: dict | None = None,
+    to_pick: set[int] | None = None,
 ) -> dict:
     """`with_gifts` adds the buyer's gift lines for the show (one query; detail view only).
-    `reviews` maps sale id → the open review item waiting on it (routes/orders looks them up)."""
+    `reviews` maps sale id → the open review item waiting on it (routes/orders looks them up).
+    `to_pick`: the ids of the sales Whatnot says are paid with their product still to pick
+    (`orders.to_pick_ids`, one query for the whole list)."""
     from .services.orders import gifts_for, verified
 
     standing = [
@@ -349,6 +364,9 @@ def order(
         "buyer": o.buyer_username,
         "status": o.status.value,
         "verified": verified(o),
+        # Wins of this order paid on Whatnot whose product is still to pick: an "open" order
+        # made only of these and paid items is waiting for picks, not for a payment.
+        "toPick": sum(1 for x in o.sales if x.id in (to_pick or ())),
         "items": sum(s.quantity for s in standing),
         "totalCents": sum((s.price_cents or 0) * s.quantity for s in standing),
         "notes": o.notes,
@@ -361,7 +379,14 @@ def order(
         "packedBy": o.packed_by,
         "shippedAt": o.shipped_at.isoformat() if o.shipped_at else None,
         "createdAt": o.created_at.isoformat(),
-        "sales": [sale(s, review=(reviews or {}).get(s.id)) for s in o.sales]
+        "sales": [
+            sale(
+                s,
+                review=(reviews or {}).get(s.id),
+                to_pick=(s.id in to_pick) if to_pick is not None else None,
+            )
+            for s in o.sales
+        ]
         if with_sales
         else None,
         "gifts": gifts_for(o) if with_gifts else None,
