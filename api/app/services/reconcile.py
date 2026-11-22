@@ -328,6 +328,27 @@ def plan(
     return out
 
 
+def hold_for_whatnot(p: Plan) -> Plan:
+    """A payment file's paid row never restores a declined sale Whatnot's own order says
+    failed (`pipeline.whatnot_failed_order`, Javier's call 2026-11-20): the row is skipped
+    with a note, and Whatnot's paid order restores the sale. Only for a file: Whatnot's own
+    rows are Whatnot's word already."""
+    sales = load_sales(row.sale_id for row in p.rows if row.action == "mark_paid" and row.sale_id)
+    plans: dict = {}
+    for row in p.rows:
+        sale = sales.get(row.sale_id) if row.action == "mark_paid" else None
+        if sale is None or sale.status is not SaleStatus.payment_failed:
+            continue
+        order = pipeline.whatnot_failed_order(sale, plans)
+        if order is not None:
+            row.action = "skip"
+            row.note = (
+                f"Whatnot's order #{order} says this payment failed: Whatnot decides, and its "
+                "paid order marks the sale paid"
+            )
+    return p
+
+
 def _match(
     show: Show, row: Row, sales: list[Sale], taken: set[int], show_ids: list[int] | None = None
 ) -> Sale | None:

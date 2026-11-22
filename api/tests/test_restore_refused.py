@@ -102,3 +102,80 @@ def test_an_order_still_taking_payment_refuses_nothing(app, client, shop, sign_i
     assert r.status_code == 200, r.get_json()
     assert _sale(app)[0] == "paid"
     assert level(app, shop["red"]) == (2, 0)
+
+
+def _stream_declined_with_failed_order_read(app, shop):
+    """A shop that compares first: the video player showed the card declined, and Whatnot's
+    failed order for the win was read but nobody has applied it yet (not tied to the sale)."""
+    shop["say"](app, [win(RAE, "Red bundle", "25.00")])
+    run(app, shop["show"])
+    o = order(shop, RAE, "Red bundle")
+    shop["fake"].set_order_status(o["id"], "failed")
+    shop["say"](app, [("", f"{RAE} payment declined for Red bundle for $25.00", "player")])
+    run(app, shop["show"])
+    read(app, shop)  # stored, not applied
+    assert _sale(app) == ("payment_failed", None)
+    return o
+
+
+def test_a_failed_order_read_but_not_applied_refuses_the_restore_too(app, client, shop, sign_in):
+    """Restored now, applying that order would decline the sale again, and Whatnot's paid
+    order after that could no longer restore it (a paid win left uncounted; second
+    independent check of 7278d9c, probe 2h)."""
+    o = _stream_declined_with_failed_order_read(app, shop)
+    h = sign_in(shop["org"], role="manager", email="made_up_mgr@x.test")
+    before, moves = snapshot(app), _moves(app)
+    r = _paid_after_all(client, h, _item(app))
+    assert r.status_code == 409 and f"#{o['id']}" in r.get_json()["error"]
+    assert snapshot(app) == before and _moves(app) == moves
+    apply(app, shop)  # the person applies Whatnot's orders: nothing to undo
+    assert _sale(app)[0] == "payment_failed" and _moves(app) == moves
+    shop["fake"].set_order_status(o["id"], "pending_fulfillment")
+    read(app, shop)
+    apply(app, shop)
+    assert _sale(app) == ("paid", o["id"])
+    assert level(app, shop["red"]) == (2, 0)
+
+
+def _paid_in_a_file(client, headers, shop):
+    return client.post(
+        f"/api/orders/shows/{shop['show']}/reconcile",
+        json={"csv": f"buyer,item,status\n{RAE},Red bundle,paid\n", "apply": True},
+        headers=headers,
+    )
+
+
+def test_a_payment_file_paid_row_never_restores_what_whatnot_says_failed(
+    app, client, shop, sign_in
+):
+    """The file restored it; the next read of the failed order declined it again; and
+    Whatnot's paid order was then 'unmatched': the paid win stayed uncounted (probe 1c)."""
+    o = _declined_by_whatnot(app, shop)
+    h = sign_in(shop["org"], role="manager", email="made_up_mgr@x.test")
+    before, moves = snapshot(app), _moves(app)
+    r = _paid_in_a_file(client, h, shop)
+    assert r.status_code == 200, r.get_json()
+    assert snapshot(app) == before and _moves(app) == moves
+    assert level(app, shop["red"]) == (3, 0)
+    read(app, shop)
+    apply(app, shop)
+    assert _sale(app)[0] == "payment_failed" and _moves(app) == moves
+    shop["fake"].set_order_status(o["id"], "pending_fulfillment")
+    read(app, shop)
+    apply(app, shop)
+    assert _sale(app) == ("paid", o["id"])
+    assert level(app, shop["red"]) == (2, 0)
+
+
+def test_a_payment_file_still_restores_a_decline_whatnot_has_no_order_for(
+    app, client, shop, sign_in
+):
+    shop["say"](app, [win(RAE, "Red bundle", "25.00")])
+    run(app, shop["show"])
+    shop["say"](app, [("", f"{RAE} payment declined for Red bundle for $25.00", "player")])
+    run(app, shop["show"])
+    assert _sale(app)[0] == "payment_failed"
+    h = sign_in(shop["org"], role="manager", email="made_up_mgr@x.test")
+    assert _paid_in_a_file(client, h, shop).status_code == 200
+    assert _sale(app)[0] == "paid"
+    assert level(app, shop["red"]) == (2, 0)

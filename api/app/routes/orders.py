@@ -542,7 +542,7 @@ def reconcile_show(show_id: int):
     text = d.get("csv") or ""
     if not isinstance(text, str) or not text.strip():
         return jsonify({"error": "paste or upload the payment CSV"}), 400
-    p = reconcile.plan(show, reconcile.parse_csv(text))
+    p = reconcile.hold_for_whatnot(reconcile.plan(show, reconcile.parse_csv(text)))
     if d.get("apply"):
         import_id = uuid.uuid4().hex[:12]
         reconcile.apply(show, p, actor=Actor.user(g.u), user=g.u, import_id=import_id)

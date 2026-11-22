@@ -1966,21 +1966,27 @@ def refuse_cancelling(sale: Sale | None) -> None:
         _refuse_leaving_unnamed(sale)
 
 
-def refuse_restoring(sale: Sale | None) -> None:
-    """Raise when a person's "They paid after all" would restore a declined win while
-    Whatnot's own order for it says the payment failed (Javier's call, 2026-11-20). Whatnot
-    decides whether a win was paid: when it does say paid, its paid order restores the sale
-    through the order sync, as for any declined win. A win declined by the stream or by a
-    payment file, with no failed Whatnot order of its own, is still restored by hand.
+def whatnot_failed_order(sale: Sale | None, plans: dict | None = None) -> str | None:
+    """The Whatnot order that says this declined sale's payment failed, or None. Javier's
+    call (2026-11-20): Whatnot decides whether a win was paid, so neither a person ("They paid
+    after all") nor a payment file restores a sale Whatnot's order says failed; Whatnot's
+    paid order restores it (applying its orders).
 
-    The orders read are the sale's own (`external_order_id`) and any whose items name it
-    (`WhatnotOrderItem.sale_id`). Any of them paid, or still taking payment, refuses
-    nothing."""
+    Whatnot's word is read two ways, and both count:
+    - the orders tied to the sale: its own (`external_order_id`) and any whose items name it
+      (`WhatnotOrderItem.sale_id`);
+    - Whatnot's stored orders as applying them would match them to this sale
+      (`whatnot.orders.compare`), so a failed order that was read but not applied yet (a
+      shop that compares first) counts too: restored now, applying it would decline the
+      sale again, and the paid order after that could no longer restore it.
+    Any of them paid, or still taking payment, says nothing failed. `plans` caches the
+    comparison per show for a caller asking about many sales (a payment file)."""
     from ..models import WhatnotOrder, WhatnotOrderItem
+    from .whatnot import orders as whatnot_orders
     from .whatnot.orders import PAYMENT
 
     if sale is None or sale.status is not SaleStatus.payment_failed:
-        return
+        return None
     tied = select(WhatnotOrderItem.order_id).where(
         WhatnotOrderItem.organization_id == sale.organization_id,
         WhatnotOrderItem.sale_id == sale.id,
@@ -1988,15 +1994,35 @@ def refuse_restoring(sale: Sale | None) -> None:
     mine = WhatnotOrder.id.in_(tied)
     if sale.external_order_id:
         mine = or_(mine, WhatnotOrder.whatnot_id == sale.external_order_id)
-    orders = db.session.execute(
-        select(WhatnotOrder.whatnot_id, WhatnotOrder.status)
-        .where(WhatnotOrder.organization_id == sale.organization_id, mine)
-        .order_by(WhatnotOrder.id)
-    ).all()
-    said = {PAYMENT.get(status or "") for _, status in orders}
-    if "failed" not in said or said & {"paid", "pending"}:
+    said: list[tuple[str | None, str | None]] = [
+        (whatnot_id, PAYMENT.get(status or ""))
+        for whatnot_id, status in db.session.execute(
+            select(WhatnotOrder.whatnot_id, WhatnotOrder.status)
+            .where(WhatnotOrder.organization_id == sale.organization_id, mine)
+            .order_by(WhatnotOrder.id)
+        )
+    ]
+    plans = {} if plans is None else plans
+    if sale.show_id not in plans:
+        try:
+            plans[sale.show_id] = whatnot_orders.compare(sale.show)["plan"]
+        except whatnot_orders.OrdersError:
+            plans[sale.show_id] = None  # nothing of Whatnot's to read for this show
+    plan = plans[sale.show_id]
+    if plan is not None:
+        said += [(row.external_id, row.status) for row in plan.rows if row.sale_id == sale.id]
+    if any(payment in ("paid", "pending") for _, payment in said):
+        return None
+    return next((order or "?" for order, payment in said if payment == "failed"), None)
+
+
+def refuse_restoring(sale: Sale | None) -> None:
+    """Raise when a person's "They paid after all" would restore a declined win Whatnot's
+    order says failed (`whatnot_failed_order`). A win declined by the stream or by a
+    payment file, with no failed Whatnot order for it, is still restored by hand."""
+    number = whatnot_failed_order(sale)
+    if number is None:
         return
-    number = next(w for w, status in orders if PAYMENT.get(status or "") == "failed")
     raise ReviewError(
         f"Whatnot's order #{number} says this payment failed, so the sale stays declined "
         "here. If the buyer paid another way, Whatnot's order will say so, and applying "
