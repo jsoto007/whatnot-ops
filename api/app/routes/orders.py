@@ -150,6 +150,7 @@ def list_orders():
         )
     parcels = _parcels(rows)
     to_pick = orders.to_pick_ids(s.id for o in rows for s in o.sales)
+    settled = orders.settled_unnamed_ids([s for o in rows for s in o.sales])
     return jsonify(
         {
             "orders": [
@@ -159,6 +160,7 @@ def list_orders():
                     reviews=reviews,
                     parcel=parcels.get(o.id),
                     to_pick=to_pick,
+                    settled=settled,
                 )
                 for o in rows
             ],
@@ -181,6 +183,7 @@ def _one(o: Order) -> dict:
         reviews=_open_reviews([o]),
         parcel=_parcels([o]).get(o.id),
         to_pick=orders.to_pick_ids(s.id for s in o.sales),
+        settled=orders.settled_unnamed_ids(o.sales),
     )
 
 
@@ -276,10 +279,14 @@ def buyer_history(username: str):
     ).all()
     reviews = _open_reviews(rows)
     to_pick = orders.to_pick_ids(s.id for o in rows for s in o.sales)
+    settled = orders.settled_unnamed_ids([s for o in rows for s in o.sales])
     return jsonify(
         {
             "buyer": username,
-            "orders": [serializers.order(o, reviews=reviews, to_pick=to_pick) for o in rows],
+            "orders": [
+                serializers.order(o, reviews=reviews, to_pick=to_pick, settled=settled)
+                for o in rows
+            ],
         }
     )
 
@@ -335,8 +342,9 @@ def set_sale_gifts(sale_id: int):
 @require("review.act")
 def change_sale_product(sale_id: int):
     """Give a standing sale another product: the old one goes back to stock, the new one
-    leaves it. Once the order is being picked nothing is put back by itself and a note is
-    left for the packer."""
+    leaves it, at any step short of shipped. Once the order is being picked or packed a note
+    is left for the packer: swap the unit, and put the old one back on the shelf (it is
+    already counted back in, so it is never counted again)."""
     sale = db.session.get(Sale, sale_id)
     if sale is None or sale.organization_id != g.u.organization_id:
         return jsonify({"error": "sale not found"}), 404
@@ -365,15 +373,18 @@ def change_sale_product(sale_id: int):
             )
         }
         if result["picked"]:
+            stage = sale.order.status.value if sale.order is not None else "picking"
+            what = {"picking": "being picked"}.get(stage, stage)
+            old = names[result["from"]]
             pipeline.open_review(
                 sale.organization_id,
                 pipeline.SWAPPED_AFTER_PICKING,
-                f"{sale.buyer_username}'s {sale.quantity} × {names[result['from']]} was changed "
-                f"to {names[result['to']]} after its order was already being picked. Swap it "
-                f"in the package, and count the {names[result['from']]} back in Inventory.",
+                f"{sale.buyer_username}'s {sale.quantity} × {old} was changed to "
+                f"{names[result['to']]} after its order was already {what}. Swap it in the "
+                f"package, and put the {old} back on the shelf: it is already back in stock.",
                 show_id=sale.show_id,
                 sale_id=sale.id,
-                dedupe=False,  # one note per change: each is another unit to count back
+                dedupe=False,  # one note per change: each is another unit to swap
             )
         audit.record(
             g.u.organization_id,
@@ -386,6 +397,8 @@ def change_sale_product(sale_id: int):
                 "from": names[result["from"]],
                 "to": names[result["to"]],
                 "picked": result["picked"],
+                # How many units of the old product went back in stock at the change.
+                "restocked": result["restocked"],
             },
         )
     db.session.commit()
@@ -529,7 +542,7 @@ def reconcile_show(show_id: int):
     text = d.get("csv") or ""
     if not isinstance(text, str) or not text.strip():
         return jsonify({"error": "paste or upload the payment CSV"}), 400
-    p = reconcile.plan(show, reconcile.parse_csv(text))
+    p = reconcile.hold_for_whatnot(reconcile.plan(show, reconcile.parse_csv(text)))
     if d.get("apply"):
         import_id = uuid.uuid4().hex[:12]
         reconcile.apply(show, p, actor=Actor.user(g.u), user=g.u, import_id=import_id)

@@ -632,7 +632,10 @@ def test_an_order_between_shows_after_completion_is_read_by_the_daily_top_up(app
         minutes=5
     )  # the newer end did
     pages = [c for c in shop["fake"].calls if c == ("GET", "/orders")]
-    assert len(pages) == 1  # a top-up reads days, not 90 of them
+    # A top-up reads days, not 90 of them: here one page, read twice, because the list ends
+    # after only three orders older than its floor, which is not a page's worth in a row, so
+    # a second read must end on the same order (PR 79 review, C3).
+    assert len(pages) == 2
     with app.app_context():
         assert backfill.due(shop["org"]) is False  # and not again until the next day
 
@@ -730,6 +733,37 @@ def test_one_order_out_of_order_near_the_top_does_not_end_the_run(app, shop):
     app.config["WHATNOT_TRANSPORT"] = stray_on_top
     counts = go(app, shop)
     assert counts["complete"] is True and stored(app) == 60
+    assert "stray_0" not in held_buyers(app)  # below the floor: never stored
+
+
+def test_a_list_that_ends_early_right_after_a_stray_old_order_is_not_taken_as_the_floor(app, shop):
+    """PR 79 review (C3): one stray order older than the floor ends the first page, and the
+    next page is one odd 200 answer (empty, no cursor). A few old orders at the end of the
+    list prove nothing (only a page's worth in a row does): the end counts only when a
+    second read ends on the same order."""
+    now = shop["now"]
+    put(shop, 60, newest=now - 5 * DAY, price=1000)
+    put(shop, 60, newest=now - 50 * DAY, who="older", price=1000)
+    stray = put(shop, 1, newest=now - 100 * DAY, who="stray", price=1)[0]
+    fake = shop["fake"]
+    inner, n = fake.transport, {"orders": 0}
+
+    def stray_then_short_page(method, url, *, headers, params, json):
+        if url.endswith("/orders"):
+            n["orders"] += 1
+            if n["orders"] == 2:  # one odd 200 answer right after the stray (empty, no cursor)
+                return Response(200, {"data": []})
+        r = inner(method, url, headers=headers, params=params, json=json)
+        if url.endswith("/orders") and r.status == 200:
+            data = [d for d in r.body["data"] if d["id"] != stray["id"]]
+            if not params.get("cursor"):  # Whatnot lists the stray at the end of page one
+                data.append(fake._order_view(fake.orders[stray["id"]]))
+            return Response(200, {**r.body, "data": data})
+        return r
+
+    app.config["WHATNOT_TRANSPORT"] = stray_then_short_page
+    counts = go(app, shop)
+    assert counts["complete"] is True and stored(app) == 120
     assert "stray_0" not in held_buyers(app)  # below the floor: never stored
 
 

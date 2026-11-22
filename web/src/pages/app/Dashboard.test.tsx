@@ -61,6 +61,8 @@ const whatnot = (days: number): WhatnotMoney => ({
     grossCents: 5045 + 130 + 500,
     giveaways: 1,
     otherCurrencyOrders: 0,
+    shippingCents: days === 7 ? 525 : 3 * 525,
+    withShippingCents: days === 7 ? 1700 + 525 : 5045 + 3 * 525,
   },
   customers: {
     new: { buyers: 1, orders: 2, paidCents: days === 7 ? 1700 : 4200 },
@@ -119,6 +121,9 @@ test("connected to Whatnot, the money, the shows' sales and the top buyers are W
   // What lies between Sales and Whatnot's Gross Sales; a declined payment is never said (Javier's call 2026-11-14).
   expect(screen.getByTestId('sales-line-up').textContent).toBe('Before discounts and cancellations: $56.75 (Sales plus $1.30 in discounts and $5.00 from 1 cancelled order).')
   expect(card.textContent).not.toMatch(/failed|Failed|declined/)
+  // Beside the sales, never in them: the shipping the same paid orders charged, and the two together.
+  expect(screen.getByTestId('sales-shipping').textContent).toBe('Shipping buyers paid $15.75 · Sales with shipping $66.20')
+  expect(screen.getByTestId('tile-paid').querySelector('.money-big')!.textContent).toBe('$50.45')
   expect(screen.getByTestId('tile-net').textContent).toContain('$19.97')
   expect(screen.getByTestId('tile-net').textContent).toContain('ledger lines of these 30 days, through Nov 13')
   expect(screen.getByTestId('tile-fees').textContent).toContain('$3.03')

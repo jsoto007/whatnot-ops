@@ -94,6 +94,9 @@ def test_sales_are_whatnots_paid_orders_item_prices_in_cents(app, shop):
         "grossCents": 5045 + 500,  # paid + cancelled, no discounts
         "giveaways": 1,
         "otherCurrencyOrders": 1,
+        # Beside the sales, never in them: the shipping the same 3 paid orders charged.
+        "shippingCents": 3 * 525,
+        "withShippingCents": 5045 + 3 * 525,
     }
     assert got["ordersReadAt"] is not None
     longer = money(app, shop, days=90)["sales"]
@@ -368,3 +371,53 @@ def test_the_new_figures_follow_the_period_and_start_at_zero(app, shop):
     s = money(app, shop, days=7)["sales"]
     assert (s["discountCents"], s["grossCents"]) == (0, 0)
     assert money(app, shop, days=90)["sales"]["discountCents"] == 100
+
+
+def test_shipping_buyers_paid_is_beside_the_sales_on_the_same_orders(app, shop):
+    """The client reads sales plus shipping on Whatnot's own screen (about 80k against 70k of
+    item prices), so the card says the shipping beside the sales and the two together. Hand
+    trace, in cents, the last 30 days unless said:
+      mika_r  paid $25.00, shipping $5.25          -> sales 2500, shipping 525
+      jo.b    paid $10.00, shipping $7.99          -> sales 1000, shipping 799
+      sam_t   paid, Whatnot gave no shipping       -> sales  800, shipping   0 (adds nothing)
+      vee     still being paid, shipping $5.25     -> neither
+      rey     cancelled, shipping $5.25            -> neither
+      ana.k   failed, shipping $5.25               -> neither
+      lu.w    a giveaway, shipping $5.25           -> neither (not a sale; like the sales)
+      cad.co  paid in CAD, shipping $9.00          -> neither (another currency)
+      old     paid 40 days ago, shipping $5.25     -> only in the 90 days
+    Sales 2500 + 1000 + 800 = 4300; shipping 525 + 799 = 1324; together 5624. The sales
+    figure itself does not change."""
+    add(shop, "mika_r", 2500)
+    add(shop, "jo.b", 1000, shipping_cents=799)
+    blank = add(shop, "sam_t", 800)
+    add(shop, "vee", 900, status="pending")
+    add(shop, "rey", 700, status="cancelled")
+    add(shop, "ana.k", 600, status="failed")
+    add(shop, "lu.w", 0, transaction_type="giveaway")
+    cad = add(shop, "cad.co", 5000, shipping_cents=900)
+    cad["amounts"]["total"]["currency"] = "CAD"
+    old = add(shop, "old", 400)
+    read(app, shop)
+    with app.app_context():
+        db.session.execute(
+            update(WhatnotOrder)
+            .where(WhatnotOrder.whatnot_id == blank["id"])
+            .values(shipping_cents=None)
+        )
+        db.session.execute(
+            update(WhatnotOrder)
+            .where(WhatnotOrder.whatnot_id == old["id"])
+            .values(ordered_at=datetime.now(UTC) - timedelta(days=40))
+        )
+        db.session.commit()
+    s = money(app, shop)["sales"]
+    assert s["paidCents"] == 4300
+    assert (s["shippingCents"], s["withShippingCents"]) == (1324, 4300 + 1324)
+    longer = money(app, shop, days=90)["sales"]
+    assert (longer["shippingCents"], longer["withShippingCents"]) == (1324 + 525, 4700 + 1849)
+
+
+def test_with_nothing_read_the_shipping_is_zero(app, shop):
+    s = money(app, shop)["sales"]
+    assert (s["shippingCents"], s["withShippingCents"]) == (0, 0)

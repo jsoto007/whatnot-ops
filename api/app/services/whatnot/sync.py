@@ -92,8 +92,29 @@ REFUSED_IN_A_ROW = 5
 # An ended show's orders are listed again this long after it ended, then once more each
 # later time: a card declined at the win and retried is a NEW order, placed after the show
 # ended, and the first read after the end can come before it.
-LATE_READS = (timedelta(hours=1), timedelta(hours=6), timedelta(hours=24))
-LATE_READS_WITHIN = timedelta(days=2)  # a show older than this has had its late reads
+#
+# The two later reads are for an order Whatnot cancels (or refunds, or fails) after it was
+# COMPLETED: the open-order re-read only asks orders Whatnot had not settled, so until then
+# nothing read a completed order again after the 24-hour read. Each lists the show's orders
+# once more (one call per 50, an items call only for one new to the app) and queues the
+# show's apply whatever changed, so a cancel another read stored first (the backfill's
+# daily top-up stores and applies nothing) is applied too; asking every completed order by
+# id would be a call each (a show here has a few hundred). At about 200 orders a day (some
+# 6,000 a month, backfill.py) the two-day read lists some 10 pages and the three-day one
+# some 13. They end with `PARCELS_AFTER`, the days the timer keeps a show's parcels read
+# while it is packed and shipped, which is also how long Whatnot's results are asked again
+# (`results.RESULTS_REFRESH_WINDOW`). A cancel later than that, when the parcel is long gone,
+# reaches the app only by Whatnot's `orders.updated` webhook; the timer does not look.
+LATE_READS = (
+    timedelta(hours=1),
+    timedelta(hours=6),
+    timedelta(hours=24),
+    timedelta(days=2),
+    PARCELS_AFTER,
+)
+# A show older than this has had its late reads (a day after the last one, as a pass can
+# come late). Also the shows a stalled catch-up still reads (`sync_job`).
+LATE_READS_WITHIN = PARCELS_AFTER + timedelta(days=1)
 # A show Whatnot's own results count more orders for than the app holds is read again (at
 # most this often): the repair for a catch-up that once marked shows read that it never
 # reached, and for any order the reads missed.
@@ -698,10 +719,12 @@ def repair_items(org_id: int, client: WhatnotClient, whatnot_show_ids: list[str]
 
 def refresh_open_orders(org_id: int, client: WhatnotClient) -> int:
     """Re-read the orders Whatnot had not settled when we last looked: a status change on
-    an old order does not bring it back to the top of the list. An order Whatnot refuses to
-    give (a request error about that one order) is skipped and put at the back of the line,
-    never the end of the pass; a failure that is not about one order (the token, Whatnot
-    being down, five refusals in a row) ends the pass, keeping the orders already re-read."""
+    an old order does not bring it back to the top of the list. (A COMPLETED order Whatnot
+    cancels later is read by its show's late reads, out to three days: `LATE_READS`.) An
+    order Whatnot refuses to give (a request error about that one order) is skipped and put
+    at the back of the line, never the end of the pass; a failure that is not about one order
+    (the token, Whatnot being down, five refusals in a row) ends the pass, keeping the orders
+    already re-read."""
     since = datetime.now(UTC) - OPEN_ORDER_AGE
     ids = db.session.scalars(
         select(WhatnotOrder.whatnot_id)
@@ -978,7 +1001,8 @@ def _unread_shows(org_id: int, live: list[WhatnotShow]) -> list[WhatnotShow]:
     """Ended shows whose orders the timer reads in full: never read since they ended, or
     (once, at each of `LATE_READS` after the end) not read since then, or short of the
     orders Whatnot's own results count. A card declined at the win and retried is a new order
-    that can be placed after the show ended and after the first read of everything. The
+    that can be placed after the show ended and after the first read of everything, and a
+    completed order can be cancelled days later (the two-day and three-day reads). The
     late and repair reads wait while a show is on air: they are not the first read of
     anything."""
     now = datetime.now(UTC)

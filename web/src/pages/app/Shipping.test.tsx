@@ -329,6 +329,147 @@ test('a viewer is not offered "Print labels"', async () => {
   expect(screen.queryByTestId('shipping-print-state')).toBeNull()
 })
 
+// ---------- Javier's calls, 2026-11-19 ----------
+
+test('a printed label can be marked not printed in one click, and is back with the labels to print', async () => {
+  const before = doc([buyer('buyer_a', 'labelled', [labelled(11, { printedAt: '2026-11-08T03:40:00Z' })]), buyer('buyer_b', 'labelled', [labelled(12, { printedAt: '2026-11-08T03:40:00Z' })])], {
+    labelsToPrint: 0,
+    labelsPrinted: 2,
+  })
+  const after = doc([buyer('buyer_a', 'labelled', [labelled(11)]), buyer('buyer_b', 'labelled', [labelled(12, { printedAt: '2026-11-08T03:40:00Z' })])], { labelsToPrint: 1, labelsPrinted: 1 })
+  const calls: { method: string; url: string; body: unknown }[] = []
+  let undone = false
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/auth/csrf') return new Response(JSON.stringify({ token: 't' }))
+      const method = init?.method ?? 'GET'
+      calls.push({ method, url, body: init?.body ? JSON.parse(init.body as string) : undefined })
+      if (method === 'POST') {
+        undone = true
+        return new Response(JSON.stringify({ id: 11, changed: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify(undone ? after : before), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }),
+  )
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <AuthContext.Provider value={auth(['orders.view', 'orders.fulfill'])}>
+        <MemoryRouter initialEntries={['/app/orders/shipping/7']}>
+          <Routes>
+            <Route path="/app/orders/shipping/:showId" element={<Shipping />} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+  const row = await screen.findByTestId('ship-buyer_a')
+  expect(screen.queryByTestId('shipping-print-labels')).toBeNull()
+  // One click: no question asked.
+  const confirm = vi.fn(() => true)
+  vi.stubGlobal('confirm', confirm)
+  fireEvent.click(within(row).getByTestId('ship-unprint'))
+  await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toEqual([{ method: 'POST', url: '/api/shipping/shipments/11/not-printed', body: {} }]))
+  expect(confirm).not.toHaveBeenCalled()
+  expect(await screen.findByTestId('shipping-note')).toHaveTextContent('Marked not printed. It prints with the next Print labels.')
+  // The page reads the show again: that label is to print again, the other is still printed.
+  expect(await screen.findByTestId('shipping-print-labels')).toHaveTextContent('Print 1 label')
+  expect(within(screen.getByTestId('ship-buyer_a')).queryByTestId('ship-printed')).toBeNull()
+  expect(within(screen.getByTestId('ship-buyer_a')).queryByTestId('ship-unprint')).toBeNull()
+  expect(within(screen.getByTestId('ship-buyer_b')).getByTestId('ship-unprint')).toHaveTextContent('Not printed')
+})
+
+test('a viewer is not offered "Not printed"', async () => {
+  open(doc([buyer('buyer_a', 'labelled', [labelled(11, { printedAt: '2026-11-08T03:40:00Z' })])], { labelsToPrint: 0, labelsPrinted: 1 }), ['orders.view'])
+  expect(await screen.findByTestId('ship-printed')).toBeInTheDocument()
+  expect(screen.queryByTestId('ship-unprint')).toBeNull()
+})
+
+test('buyers Whatnot has no parcel for are their own group, told what to do in Seller Hub', async () => {
+  open(
+    doc([
+      buyer('lani808', 'ready', [pack({ askable: true })]),
+      buyer('lone_lou', 'no_parcel', [], { items: 2, unplaced: 2, orderId: 6 }),
+      buyer('kat.c', 'ready', [pack({ id: 12, askable: true })]),
+      buyer('part_pam', 'no_parcel', [pack({ id: 13, items: 1 })], { items: 2, unplaced: 1, orderId: 8 }),
+      buyer('later_lee', 'none', [], { unplaced: 1, orderId: null, orderStatus: null }),
+    ]),
+    ALL,
+  )
+  const group = await screen.findByTestId('shipping-no-parcel')
+  expect(group.textContent).toContain('No parcel on Whatnot')
+  expect(group.textContent).toContain('Create it in Seller Hub, then press Read again from Whatnot.')
+  // Only those buyers, in the server's order; the others stay in the main list.
+  expect(within(group).getAllByRole('row').slice(1).map((r) => r.getAttribute('data-testid'))).toEqual(['ship-lone_lou', 'ship-part_pam'])
+  const main = screen.getByTestId('shipping-buyers')
+  expect(within(main).getAllByRole('row').slice(1).map((r) => r.getAttribute('data-testid'))).toEqual(['ship-lani808', 'ship-kat.c', 'ship-later_lee'])
+  expect(within(screen.getByTestId('ship-lone_lou')).getByTestId('ship-state').textContent).toBe('No parcel on Whatnot')
+  expect(within(screen.getByTestId('ship-lone_lou')).getByTestId('ship-no-parcel').textContent).toBe('Whatnot has no parcel for this buyer yet. Create it in Seller Hub, then press Read again from Whatnot.')
+  expect(within(screen.getByTestId('ship-part_pam')).getByTestId('ship-no-parcel').textContent).toBe("Whatnot has no parcel for 1 of this buyer's items yet. Create it in Seller Hub, then press Read again from Whatnot.")
+  // Still only "not packaged yet" while the parcel may just not be read.
+  expect(within(screen.getByTestId('ship-later_lee')).getByTestId('ship-state').textContent).toBe('Not in a package on Whatnot yet')
+  expect(within(screen.getByTestId('ship-later_lee')).queryByTestId('ship-no-parcel')).toBeNull()
+  expect(screen.getByTestId('shipping-state').textContent).toBe('Friday night · 5 buyers · 2 ready for a label · 2 with no parcel on Whatnot · 1 not packaged yet')
+  expect(screen.getByTestId('shipping-make-labels').textContent).toBe('Make 2 labels')
+  expect(document.body.textContent).not.toContain('no_parcel')
+})
+
+test('a buyer with an open parcel and a paid item whose only parcel was cancelled is told to check it in Seller Hub, and gets no label', async () => {
+  // As the server sends it: the cancelled parcel is still listed with its item, and that item counts as in no parcel.
+  open(
+    doc([
+      buyer('kat.c', 'ready', [pack({ id: 12, items: 1, askable: true })]),
+      buyer('part_pat', 'no_parcel', [pack({ id: 14, items: 1 }), pack({ id: 15, items: 1, status: 'cancelled' })], { items: 2, unplaced: 1, orderId: 9 }),
+    ]),
+    ALL,
+  )
+  const group = await screen.findByTestId('shipping-no-parcel')
+  expect(within(group).getAllByRole('row').slice(1).map((r) => r.getAttribute('data-testid'))).toEqual(['ship-part_pat'])
+  const row = screen.getByTestId('ship-part_pat')
+  expect(within(row).getByTestId('ship-no-parcel').textContent).toBe(
+    "Whatnot cancelled the parcel for 1 of this buyer's items and made no other. Check that parcel in Seller Hub before packing: it may have left already. If it did not, create a new parcel there, then press Read again from Whatnot.",
+  )
+  expect(within(row).getAllByTestId('ship-package').map((p) => p.firstElementChild?.textContent)).toEqual(['No label yet · 1 item', 'Cancelled · 1 item'])
+  expect(screen.getByTestId('shipping-make-labels').textContent).toBe('Make 1 label')
+})
+
+test('a parcel Whatnot cancelled as stuck in tracking is never called missing: it may have left', async () => {
+  // PR 80 verifier probe p6: one parcel delivered, the other paid item's only parcel cancelled_tracking_stuck.
+  open(
+    doc([
+      buyer('stuck_sam', 'no_parcel', [pack({ id: 16, items: 1, status: 'delivered', tracking: '9400AAA' }), pack({ id: 17, items: 1, status: 'cancelled_tracking_stuck' })], { items: 2, unplaced: 1 }),
+      buyer('gone_gus', 'no_parcel', [pack({ id: 18, items: 1, status: 'cancelled_not_shipped' })], { items: 1, unplaced: 1, orderId: 6 }),
+      buyer('mixed_max', 'no_parcel', [pack({ id: 19, items: 1, status: 'cancelled' }), pack({ id: 20, items: 1 })], { items: 3, unplaced: 2, orderId: 7 }),
+    ]),
+    ALL,
+  )
+  const group = await screen.findByTestId('shipping-no-parcel')
+  expect(group.textContent).not.toContain('Create the parcel in Seller Hub')
+  const words = (name: string) => within(screen.getByTestId(`ship-${name}`)).getByTestId('ship-no-parcel').textContent
+  expect(words('stuck_sam')).toBe(
+    "Whatnot cancelled the parcel for 1 of this buyer's items and made no other. Check that parcel in Seller Hub before packing: it may have left already. If it did not, create a new parcel there, then press Read again from Whatnot.",
+  )
+  expect(words('gone_gus')).toBe(
+    'Whatnot cancelled the parcel for this buyer and made no other. Check that parcel in Seller Hub before packing: it may have left already. If it did not, create a new parcel there, then press Read again from Whatnot.',
+  )
+  // One item only in a cancelled parcel, one in none at all.
+  expect(words('mixed_max')).toBe(
+    "Whatnot cancelled the parcel for 1 of this buyer's items and made no other, and has no parcel for 1 more item yet. Check that parcel in Seller Hub before packing: it may have left already. If it did not, create a new parcel there, then press Read again from Whatnot.",
+  )
+  expect(within(screen.getByTestId('ship-stuck_sam')).getAllByTestId('ship-package').map((p) => p.firstElementChild?.textContent?.split(' · ').slice(0, 2).join(' · '))).toEqual(['Delivered · 1 item', 'Cancelled · 1 item'])
+  expect(document.body.textContent).not.toContain('cancelled_')
+  expect(document.body.textContent).not.toContain('no_parcel')
+})
+
+test('before the final read, an item only in a cancelled package is said so, not "not in a package"', async () => {
+  open(doc([buyer('wait_wes', 'reading', [pack({ id: 21, items: 1 }), pack({ id: 22, items: 1, status: 'cancelled' })], { items: 2, unplaced: 1 })], { show: { title: 'Friday night', status: 'ended', ended: true, complete: false } }), ALL)
+  const row = await screen.findByTestId('ship-wait_wes')
+  expect(within(row).getByTestId('ship-state').textContent).toBe("Waiting for the show's final list from Whatnot")
+  expect(row.textContent).toContain('1 item is only in a package Whatnot cancelled')
+  expect(row.textContent).not.toContain('not in a package yet')
+  expect(within(row).queryByTestId('ship-no-parcel')).toBeNull()
+})
+
 test('a blocked pop-up asks nothing of the server: no label is marked printed with nothing on screen', async () => {
   localStorage.clear()
   const d = doc([buyer('buyer_a', 'labelled', [labelled(11)])], { labelsToPrint: 1, labelsPrinted: 0 })

@@ -11,6 +11,8 @@
    product for it afterwards. The link is what lets an order for that listing name its
    product without anyone picking it (`resolver`), and what Inventory shows as "on
    Whatnot", with a note when Whatnot offers a different number than the shop can sell.
+   A listing whose title says the winner chooses ("CHOOSE ANY…") may be linked, but its
+   orders never name a product by it: each winner picks their own.
 
 **The app never changes Whatnot's stock.** A first version set Whatnot's count from the
 app; its review showed that cannot be right without knowing more than the app knows:
@@ -18,16 +20,21 @@ Whatnot counts its own sales down, and the app only learns of a sale when its or
 read and applied (never, in "Compare only", or for a sale made between shows), so setting
 a number would put sold units back. It was removed. People fix a difference on Whatnot.
 
-Nothing here changes a sale, an order or the app's own stock."""
+Nothing here changes a sale or the app's own stock. Marking a listing "none of ours", or
+linking it again, only derives again whether its paid wins still hold their orders back
+(`orders.settled_unnamed_sales`), and asks a linked listing's waiting wins which product
+they are (`_settle_wins_again`)."""
 
 import logging
 from datetime import UTC, datetime, timedelta
 
 from flask import g, has_request_context
 from sqlalchemy import exists, func, select, update
+from sqlalchemy.orm import selectinload
 
 from ...db import db
 from ...models import (
+    Order,
     ReviewItem,
     ReviewStatus,
     Sale,
@@ -238,7 +245,9 @@ def learn_listings(
     # its own for one auction that never names a product (the winner says which in chat, and
     # linking it is not offered): reading it would cost two calls of the show's request
     # budget for a title the order already carries. The daily catalog read still mirrors it.
-    # Sold one product per listing, the same title is a product's listing: read as always.
+    # Sold one product per listing, such a lot is still read here as before, although since
+    # 2026-11-19 it names no product in either mode (`resolver`): skipping it there too
+    # would only save the calls, and was not part of that decision.
     wanted = [
         product_id
         for product_id, _, pick_lot, title in unknown
@@ -382,9 +391,13 @@ def link_sale_listing(sale: Sale, sku_id: int, *, user: User) -> WhatnotVariant 
     """ "Always use this product for this listing", said while naming one of its wins: the
     listing is linked, so its later orders name themselves. None when the app does not
     hold the listing, or a person said it is none of ours (that is undone on the listings
-    page, not in passing), or the listing is already linked to another product."""
+    page, not in passing), or the listing is already linked to another product, or the
+    win's title or the listing's says the winner chooses ("CHOOSE ANY…"): one winner's pick
+    is no product for the listing's other wins (`resolver`)."""
+    if rules.is_choice_title(sale.item_text or ""):
+        return None
     row = listing_of_sale(sale)
-    if row is None or row.link == "off":
+    if row is None or row.link == "off" or rules.is_choice_title(row.title or ""):
         return None
     if row.sku_id is not None and row.sku_id != sku_id:
         return None  # linked to another product already: changed on the listings page only
@@ -392,26 +405,26 @@ def link_sale_listing(sale: Sale, sku_id: int, *, user: User) -> WhatnotVariant 
 
 
 def waiting_for_listing(row: WhatnotVariant, show_id: int, *, limit: int = 100) -> list:
-    """The show's other wins still waiting for a product whose order was for this listing."""
-    return list(
-        db.session.scalars(
-            select(ReviewItem)
-            .join(Sale, Sale.id == ReviewItem.sale_id)
-            .join(WhatnotOrderItem, WhatnotOrderItem.sale_id == Sale.id)
-            .where(
-                ReviewItem.organization_id == row.organization_id,
-                ReviewItem.show_id == show_id,
-                ReviewItem.status == ReviewStatus.open,
-                ReviewItem.reason == "unmatched_item",
-                Sale.sku_id.is_(None),
-                Sale.status == SaleStatus.detected,
-                WhatnotOrderItem.organization_id == row.organization_id,
-                WhatnotOrderItem.variant_id == row.whatnot_id,
-            )
-            .order_by(ReviewItem.id)
-            .limit(limit)
-        ).unique()
-    )
+    """The show's other wins still waiting for a product whose order was for this listing.
+    Never a win whose title says the winner chooses: that winner picks their own."""
+    found = db.session.execute(
+        select(ReviewItem, Sale.item_text)
+        .join(Sale, Sale.id == ReviewItem.sale_id)
+        .join(WhatnotOrderItem, WhatnotOrderItem.sale_id == Sale.id)
+        .where(
+            ReviewItem.organization_id == row.organization_id,
+            ReviewItem.show_id == show_id,
+            ReviewItem.status == ReviewStatus.open,
+            ReviewItem.reason == "unmatched_item",
+            Sale.sku_id.is_(None),
+            Sale.status == SaleStatus.detected,
+            WhatnotOrderItem.organization_id == row.organization_id,
+            WhatnotOrderItem.variant_id == row.whatnot_id,
+        )
+        .order_by(ReviewItem.id)
+        .limit(limit)
+    ).unique()
+    return [item for item, title in found if not rules.is_choice_title(title or "")]
 
 
 def sync_catalog(org_id: int, client: WhatnotClient) -> dict:
@@ -539,7 +552,50 @@ def link(org_id: int, variant_id: int, sku_id: int | None, *, user: User) -> Wha
             },
         )
     db.session.flush()
+    if (was == "off") != (row.link == "off"):
+        _settle_wins_again(row)
     return row
+
+
+def _settle_wins_again(row: WhatnotVariant) -> None:
+    """The listing became, or stopped being, "Not one of ours": whether its paid wins still
+    waiting for a product are settled (`orders.settled_unnamed_sales`) changed with it.
+    Linked to a product now, each such win must be named again, so its question is asked at
+    once (the next orders read names it by the listing); either way their orders are derived
+    again in this transaction. An order already being picked or packed keeps its step
+    (`orders.refresh`); picking it further waits for the question (`orders.verified`). A win
+    that already left in its buyer's parcel is not asked again: it stays settled
+    (`orders._left_in_parcel`), so no stock moves for a unit that is gone.
+    The wins are found through the order lines matched to them, as the rule reads them."""
+    from .. import orders, pipeline
+
+    sales = (
+        db.session.scalars(
+            select(Sale)
+            .join(WhatnotOrderItem, WhatnotOrderItem.sale_id == Sale.id)
+            .where(
+                WhatnotOrderItem.organization_id == row.organization_id,
+                WhatnotOrderItem.variant_id == row.whatnot_id,
+                Sale.organization_id == row.organization_id,
+                Sale.status == SaleStatus.detected,
+                Sale.sku_id.is_(None),
+                Sale.order_id.is_not(None),
+            )
+            .options(selectinload(Sale.order).selectinload(Order.sales))
+            .order_by(Sale.id)
+        )
+        .unique()
+        .all()
+    )
+    if not sales:
+        return
+    if row.link != "off":
+        pipeline.ask_for_products(sales)
+    db.session.flush()
+    derive = {s.order.id: s.order for s in sales}.values()
+    settled = orders.settled_unnamed_ids([s for o in derive for s in o.sales])
+    for order in derive:
+        orders.refresh(order, settled=settled)
 
 
 def resolver(org_id: int):
@@ -547,7 +603,12 @@ def resolver(org_id: int):
     itself: the listing is linked to a product here, or its SKU is exactly a product code
     here. No product otherwise (the winner then names it in chat, as for a "choose any"
     lot). Two queries for the whole run, not one per item. A listing since deleted
-    on Whatnot still says what its past orders were."""
+    on Whatnot still says what its past orders were.
+
+    An item whose title says the winner chooses (`rules.is_choice_title`, "CHOOSE ANY…")
+    never gets a product here, however its listing is linked and whichever way the show
+    sells (Javier's call, 2026-11-19): every winner of it picks their own, so the win waits
+    in Review for that pick. The title is the order line's: what the win was sold as."""
     listed = {
         whatnot_id: (sku_id, how)
         for whatnot_id, sku_id, how in db.session.execute(
@@ -566,15 +627,16 @@ def resolver(org_id: int):
 
     def sku_for(item: WhatnotOrderItem) -> tuple[int | None, bool]:
         """(the product, whether a person said the listing is none of ours)."""
-        if item.variant_id and item.variant_id in listed:
-            sku_id, how = listed[item.variant_id]
-            if how == "off":
-                # A person's "none of ours" stands: no code match, and no title match either.
-                return None, True
-            if sku_id is not None:
-                return sku_id, False
-            # Held but linked to nothing (one learnt from this very order): the order
-            # line's own code still names the product, as for a listing never seen.
+        sku_id, how = listed.get(item.variant_id, (None, None)) if item.variant_id else (None, None)
+        if how == "off":
+            # A person's "none of ours" stands: no code match, and no title match either.
+            return None, True
+        if rules.is_choice_title(item.title or ""):
+            return None, False  # the winner picks: neither the link nor a code names it
+        if sku_id is not None:
+            return sku_id, False
+        # Held but linked to nothing (one learnt from this very order), or never seen: the
+        # order line's own code still names the product.
         code = (item.sku_code or "").strip().lower()
         return (codes.get(code) if code else None), False
 

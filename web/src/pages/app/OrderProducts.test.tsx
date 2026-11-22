@@ -30,14 +30,14 @@ const RED = { id: 7, code: 'RED', name: '', productName: 'Red bundle' }
 const paid = { id: 51, showId: 3, showDate: '2026-11-07', buyer: 'made_up_kat', sku: RED, item: 'Red special', itemTitle: 'Red special', lot: null, quantity: 1, priceCents: 1200, auctionType: '', status: 'paid', statusReason: null, flagged: false, giftCount: 0, saleMode: 'listing', review: null, products: [{ rowId: 61, quantity: 1, shareCents: 1200, sku: RED }] } as unknown as Sale
 const order = (over: Partial<Order> = {}): Order => ({ id: 30, showId: 3, showDate: '2026-11-07', buyer: 'made_up_kat', status: 'paid', verified: true, items: 1, totalCents: 1200, notes: null, tracking: null, pickedAt: null, packedAt: null, packedBy: null, shippedAt: null, createdAt: '2026-11-08T03:12:00Z', gifts: null, sales: [paid], ...over }) as Order
 
-function mount(o: Order, permissions = ['orders.view', 'review.act']) {
+function mount(o: Order, permissions = ['orders.view', 'review.act'], answer: object = { changed: true, picked: false }) {
   const calls: { method: string; url: string; body: unknown }[] = []
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method && init.method !== 'GET') {
         calls.push({ method: init.method, url, body: init.body ? JSON.parse(String(init.body)) : null })
-        return new Response(JSON.stringify({ changed: true, picked: false }), { status: 200 })
+        return new Response(JSON.stringify(answer), { status: 200 })
       }
       if (url === '/api/orders/30') return new Response(JSON.stringify({ order: o }), { status: 200 })
       if (url === '/api/products') return new Response(JSON.stringify({ products }), { status: 200 })
@@ -73,6 +73,21 @@ test("the order page lists the order's products, and each can be changed there",
   fireEvent.click(screen.getByTestId('change-product-save'))
   await waitFor(() => expect(calls).toEqual([{ method: 'PATCH', url: '/api/orders/sales/51/product', body: { skuId: 8, rowId: 61 } }]))
   expect(await screen.findByTestId('order-changed')).toHaveTextContent('is now Blue bundle')
+})
+
+test('a change after picking began says the old product is already back in stock, never to count it in', async () => {
+  mount(order({ status: 'picking' }), ['orders.view', 'review.act'], { changed: true, picked: true })
+  const card = await screen.findByTestId('order-products')
+  fireEvent.click(within(card).getByRole('button', { name: /Change Red bundle/ }))
+  const box = await screen.findByRole('combobox', { name: /New product for made_up_kat/ })
+  fireEvent.focus(box)
+  fireEvent.change(box, { target: { value: 'blue' } })
+  fireEvent.click(await screen.findByRole('option', { name: /Blue bundle/ }))
+  fireEvent.click(screen.getByTestId('change-product-save'))
+  const said = await screen.findByTestId('order-changed')
+  expect(said).toHaveTextContent('swap it in the package and put the Red bundle back on the shelf')
+  expect(said).toHaveTextContent('already back in stock')
+  expect(said.textContent).not.toMatch(/count/i)
 })
 
 test('a shipped order, or someone who cannot settle Review, gets no way to change a product', async () => {

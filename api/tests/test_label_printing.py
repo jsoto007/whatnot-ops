@@ -191,6 +191,98 @@ def test_a_label_printed_on_its_own_is_skipped_by_print_all(app, client, shop, s
     assert client.get(f"/api/shipping/shipments/{row_id}/label.pdf").status_code == 200
 
 
+def unprint(client, row_id: int, h):
+    return client.post(f"/api/shipping/shipments/{row_id}/not-printed", json={}, headers=h)
+
+
+def row_of(app, whatnot_id: str) -> int:
+    with app.app_context():
+        return db.session.scalar(
+            select(WhatnotShipment.id).where(WhatnotShipment.whatnot_id == whatnot_id)
+        )
+
+
+def test_a_label_marked_not_printed_goes_back_to_print_and_prints_again(
+    app, client, shop, sign_in, labels
+):
+    """Javier's call, 2026-11-19: opening the PDF still marks a label printed; a jammed
+    printer is undone with one click on its row."""
+    made = labelled(app, shop, {"buyer_a": 1, "buyer_b": 1})
+    h = sign_in(shop["org"], role="fulfillment")
+    assert counts(press(client, shop, h)) == (2, 0, 0)
+    row_id = row_of(app, made["buyer_a"]["id"])
+    with app.app_context():
+        before = db.session.get(WhatnotShipment, row_id).updated_at
+
+    r = unprint(client, row_id, h)
+    assert r.status_code == 200 and r.get_json() == {"id": row_id, "changed": True}
+    assert printed(app, shop) == {"buyer_a": False, "buyer_b": True}
+    v = view(app, shop)
+    assert (v["labelsToPrint"], v["labelsPrinted"]) == (1, 1)
+    with app.app_context():
+        # Not news from Whatnot: when its data last changed stays as it was.
+        assert db.session.get(WhatnotShipment, row_id).updated_at == before
+        entry = db.session.scalar(select(AuditLog).where(AuditLog.action == "label.unprinted"))
+        assert (entry.target_type, entry.target_id, entry.details) == (
+            "shipment",
+            str(row_id),
+            {"buyer": "buyer_a"},
+        )
+        assert (
+            activity.describe(entry.action, entry.details)
+            == "Marked buyer_a's shipping label not printed: the next Print labels includes it"
+        )
+
+    # A second click changes nothing and records nothing more.
+    r = unprint(client, row_id, h)
+    assert r.status_code == 200 and r.get_json() == {"id": row_id, "changed": False}
+    with app.app_context():
+        assert (
+            len(
+                db.session.scalars(
+                    select(AuditLog).where(AuditLog.action == "label.unprinted")
+                ).all()
+            )
+            == 1
+        )
+
+    # The next "Print labels" fetches it from Whatnot again and marks it printed again.
+    labels["fetched"].clear()
+    r = press(client, shop, h)
+    assert counts(r) == (1, 0, 0) and pages(r) == 1
+    assert labels["fetched"] == [f"https://labels.example/{made['buyer_a']['id']}-bundle.pdf"]
+    assert printed(app, shop) == {"buyer_a": True, "buyer_b": True}
+    with app.app_context():
+        rows = db.session.scalars(select(WhatnotShipment)).all()
+        assert "labels.example" not in json.dumps([str(x) for r in rows for x in vars(r).values()])
+
+
+def test_who_may_mark_a_label_not_printed(app, client, shop, sign_in, labels):
+    made = labelled(app, shop, {"buyer_a": 1})
+    h = sign_in(shop["org"], role="fulfillment")
+    assert counts(press(client, shop, h)) == (1, 0, 0)
+    row_id = row_of(app, made["buyer_a"]["id"])
+    url = f"/api/shipping/shipments/{row_id}/not-printed"
+    assert client.post(url, json={}).status_code == 403  # no CSRF token: no write
+    assert unprint(client, 999999, h).status_code == 404
+    client.post("/api/auth/logout", headers=h)
+    assert client.post(url, json={}).status_code in (401, 403)  # not signed in
+    h = sign_in(shop["org"], role="viewer", email="v@x.test")
+    assert unprint(client, row_id, h).status_code == 403  # who may print may undo it
+    client.post("/api/auth/logout", headers=h)
+    with app.app_context():
+        other = Organization(name="Other", slug="other")
+        db.session.add(other)
+        db.session.commit()
+        other_id = other.id
+    h = sign_in(other_id, role="owner", email="other@x.test")
+    assert unprint(client, row_id, h).status_code == 404  # another shop's label
+    assert printed(app, shop) == {"buyer_a": True}
+    with app.app_context():
+        undone = select(AuditLog).where(AuditLog.action == "label.unprinted")
+        assert db.session.scalar(undone) is None
+
+
 def test_only_packages_with_a_label_are_printed(app, client, shop, sign_in, labels):
     labelled(app, shop, {"buyer_a": 1})
     parcel(shop, "buyer_b", [order(shop, "buyer_b", "Red bundle")])  # no label yet

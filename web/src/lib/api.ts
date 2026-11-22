@@ -333,6 +333,10 @@ export interface Sale {
   /** Whatnot says it is paid while its product is still to pick (the winner's pick): the sale
    * still waits here, but it is not unpaid. Null where the server did not look. */
   toPick?: boolean | null
+  /** Paid on Whatnot, its listing is "Not one of ours" and a person ignored its question: it
+   * stays without a product here (no stock), but it no longer holds its order back. Null
+   * where the server did not look. */
+  notOurs?: boolean | null
   statusReason: string | null
   flagged: boolean
   /** Free gifts packed with this lot ("Gift 2" on the order slips); set by a person. */
@@ -699,8 +703,20 @@ export interface WhatnotCompare {
   choices?: WhatnotShowInfo[]
   /** The show ended and every order was read since: only then is a sale with no order called out. */
   complete?: boolean
-  /** noBuyer / unreadable: items left out; blind: most orders name no buyer, so none can be matched. */
-  info?: { orders: number; giveaways: number; noBuyer: number; noBuyerPaid?: number; unreadable?: number; blind?: boolean } | null
+  /** noBuyer / unreadable: items left out; noItems: orders Whatnot listed no items for; leftOut: orders
+   * left out for an unreadable item or no items, the first few named in leftOutOrders ("#… from …");
+   * blind: most orders name no buyer, so none can be matched. */
+  info?: {
+    orders: number
+    giveaways: number
+    noBuyer: number
+    noBuyerPaid?: number
+    unreadable?: number
+    noItems?: number
+    leftOut?: number
+    leftOutOrders?: string[]
+    blind?: boolean
+  } | null
   summary?: Record<string, number>
   rows?: ReconcileRow[]
   uncovered?: { saleId: number; buyer: string; item: string; quantity: number; priceCents: number | null; status: string }[]
@@ -710,7 +726,7 @@ export interface WhatnotCompare {
 
 // ---------- Shipping: one package and one label per buyer (GET /api/shipping/shows/:id) ----------
 /** Where a buyer's shipping stands; the page turns the code into words (labels.ts). */
-export type ShippingState = 'none' | 'wait' | 'shared' | 'reading' | 'ready' | 'second' | 'split' | 'hold' | 'pickup' | 'labelled' | 'shipped' | 'failed' | 'other'
+export type ShippingState = 'none' | 'no_parcel' | 'wait' | 'shared' | 'reading' | 'ready' | 'second' | 'split' | 'hold' | 'pickup' | 'labelled' | 'shipped' | 'failed' | 'other'
 export interface ShippingPackage {
   id: number
   status: string
@@ -740,7 +756,7 @@ export interface ShippingPackage {
 export interface ShippingBuyer {
   buyer: string | null
   items: number
-  /** Items not in any package on Whatnot yet. */
+  /** Items in no package on Whatnot that ships: none at all, or only one Whatnot cancelled (those are listed under that package). */
   unplaced: number
   packages: ShippingPackage[]
   state: ShippingState
@@ -835,6 +851,10 @@ export interface WhatnotSales {
   giveaways: number
   /** Orders in a currency other than the shop's: counted, never added in. */
   otherCurrencyOrders: number
+  /** The shipping buyers paid on the same paid orders: beside the sales, never in them. */
+  shippingCents?: number
+  /** Sales plus that shipping: what Whatnot's own screens read (no tax in it). */
+  withShippingCents?: number
 }
 export interface WhatnotTopBuyer {
   /** The name the buyer uses now (one row per Whatnot account). */

@@ -470,3 +470,15 @@ test("a lot whose title says the winner chooses is never offered as 'name it onc
   const dialog = await screen.findByRole('dialog')
   expect(within(dialog).queryByTestId('apply-similar')).toBeNull()
 })
+
+test('a paid win on a listing that is not one of ours, its question ignored, reads so and lets the order be picked', async () => {
+  const off = sale({ buyer: 'made_up_zed', orderId: 9, item: 'Mystery thing', itemTitle: 'Mystery thing', lot: null, externalOrderId: 'WN-9', notOurs: true })
+  const named = sale({ buyer: 'made_up_zed', orderId: 9, sku: RED, item: 'Red bundle', itemTitle: 'Red bundle', lot: null, status: 'paid', paidAt: '2026-11-08T03:14:00Z', notOurs: false })
+  mount(undefined, '/app/orders?view=all', [order({ id: 9, buyer: 'made_up_zed', status: 'paid', verified: true, sales: [named, off] })])
+  const zed = await screen.findByTestId('order-made_up_zed')
+  expect(zed).toHaveTextContent('Ready to pick')
+  expect(within(zed).getByTestId('not-ours')).toHaveTextContent('Paid on Whatnot · not one of our products')
+  expect(zed).not.toHaveTextContent('“Mystery thing”') // not shown as an item nobody recognised
+  expect(within(zed).getByRole('button', { name: 'Start picking' })).toBeInTheDocument()
+  expect(within(zed).queryByRole('button', { name: 'Name the product' })).toBeNull()
+})

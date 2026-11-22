@@ -51,6 +51,7 @@ from ...models import (
     WhatnotSyncState,
 )
 from .. import jobs, rules, text
+from ..orders import WHATNOT_PAID
 from . import connection, sync, webhooks
 from .client import (
     MAX_CENTS,
@@ -281,13 +282,64 @@ def store_shipment(
     if status != OPEN:
         row.label_problem = None
     if items is not None:
-        _store_lots(org_id, row, held)
+        stays = _held_by_a_parcel_that_ships(org_id, client, row, held)
+        _store_lots(org_id, row, held, stays)
     return row
 
 
-def _store_lots(org_id: int, row: WhatnotShipment, held) -> None:
+def _held_by_a_parcel_that_ships(org_id: int, client: WhatnotClient, row, held) -> set[int]:
+    """A parcel that does not ship (cancelled, replaced) never takes an item away from a
+    parcel that does: Whatnot may still list an item under the parcel it cancelled beside the
+    one that took it, and whichever is read last, the item ends in the one that ships. Returns
+    the items (`WhatnotOrderItem.id`) `row` lists that stay where they are.
+
+    The stored pointer alone is not proof: Whatnot's time on a parcel may not change when an
+    item leaves it, so the full read may not have read it again. An item stays only when the
+    parcel that ships, asked now, still lists it (one call per such parcel, only when a
+    cancelled parcel lists an item another parcel holds; that answer is not stored, so a
+    labelled parcel's list is left as it was read). Anything else moves as Whatnot says:
+    into a parcel that ships, or into a cancelled one when no parcel that ships holds it."""
+    if not held or not _void(row.api_status, row.replaced_by):
+        return set()
+    elsewhere = {
+        item.id: item.whatnot_shipment_id
+        for _, item in held
+        if item.whatnot_shipment_id and item.whatnot_shipment_id != row.whatnot_id
+    }
+    if not elsewhere:
+        return set()
+    ships = {
+        whatnot_id
+        for whatnot_id, status, replaced_by in db.session.execute(
+            select(
+                WhatnotShipment.whatnot_id, WhatnotShipment.api_status, WhatnotShipment.replaced_by
+            ).where(
+                WhatnotShipment.organization_id == org_id,
+                WhatnotShipment.whatnot_id.in_(set(elsewhere.values())),
+            )
+        )
+        if not _void(status, replaced_by)
+    }
+    listed: dict[str, set[str | None]] = {}
+    for parcel in ships:
+        try:
+            listed[parcel] = {
+                _str(i.get("order_item_id"), 20) for i in client.shipment_items(parcel)
+            }
+        except NotFound:
+            listed[parcel] = set()
+    whatnot_ids = {item.id: item.whatnot_id for _, item in held}
+    return {
+        item_id
+        for item_id, parcel in elsewhere.items()
+        if parcel in listed and whatnot_ids[item_id] in listed[parcel]
+    }
+
+
+def _store_lots(org_id: int, row: WhatnotShipment, held, stays: set[int] = frozenset()) -> None:
     """The lots a shipment holds right now, as the order slips read them, and on each
-    mirrored order item which shipment it is in."""
+    mirrored order item which shipment it is in. `stays`: items another parcel that ships
+    holds (`_held_by_a_parcel_that_ships`): they keep it, and so do their lots."""
     item_ids = [item.id for _, item in held]
     # Items that were in this shipment and are not any more (re-bundled, split).
     db.session.execute(
@@ -303,14 +355,17 @@ def _store_lots(org_id: int, row: WhatnotShipment, held) -> None:
     shows: dict[int | None, int] = defaultdict(int)
     local: dict[str | None, int | None] = {}  # Whatnot show → its recording, asked once
     for order, item in sorted(held, key=lambda p: (p[0].id, p[1].id)):
-        item.whatnot_shipment_id = row.whatnot_id
-        nth[order.id] += 1
+        if item.id not in stays:
+            item.whatnot_shipment_id = row.whatnot_id
+        nth[order.id] += 1  # counted either way: the lot keys follow this parcel's own list
         if order.status not in SHIPPABLE:
             continue  # cancelled or failed: nothing to pack (sync drops its lots)
         if order.whatnot_show_id not in local:
             local[order.whatnot_show_id] = _local_show_id(org_id, order.whatnot_show_id)
         show_id = local[order.whatnot_show_id]
         shows[show_id] += 1
+        if item.id in stays:
+            continue  # its lot stays with the parcel that ships, as the item does
         key = order.whatnot_id if nth[order.id] == 1 else f"{order.whatnot_id}-{nth[order.id]}"
         if len(key) > 20:
             continue  # cut short it would overwrite the order's first lot (ids are ~10 digits)
@@ -364,6 +419,9 @@ def sync_recent_shipments(org_id: int, client: WhatnotClient, since: datetime) -
     """Read every shipment made since `since` (newest first). The list carries each one's
     status and tracking; its items are read only when it is new or has changed."""
     seen = changed = 0
+    gone: set[str] = set()  # parcels in this read that do not ship
+    unread: dict[str, tuple[dict, str]] = {}  # open parcels not read again: id → (data, buyer)
+    closed_unread: dict[str, str] = {}  # labelled or with the carrier, not read again: id → buyer
     for i, data in enumerate(client.shipments()):
         made = when(data.get("created_at"))
         if (made is not None and made < since) or i >= MAX_SHIPMENT_PAGES * 50:
@@ -377,13 +435,21 @@ def sync_recent_shipments(org_id: int, client: WhatnotClient, since: datetime) -
                 WhatnotShipment.whatnot_updated_at,
                 WhatnotShipment.item_count,
                 WhatnotShipment.api_status,
+                WhatnotShipment.recipient,
             ).where(
                 WhatnotShipment.organization_id == org_id, WhatnotShipment.whatnot_id == whatnot_id
             )
         ).first()
         updated = when(data.get("updated_at"))
+        void = _void(_str(data.get("status"), 40), _str(data.get("replacement_shipment_id"), 20))
+        if void:
+            gone.add(whatnot_id)
         fresh = known is not None and known[1] is not None and known[0] == updated
         if fresh and updated is not None:
+            if not void and data.get("status") not in (LABELLED,) + WITH_CARRIER:
+                unread[whatnot_id] = (data, known[3])
+            elif not void:
+                closed_unread[whatnot_id] = known[3]
             continue  # nothing about it has changed since we read it
         # A label closes the parcel (Whatnot bundles nothing more into it), so once its
         # items were read with a label made, a later change is the label or the carrier's
@@ -399,30 +465,205 @@ def sync_recent_shipments(org_id: int, client: WhatnotClient, since: datetime) -
         items = None if closed else client.shipment_items(whatnot_id)
         store_shipment(org_id, client, data, items=items)
         changed += 1
+    changed += _mend(org_id, client, gone, unread, closed_unread)
     db.session.flush()
     return {"seen": seen, "changed": changed}
+
+
+# Parcels read again in one read for `_mend` (each is one call to Whatnot).
+MAX_MENDS = 20
+
+
+def _mend(
+    org_id: int, client: WhatnotClient, gone: set[str], unread: dict, closed_unread: dict
+) -> int:
+    """An item of an order that still ships, stored on a parcel that does not ship, while
+    its buyer has a parcel that ships which Whatnot has not changed (so the read above
+    skipped it): rows written before `_held_by_a_parcel_that_ships` existed, an order read
+    again that named the cancelled parcel (`sync.upsert_items` writes what Whatnot says: it
+    cannot ask the other parcel), or a webhook that raced this read. That parcel's items are
+    read again, and an item it lists goes back to it ("Read again from Whatnot" clears it).
+    An item only the cancelled parcel lists stays there, and its buyer's other parcel is read
+    again at each read while that lasts (at most MAX_MENDS calls a read, open parcels first).
+
+    An open parcel is stored again whole. A labelled one, or one with the carrier, only
+    gains the items still stranded after that which it lists (`_take_back`): nothing else
+    about its stored list changes (`closed` above: Whatnot may stop listing a cancelled
+    order's item its label still carries). An error from Whatnot on that best-effort read
+    ends the mending for this read, never the read."""
+    if not gone or not (unread or closed_unread):
+        return 0
+    stranded: dict[str, set[str]] = defaultdict(set)  # buyer → their stranded items (Whatnot ids)
+    for buyer, item_id in db.session.execute(
+        select(func.lower(WhatnotShipment.recipient), WhatnotOrderItem.whatnot_id)
+        .join(
+            WhatnotOrderItem,
+            (WhatnotOrderItem.organization_id == WhatnotShipment.organization_id)
+            & (WhatnotOrderItem.whatnot_shipment_id == WhatnotShipment.whatnot_id),
+        )
+        .join(WhatnotOrder, WhatnotOrder.id == WhatnotOrderItem.order_id)
+        .where(
+            WhatnotShipment.organization_id == org_id,
+            WhatnotShipment.whatnot_id.in_(gone),
+            WhatnotOrder.status.in_(SHIPPABLE),
+        )
+    ):
+        stranded[buyer].add(item_id)
+    n = 0
+    for whatnot_id, (data, buyer) in unread.items():
+        if n >= MAX_MENDS:
+            return n
+        if (buyer or "").lower() in stranded:
+            store_shipment(org_id, client, data, items=client.shipment_items(whatnot_id))
+            n += 1
+    # Oldest first: the full read takes parcels newest first, so of two that list one item
+    # the older is read last and keeps it. The mend must end where that read would.
+    for whatnot_id, buyer in reversed(closed_unread.items()):
+        if n >= MAX_MENDS:
+            return n
+        wanted = stranded.get((buyer or "").lower())
+        if wanted:
+            try:
+                _take_back(org_id, client, whatnot_id, wanted, gone)
+            except WhatnotError:
+                # Best effort: the parcels themselves were read. A parcel Whatnot cannot
+                # list right now must not fail every read of the shop's shipments.
+                log.warning("whatnot: could not read parcel %s again to mend", whatnot_id)
+                return n
+            n += 1
+    return n
+
+
+def _take_back(
+    org_id: int, client: WhatnotClient, whatnot_id: str, wanted: set[str], gone: set[str]
+) -> None:
+    """A labelled parcel, or one with the carrier, takes back the items in `wanted` that are
+    still stored on a parcel that does not ship (`gone`: an open parcel read just before may
+    have taken one already, and it keeps it) and that Whatnot lists under this parcel now.
+    Only those items move, with the lot each already has: no lot is written by its place in a
+    list, so a list Whatnot cut short overwrites nothing, and none of the parcel's own items
+    is dropped."""
+    still = set(
+        db.session.scalars(
+            select(WhatnotOrderItem.whatnot_id).where(
+                WhatnotOrderItem.organization_id == org_id,
+                WhatnotOrderItem.whatnot_id.in_(wanted),
+                WhatnotOrderItem.whatnot_shipment_id.in_(gone),
+            )
+        )
+    )
+    if not still:
+        return
+    try:
+        listed = [
+            i
+            for i in client.shipment_items(whatnot_id)
+            if _str(i.get("order_item_id"), 20) in still
+        ]
+    except NotFound:
+        return
+    if not listed:
+        return
+    back = _mirror_items(org_id, client, listed)
+    row = db.session.scalar(
+        select(WhatnotShipment)
+        .where(WhatnotShipment.organization_id == org_id, WhatnotShipment.whatnot_id == whatnot_id)
+        .with_for_update()
+    )
+    if row is None or _void(row.api_status, row.replaced_by):
+        return
+    for order, item in back:
+        was = item.whatnot_shipment_id
+        if was not in gone or order.status not in SHIPPABLE:
+            continue
+        item.whatnot_shipment_id = whatnot_id
+        # Its lot, if the cancelled parcel's read took it there (a re-read of the order
+        # alone leaves the lot where it was).
+        db.session.execute(
+            update(WhatnotLot)
+            .where(
+                WhatnotLot.organization_id == org_id,
+                WhatnotLot.title == item.title,
+                WhatnotLot.whatnot_order_id.in_(
+                    [order.whatnot_id] + [f"{order.whatnot_id}-{n}" for n in range(2, 10)]
+                ),
+                WhatnotLot.shipment_id.in_(
+                    select(WhatnotShipment.id).where(
+                        WhatnotShipment.organization_id == org_id,
+                        WhatnotShipment.whatnot_id == was,
+                    )
+                ),
+            )
+            .values(shipment_id=row.id, recipient=row.recipient, updated_at=datetime.now(UTC))
+        )
+    db.session.flush()
+    row.item_count = db.session.scalar(
+        select(func.coalesce(func.sum(WhatnotOrderItem.quantity), 0)).where(
+            WhatnotOrderItem.organization_id == org_id,
+            WhatnotOrderItem.whatnot_shipment_id == whatnot_id,
+        )
+    )
+    value = db.session.scalar(
+        select(func.sum(WhatnotOrderItem.unit_price_cents * WhatnotOrderItem.quantity)).where(
+            WhatnotOrderItem.organization_id == org_id,
+            WhatnotOrderItem.whatnot_shipment_id == whatnot_id,
+        )
+    )
+    row.value_cents = min(int(value), MAX_CENTS) if value else row.value_cents
 
 
 # ---------- one package per buyer ----------
 
 
-def _state(packages: list[dict], unplaced: int, ended: bool, complete: bool) -> str:
+def _ships(status: str | None) -> bool:
+    """A parcel that still ships: any that Whatnot has not cancelled. An item counts as in a
+    parcel only when it is in one of these (`_view`), and only these decide a buyer's state
+    (`_state`): the two read the same rule, so a label is never offered for an open parcel
+    while one of the buyer's paid items sits only in a cancelled one."""
+    return (status or "") not in GONE
+
+
+def _state(
+    packages: list[dict],
+    unplaced: int,
+    ended: bool,
+    complete: bool,
+    *,
+    paid: int = 0,
+    unplaced_paid: int = 0,
+    gone: int = 0,
+    gone_paid: int = 0,
+) -> str:
     """Where a buyer's shipping stands, as one code the page turns into words. `complete`
     says every order and every parcel of the show was read after it ended: before that a
-    last win may still be on its way into a second package, so nobody is "ready"."""
-    live = [p for p in packages if p["status"] not in GONE]
+    last win may still be on its way into a second package, so nobody is "ready".
+
+    `paid`: the buyer's items Whatnot says are paid; `unplaced_paid`: those of them in no
+    parcel that ships (`unplaced` counts every such item: in none at all, in one the app has
+    not read, or only in one Whatnot cancelled; see `_ships`). `gone` / `gone_paid`: of
+    those, the ones whose only parcel Whatnot cancelled. Once the show was read in full, a
+    paid item still in no parcel is "no_parcel" (Javier's call, 2026-11-19): Whatnot has none
+    for it, and the page says what to check in Seller Hub before reading again. The app never
+    makes a parcel. Before that read, or for an item whose payment is still being taken, an
+    item in no parcel at all is "none" (the parcel may just not be read yet), and one only in
+    a cancelled parcel leaves the open parcel's state as it was ("wait", "shared",
+    "reading"). Such an item never lets the buyer be "ready", "second" or "shipped": no label
+    would hold it, and the carrier's news about the buyer's other parcel says nothing of it
+    (a parcel cancelled as stuck in tracking may have left all the same)."""
+    live = [p for p in packages if _ships(p["status"])]
     if any(p["holds"] for p in live):
         return "hold"
     if not live:
-        return "none"
+        return "no_parcel" if complete and paid else "none"
     to_ship = [p for p in live if not p["pickup"]]
     if not to_ship:
         return "pickup"  # handed over in person: no label, ever
     open_ = [p for p in to_ship if p["status"] == OPEN]
     if len(open_) > 1:
         return "split"  # two open packages: two labels unless they are combined first
-    if unplaced:
-        return "none"
+    if unplaced > gone:
+        # A label now would close the bundle without the item that is in no parcel at all.
+        return "no_parcel" if complete and unplaced_paid else "none"
     if open_:
         if not ended:
             return "wait"
@@ -431,6 +672,10 @@ def _state(packages: list[dict], unplaced: int, ended: bool, complete: bool) -> 
             return "shared"
         if not complete:
             return "reading"
+    if gone:
+        # Every other item is in a parcel that ships; this one's only parcel was cancelled.
+        return "no_parcel" if complete and gone_paid else "none"
+    if open_:
         return "second" if len(to_ship) > 1 else "ready"
     if all(p["status"] in WITH_CARRIER for p in to_ship):
         return "shipped"
@@ -603,6 +848,10 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
                 "names": set(),
                 "items": 0,
                 "unplaced": 0,
+                "paid": 0,
+                "unplaced_paid": 0,
+                "gone": 0,
+                "gone_paid": 0,
                 "in": defaultdict(int),
                 "void": defaultdict(int),
             },
@@ -610,10 +859,21 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
         b["buyer"] = name or b["buyer"]  # the name of the newest order
         b["names"].add(name.lower())
         b["items"] += item.quantity
-        if item.whatnot_shipment_id and item.whatnot_shipment_id in shipments:
+        paid = order.status in WHATNOT_PAID  # not "pending": its payment is still being taken
+        b["paid"] += item.quantity if paid else 0
+        shipment = shipments.get(item.whatnot_shipment_id) if item.whatnot_shipment_id else None
+        if shipment is not None:
+            # Listed under its parcel even when Whatnot cancelled that parcel: the page shows
+            # which one it was, and the item stays this show's (not "another show's").
             b["in"][item.whatnot_shipment_id] += item.quantity
-        else:
+        if shipment is None or not _ships(shipment.api_status):
+            # In no parcel that ships: none at all, one not read yet, or only a cancelled one.
+            # A label for the buyer's open parcel would close the bundle without it.
             b["unplaced"] += item.quantity
+            b["unplaced_paid"] += item.quantity if paid else 0
+            if shipment is not None:  # only in a parcel Whatnot cancelled
+                b["gone"] += item.quantity
+                b["gone_paid"] += item.quantity if paid else 0
     for order, item in voided_rows:
         shipment = shipments.get(item.whatnot_shipment_id)
         if shipment is None or shipment.api_status != LABELLED:
@@ -627,6 +887,10 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
                 "names": set(),
                 "items": 0,
                 "unplaced": 0,
+                "paid": 0,
+                "unplaced_paid": 0,
+                "gone": 0,
+                "gone_paid": 0,
                 "in": defaultdict(int),
                 "void": defaultdict(int),
             },
@@ -674,7 +938,16 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
                 }
             )
         packs.sort(key=lambda p: p["id"])
-        state = _state(packs, b["unplaced"], ended, complete)
+        state = _state(
+            packs,
+            b["unplaced"],
+            ended,
+            complete,
+            paid=b["paid"],
+            unplaced_paid=b["unplaced_paid"],
+            gone=b["gone"],
+            gone_paid=b["gone_paid"],
+        )
         for p in packs:
             # Exactly the packages "Make labels" would send for right now.
             p["askable"] = state in ("ready", "second") and _askable(p, now)
@@ -1008,6 +1281,24 @@ def mark_printed(org_id: int, shipment_ids: list[int]) -> None:
     )
 
 
+def mark_not_printed(org_id: int, shipment_id: int) -> bool:
+    """Undo "printed" on one label (Javier's call, 2026-11-19): opening the PDF marks it
+    printed, and a jammed printer or a closed tab is put right with one click. It is back with
+    the labels still to print, and the next print marks it again. Returns whether it was marked
+    printed: the conditional UPDATE decides, so a second click changes (and records) nothing.
+    Nothing of the label is kept either way; `updated_at` is left as it was (see mark_printed)."""
+    done = db.session.execute(
+        update(WhatnotShipment)
+        .where(
+            WhatnotShipment.organization_id == org_id,
+            WhatnotShipment.id == shipment_id,
+            WhatnotShipment.label_printed_at.is_not(None),
+        )
+        .values(label_printed_at=None, updated_at=WhatnotShipment.updated_at)
+    )
+    return done.rowcount == 1
+
+
 def _label_pages(pdf: bytes) -> list:
     """The pages of one label, read in full before any of them is joined to the others, so a
     file that breaks half way adds nothing. The file comes from outside: anything pypdf
@@ -1200,14 +1491,20 @@ def _carrier_has(buyers: list[dict]) -> list[tuple[int, str | None]]:
     with an item nobody has settled (not every standing sale paid) is left for a person."""
     from .. import orders as orders_service
 
+    # Never a buyer with an item in no parcel that ships (`_state` already says so; kept here
+    # too, since this is what moves orders): the carrier has not got that item.
+    shipped = [b for b in buyers if b["state"] == "shipped" and not b["unplaced"]]
+    # Wins settled with no product (`orders.settled_unnamed_sales`) do not hold an order
+    # back: one query for every order here, not one per order.
+    settled = orders_service.settled_unnamed_ids(
+        [s for b in shipped for o in b["_orders"] for s in o.sales]
+    )
     out = []
-    for b in buyers:
-        if b["state"] != "shipped":
-            continue
+    for b in shipped:
         tracking = next((p["tracking"] for p in b["packages"] if p["tracking"]), None)
         for order in b["_orders"]:
             if order.status.value in ("paid", "picking", "packed") and orders_service.verified(
-                order
+                order, settled=settled
             ):
                 out.append((order.id, tracking))
     return out

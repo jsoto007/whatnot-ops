@@ -124,6 +124,9 @@ WHATNOT = Words(
 class Plan:
     rows: list[Row] = field(default_factory=list)
     uncovered: list[int] = field(default_factory=list)  # standing sales the file did not mention
+    # Whatnot's paid order item (`Row.ref`) → the declined sale it is recorded again for, as
+    # a sale of its own (Whatnot's orders only: `whatnot/orders._plan`).
+    record_again: dict[int, int] = field(default_factory=dict)
 
     @property
     def summary(self) -> dict:
@@ -289,7 +292,16 @@ def plan(
                 )
                 if sale.status is SaleStatus.payment_failed and sale.sku_id is not None:
                     # Declined at the win, paid another way before the show ended.
-                    if pipeline._round(sale) == pipeline.REPAID:
+                    if pipeline.shipped_without(sale):
+                        # Its order left without it: a person decides (`_repay` refuses).
+                        row.action, row.note = (
+                            "unmatched",
+                            f"sale #{sale.id} is payment_failed and its order already "
+                            "shipped; paid in the file",
+                        )
+                    # Unless its units never went back (declined after picking began):
+                    # paying it again then moves nothing and needs no new ledger round.
+                    elif pipeline._round(sale) == pipeline.REPAID and pipeline.needs_round(sale):
                         row.action, row.note = (
                             "unmatched",
                             f"sale #{sale.id} was declined twice; paid in the file",
@@ -326,6 +338,30 @@ def plan(
         )
     ]
     return out
+
+
+def hold_for_whatnot(p: Plan) -> Plan:
+    """A payment file's paid row never restores a declined sale Whatnot's own order says
+    failed (`pipeline.whatnot_failed_order`, Javier's call 2026-11-20): the row is skipped
+    with a note, and Whatnot's paid order restores the sale. Only for a file: Whatnot's own
+    rows are Whatnot's word already."""
+    held = ("mark_paid", "unmatched")  # unmatched: a shipped or twice-declined sale
+    sales = load_sales(
+        row.sale_id for row in p.rows if row.action in held and row.status == "paid" and row.sale_id
+    )
+    plans: dict = {}
+    for row in p.rows:
+        sale = sales.get(row.sale_id) if row.action in held and row.status == "paid" else None
+        if sale is None or sale.status is not SaleStatus.payment_failed:
+            continue
+        order = pipeline.whatnot_failed_order(sale, plans)
+        if order is not None:
+            row.action = "skip"
+            row.note = (
+                f"Whatnot's order #{order} says this payment failed: Whatnot decides, and its "
+                "paid order marks the sale paid"
+            )
+    return p
 
 
 def _match(
@@ -577,8 +613,13 @@ def apply(
     from . import orders
 
     touched = {row.sale_id for row in p.rows if row.sale_id} | set(p.uncovered)
-    for order in _orders_of(show, touched):
-        orders.refresh(order)
+    derive = _orders_of(show, touched)
+    # Which wins are settled with no product (`orders.settled_unnamed_sales`): one query for
+    # every order, not one per order.
+    db.session.flush()
+    settled = orders.settled_unnamed_ids([s for o in derive for s in o.sales])
+    for order in derive:
+        orders.refresh(order, settled=settled)
     return p
 
 

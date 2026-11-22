@@ -166,7 +166,9 @@ def build(
     # 1. Sales by show
     _sheet(wb, "Sales by show", SALE_HEADER, _sale_rows(standing), money_cols=(6, 7), first=True)
 
-    # 2. Customer purchase history
+    # 2. Customer purchase history. "Paid" is what the tiles' "Paid revenue" adds up
+    # (`dashboard.paid_by_sale`): what Whatnot charged, a settled win included.
+    paid = dashboard.paid_by_sale(standing)
     by_buyer: dict[str, dict] = {}
     for s in standing:
         b = by_buyer.setdefault(
@@ -174,8 +176,7 @@ def build(
             {"buyer": s.buyer_username, "items": 0, "paid": 0, "shows": set(), "last": ""},
         )
         b["items"] += s.quantity
-        if s.status in dashboard.PAID:
-            b["paid"] += (s.price_cents or 0) * s.quantity
+        b["paid"] += paid.get(s.id, 0)
         b["shows"].add(s.show.show_date.isoformat())
         b["last"] = max(b["last"], s.show.show_date.isoformat())
     _sheet(

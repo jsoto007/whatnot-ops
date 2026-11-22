@@ -9,7 +9,7 @@ import { Icon } from '../../components/Icon'
 import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
 import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleProduct, type SaleStatus, type Show, type ToPick } from '../../lib/api'
 import { SHOP_TZ, fmtDate, fmtLongDate, fmtWhen, plural } from '../../lib/format'
-import { ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, pickStateWords, saleStatusLabel, unknownWords } from '../../lib/labels'
+import { NOT_OURS_LABEL, ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, pickStateWords, saleLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
 import { invalidateSales } from '../../lib/invalidate'
 
 const NEXT = ORDER_NEXT_STEP
@@ -304,12 +304,14 @@ export function Orders() {
 
 /** "10 × $1 Beauty Pulls" with the lot numbers under it, one line per product. */
 function Items({ o }: { o: Order }) {
-  const groups = new Map<string, { title: string; qty: number; lots: number[]; unknown: boolean }>()
+  const groups = new Map<string, { title: string; qty: number; lots: number[]; unknown: boolean; notOurs: boolean }>()
   for (const s of (o.sales ?? []).filter((s) => STANDING.includes(s.status))) {
     // One line per product: a win with two products ("two for one") counts under both.
     const parts = (s.products ?? []).length > 0 ? s.products!.map((p) => ({ title: `${p.sku.productName}${p.sku.name ? ' ' + p.sku.name : ''}`, qty: p.quantity })) : [{ title: titleOf(s), qty: s.quantity }]
     for (const part of parts) {
-      const g = groups.get(part.title) ?? { title: part.title, qty: 0, lots: [], unknown: !s.sku }
+      const g = groups.get(part.title) ?? { title: part.title, qty: 0, lots: [], unknown: !s.sku && !s.notOurs, notOurs: s.notOurs === true }
+      // Settled with no product only when every win on the line is.
+      g.notOurs = g.notOurs && s.notOurs === true
       g.qty += part.qty
       if (s.lot != null) g.lots.push(s.lot)
       groups.set(part.title, g)
@@ -322,6 +324,11 @@ function Items({ o }: { o: Order }) {
           <div>
             <b>{g.qty} ×</b> {g.unknown ? <span className="unknown">“{g.title}”</span> : g.title}
           </div>
+          {g.notOurs && (
+            <div className="small sub muted" data-testid="not-ours">
+              {NOT_OURS_LABEL}
+            </div>
+          )}
           {g.lots.length > 0 && <Lots lots={g.lots} />}
         </div>
       ))}
@@ -818,12 +825,12 @@ function PackingSlip({ o }: { o: Order }) {
               <td>{o.buyer}</td>
               <td>
                 <Ticks n={s.quantity} /> {s.sku ? `${s.sku.productName} ${s.sku.name}`.trim() : s.item}
-                {s.sku ? <code className="sku">{s.sku.code}</code> : <span className="badge warn">unmatched</span>}
+                {s.sku ? <code className="sku">{s.sku.code}</code> : !s.notOurs && <span className="badge warn">unmatched</span>}
                 {s.quantity > 1 && <span className="muted small"> × {s.quantity}</span>}
               </td>
               <td>{s.giftCount ? `Gift ${s.giftCount}` : ''}</td>
               <td className="no-print">
-                <span className={`status ${s.status}`}>{saleStatusLabel(s.status)}</span>
+                <span className={`status ${s.notOurs ? 'paid' : s.status}`}>{saleLabel(s)}</span>
                 {s.externalOrderId && <span className="muted small"> · #{s.externalOrderId}</span>}
               </td>
               <td className="slip-notes" />
