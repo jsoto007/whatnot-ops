@@ -1294,3 +1294,28 @@ def test_a_chat_being_read_right_now_waits_for_the_next_read(app, shop, monkeypa
     monkeypatch.setattr(pipeline, "_lock_show", real)
     _read(app, shop)
     assert len(_parts(app)) == 2
+
+
+def test_a_show_whatnot_gave_no_start_counts_from_when_it_was_seen_live_not_its_schedule(app, shop):
+    """Scheduled for 5 h ago, seen going live 2 h ago, no start from Whatnot: its window
+    opens at the live sighting (as `showend.began`), so chat from the hours before it went
+    live says nothing about it (Codex review on PR 83)."""
+    from app.models import WhatnotShow
+    from app.services import show_split
+
+    now = shop["now"]
+    with app.app_context():
+        ws = WhatnotShow(
+            organization_id=shop["org"],
+            whatnot_id="made-up-late-start",
+            title="Late start",
+            status="live",
+            scheduled_start_at=now - 5 * H,
+            live_seen_at=now - 2 * H,
+        )
+        db.session.add(ws)
+        db.session.flush()
+        window = next(w for w in show_split._windows(shop["org"], now) if w.ws.id == ws.id)
+        assert window.begin == now - 2 * H - show_split.START_GRACE
+        assert not window.holds(now - 3 * H)
+        db.session.rollback()
