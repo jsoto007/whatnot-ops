@@ -184,7 +184,10 @@ def _windows(org_id: int, now: datetime) -> list[Window]:
         select(WhatnotShow).where(
             WhatnotShow.organization_id == org_id,
             WhatnotShow.status.in_(showend.AIRED),
-            func.coalesce(WhatnotShow.started_at, WhatnotShow.scheduled_start_at) >= since,
+            func.coalesce(
+                WhatnotShow.started_at, WhatnotShow.live_seen_at, WhatnotShow.scheduled_start_at
+            )
+            >= since,
         )
     ).all()
     # Whatnot's word and the 12-hour rule only: the laptops' word comes from the very
@@ -193,9 +196,12 @@ def _windows(org_id: int, now: datetime) -> list[Window]:
     out = []
     for ws in shows:
         # When it went live (its `shows.started`, else its first order: the first win's line
-        # can be captured a moment before Whatnot stamps that order), else when it was
-        # scheduled for (a guess: an early one would take the show before).
-        begin = ws.started_at - START_GRACE if ws.started_at else ws.scheduled_start_at
+        # can be captured a moment before Whatnot stamps that order), else when the app saw
+        # it go live (as `showend.began`: never a schedule older than that, or chat from
+        # before it went live would count for it), else when it was scheduled for (a guess:
+        # an early one would take the show before).
+        live = ws.started_at or ws.live_seen_at
+        begin = live - START_GRACE if live else ws.scheduled_start_at
         ending = found[id(ws)]
         end = min(ending.at, now) if ending.over and ending.at is not None else now
         if end > begin:
@@ -213,7 +219,12 @@ def _only(windows: list[Window], at: datetime) -> Window | None:
 def _evidence(show: Show, windows: list[Window]) -> dict[int, list[datetime]]:
     """Whatnot show row id → when the recording saw that show sell (see the module
     docstring), by the laptop's clock: its own lines. A show it holds only sales of with no
-    line here (made from Whatnot's orders) gets Whatnot's times of those orders instead."""
+    line here (made from Whatnot's orders) gets Whatnot's times of those orders instead.
+
+    Instead, never as well: the split moment is picked on the laptop's clock (`_quietest`),
+    and Whatnot's order times are Whatnot's. Mixed into one show's list, a laptop clock that
+    runs off would move that show's span and so the split. `lines` therefore replaces
+    `ordered` per show in the returns below, on purpose."""
     lines: dict[int, list[datetime]] = {}
     ordered: dict[int, list[datetime]] = {}
     by_whatnot_id = {w.ws.whatnot_id: w for w in windows}
