@@ -266,3 +266,42 @@ def test_an_order_that_is_busy_does_not_lose_the_rest_of_the_pass(app, shop, mon
     assert got == {"aaa": "paid", "bbb": "shipped"}
     monkeypatch.setattr(orders_service, "ship_by_carrier", real)
     assert _mark(app, shop) == 1  # the next pass ships it
+
+
+def test_a_win_that_left_is_not_named_after_whatnot_cancels_its_order_either(app, shop):
+    """Whatnot cancelled the order after the parcel left, and nobody has applied that yet:
+    the sale still stands here. The guard looked at the payment, so it let the product be
+    named and a unit reserved for an item already gone."""
+    from app.models import WhatnotOrder
+
+    _open_order_in_a_parcel(app, shop)
+    with app.app_context():
+        s = _unnamed()
+        flag = pipeline.open_review(
+            shop["org"],
+            "price_mismatch",
+            "the stream said 7.00, Whatnot's order says 8.00",
+            show_id=shop["show"],
+            sale_id=s.id,
+        )
+        db.session.commit()
+        flag_id, order_id = flag.id, s.external_order_id
+    before = level(app, shop["red"])
+    assert _mark(app, shop) == 1
+    with app.app_context():
+        stored = db.session.scalar(select(WhatnotOrder).where(WhatnotOrder.whatnot_id == order_id))
+        stored.status = "cancelled"  # read from Whatnot, not applied to the sale yet
+        db.session.commit()
+        s = _unnamed()
+        assert s.status.value == "detected"
+        assert orders_service.left_unnamed_ids([s]) == {s.id}
+        with pytest.raises(pipeline.ReviewError, match="already shipped with no product"):
+            pipeline.resolve(
+                db.session.get(ReviewItem, flag_id),
+                "assign_sku",
+                {"skuId": shop["red"]},
+                user=None,
+                actor=pipeline.WHATNOT_ACTOR,
+            )
+        db.session.rollback()
+    assert level(app, shop["red"]) == before

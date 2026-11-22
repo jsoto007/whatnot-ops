@@ -132,13 +132,23 @@ def _left_unnamed_sql():
 
 def left_unnamed_ids(sales) -> set[int]:
     """Which of these sales (Sale rows) left in a parcel with no product named
-    (`_left_unnamed_sql`). One query, and none when no sale could be."""
+    (`_left_unnamed_sql`). One query, and none when no sale could be.
+
+    Whatever Whatnot's order says today: it may have been cancelled or declined since the
+    parcel left, and until that is applied here the sale still stands. The unit is gone
+    either way, so what refuses naming it (`pipeline._refuse_naming_what_left`) must not
+    depend on the payment."""
     ids = [s.id for s in sales if _maybe_settled(s) and s.id is not None]
     if not ids:
         return set()
     return set(
         db.session.scalars(
-            select(Sale.id).where(Sale.id.in_(ids), _paid_unnamed(), _left_unnamed_sql())
+            select(Sale.id).where(
+                Sale.id.in_(ids),
+                Sale.status == SaleStatus.detected,
+                Sale.sku_id.is_(None),
+                _left_unnamed_sql(),
+            )
         )
     )
 
