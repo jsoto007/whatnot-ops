@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "show": {
+    "id": "s",
+    "startedAt": "2026-11-19T20:00:00.000Z",
+    "channel": null
+  },
+  "rows": [
+    {
+      "id": "0123456789abcd04",
+      "showId": "s",
+      "username": "fern_buyer",
+      "body": "x",
+      "rawText": "fern_buyer x",
+      "capturedAt": "2026-11-19T20:01:00.000Z",
+      "seq": 1
+    }
+  ]
+}

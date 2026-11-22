@@ -1,5 +1,6 @@
 import type { CapturedRow } from '../capture/types'
-import { clampRow, clampUrl } from './limits'
+import type { PendingMove } from '../storage/db'
+import { clampChannel, clampUrl, wireRow } from './limits'
 import type { Settings } from './settings'
 import { deviceHeaders } from './version'
 
@@ -7,10 +8,17 @@ export const BATCH_MAX = 200
 
 export interface ChatEventBatch {
   version: 1
-  show: { id: string; startedAt: string; url?: string }
+  /**
+   * `channel`: on a batch of lines, the seller's handle the page showed when they were captured
+   * (each line's own, one batch per show and channel); absent when none was read. On a batch with
+   * no rows, the channel the recording is of.
+   * `movedOnAt`: only on a batch with no rows, the laptop's word that the page moved on to another channel.
+   */
+  show: { id: string; startedAt: string; url?: string; channel?: string; movedOnAt?: string }
   rows: CapturedRow[]
 }
 
+/** A show's start and page. Never its channel: a line goes up with the channel it was captured on. */
 export interface ShowLookup {
   (showId: string): Promise<{ startedAt: string; url?: string } | undefined>
 }
@@ -23,12 +31,16 @@ export interface UploadStore {
   /** Set rows aside for good: the server rejected their batch. */
   markParked(ids: string[]): Promise<void>
   show: ShowLookup
+  /** Shows whose move onto another channel the server is owed, with none of their lines still waiting. */
+  unsentMoves?(): Promise<PendingMove[]>
+  /** The server has that move (or refused it for good): not sent again. */
+  markMoveSent?(showId: string, at: string): Promise<void>
 }
 
 export type UploadOutcome =
   | { status: 'idle' }
   | { status: 'unconfigured' }
-  | { status: 'sent'; sent: number; remaining: number; parked?: number; detail?: string }
+  | { status: 'sent'; sent: number; remaining: number; parked?: number; detail?: string; moved?: number }
   | { status: 'auth' }
   | { status: 'rejected'; detail: string }
   | { status: 'offline'; detail: string }
@@ -39,6 +51,8 @@ export class UploadError extends Error {
     message: string,
     /** Set for a 429: how long the server asked us to wait (its Retry-After header). */
     readonly retryAfterMs?: number,
+    /** Set for a refusal (`rejected`): the HTTP status the server answered with. */
+    readonly status?: number,
   ) {
     super(message)
   }
@@ -59,7 +73,22 @@ export function slowDown(res: Response): UploadError {
   return new UploadError('offline', `server asked to slow down; next try in ${seconds} s`, seconds * 1000)
 }
 
-/** Sends one batch per show. Pure: fetch and store are injected, so it runs in Vitest. */
+/**
+ * True when an API from before `show.channel` / `show.movedOnAt` refused a batch only because its
+ * show carries a field that API does not know. Its validator (api/app/services/ingest.py) words
+ * that as `show: fails additionalProperties` (plus ` False`), after the `invalid batch` error, so
+ * the match is that path and rule exactly, on a 400: not `show/channel` (a bad value), not `rows/…`,
+ * and never a 422 (another seller's lines) or a 413.
+ */
+export function refusedUnknownShowField(err: unknown): boolean {
+  return err instanceof UploadError && err.kind === 'rejected' && err.status === 400 && /(^|; )show: fails additionalProperties( False)?($|;)/.test(err.message)
+}
+
+/**
+ * Sends one batch per show and channel: each line with the channel the page showed when it was
+ * captured (none when none was read), never one the show learned later, so the shop's own lines
+ * are never refused as another seller's. Pure: fetch and store are injected, so it runs in Vitest.
+ */
 export async function uploadOnce(
   store: UploadStore,
   settings: Settings,
@@ -67,22 +96,37 @@ export async function uploadOnce(
 ): Promise<UploadOutcome> {
   if (!settings.serverUrl || !settings.apiKey) return { status: 'unconfigured' }
   const rows = await store.pendingRows(BATCH_MAX)
-  if (!rows.length) return { status: 'idle' }
-  const byShow = new Map<string, CapturedRow[]>()
-  for (const r of rows) (byShow.get(r.showId) ?? byShow.set(r.showId, []).get(r.showId)!).push(r)
+  if (!rows.length && !(await store.unsentMoves?.())?.length) return { status: 'idle' }
+  const groups = new Map<string, { showId: string; channel: string; rows: CapturedRow[] }>()
+  for (const r of rows) {
+    const channel = clampChannel(r.channel) ?? ''
+    const key = JSON.stringify([r.showId, channel])
+    ;(groups.get(key) ?? groups.set(key, { showId: r.showId, channel, rows: [] }).get(key)!).rows.push(r)
+  }
+  const metas = new Map<string, Awaited<ReturnType<ShowLookup>>>()
   let sent = 0
   let parked = 0
   let detail: string | undefined
-  for (const [showId, showRows] of byShow) {
-    const meta = await store.show(showId)
+  for (const { showId, channel, rows: showRows } of groups.values()) {
+    if (!metas.has(showId)) metas.set(showId, await store.show(showId))
+    const meta = metas.get(showId)
     const url = clampUrl(meta?.url)
     const batch: ChatEventBatch = {
       version: 1,
-      show: { id: showId, startedAt: meta?.startedAt ?? showId, ...(url ? { url } : {}) },
-      rows: showRows.map(clampRow),
+      show: { id: showId, startedAt: meta?.startedAt ?? showId, ...(url ? { url } : {}), ...(channel ? { channel } : {}) },
+      rows: showRows.map(wireRow),
     }
     try {
-      await postBatch(settings, batch, fetchFn)
+      try {
+        await postBatch(settings, batch, fetchFn)
+      } catch (err) {
+        // An API older than this build (rolled back after the laptop installed it) refuses the
+        // channel as an unknown field, and would refuse it for ever. Send the lines once more
+        // without it; nothing else is stripped, and a 422 (another seller's lines) is never resent.
+        if (!batch.show.channel || !refusedUnknownShowField(err)) throw err
+        const { channel: _channel, ...show } = batch.show
+        await postBatch(settings, { ...batch, show }, fetchFn)
+      }
     } catch (err) {
       // A batch the server refuses would be refused forever: set it aside and keep
       // the queue moving. Auth and network problems still stop the flush.
@@ -95,7 +139,44 @@ export async function uploadOnce(
     await store.markUploaded(showRows.map((r) => r.id))
     sent += showRows.length
   }
-  return { status: 'sent', sent, remaining: await store.pendingCount(), ...(parked ? { parked, detail } : {}) }
+  const moved = await sendMoves(store, settings, fetchFn)
+  return { status: 'sent', sent, remaining: await store.pendingCount(), ...(parked ? { parked, detail } : {}), ...(moved !== null ? { moved } : {}) }
+}
+
+/**
+ * Tell the server, once per move, that a show's page moved on to another channel (Whatnot does
+ * that when a show ends): a batch with no rows, after all the show's lines (the server takes the
+ * moment it hears this, by its own clock, as the show's end when Whatnot gives none). A server
+ * that refuses it for another reason is not asked again; one older than the field (it refuses the show's field) is asked again later; one that could
+ * not be reached is, with the rows' backoff. Returns how many the server took, or null when
+ * there was none to send.
+ */
+async function sendMoves(store: UploadStore, settings: Settings, fetchFn: typeof fetch): Promise<number | null> {
+  const moves = (await store.unsentMoves?.()) ?? []
+  if (!moves.length || !store.markMoveSent) return null
+  let took = 0
+  for (const m of moves) {
+    const url = clampUrl(m.url)
+    const channel = clampChannel(m.channel)
+    const batch: ChatEventBatch = {
+      version: 1,
+      show: { id: m.id, startedAt: m.startedAt, ...(url ? { url } : {}), ...(channel !== undefined ? { channel } : {}), movedOnAt: m.movedOnAt },
+      rows: [],
+    }
+    try {
+      await postBatch(settings, batch, fetchFn)
+      took++
+    } catch (err) {
+      if (!(err instanceof UploadError) || err.kind !== 'rejected') throw err
+      // An API older than the field cannot use the report, and the report is nothing without it
+      // (no rows, no way to strip it): it stays owed and goes up when the API is ahead again.
+      // Not marked, so a flush asks again (one small request), never a loop: a flush with nothing
+      // else to do only runs for new lines or the sweep.
+      if (refusedUnknownShowField(err)) continue
+    }
+    await store.markMoveSent(m.id, m.movedOnAt)
+  }
+  return took
 }
 
 export async function postBatch(settings: Settings, batch: ChatEventBatch, fetchFn: typeof fetch = fetch): Promise<void> {
@@ -121,7 +202,7 @@ export async function postBatch(settings: Settings, batch: ChatEventBatch, fetch
     } catch {
       /* not JSON */
     }
-    throw new UploadError('rejected', detail)
+    throw new UploadError('rejected', detail, undefined, res.status)
   }
   throw new UploadError('offline', `server returned ${res.status}`)
 }

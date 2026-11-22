@@ -15,15 +15,30 @@
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Device-side show key (the ISO start time)." },
         "startedAt": { "type": "string", "format": "date-time" },
-        "url": { "type": "string", "maxLength": 512 }
+        "url": { "type": "string", "maxLength": 512 },
+        "channel": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "The channel (the seller's Whatnot handle) the page showed when the batch's lines were captured: the extension sends one batch per show and channel, never a channel learned after the lines. Absent when none could be read (an empty string is taken the same), and from extensions before 1.10.0, which do not look. On a batch with no rows (movedOnAt), the channel the recording is of, as the host chose it. The API refuses the batch when it names another seller than the shop's connected one."
+        },
+        "movedOnAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the laptop saw the show's page move on to another channel (Whatnot does that when a show ends). Sent once per move, in a batch with no rows, after the show's rows are all sent. The API keeps its own clock's time of the report, not this one (services/whatnot/showend.py). Absent otherwise, and from extensions before 1.10.0."
+        }
       }
     },
     "rows": {
       "type": "array",
-      "minItems": 1,
       "maxItems": 500,
       "items": { "$ref": "#/$defs/row" }
     }
+  },
+  "if": { "type": "object", "properties": { "rows": { "type": "array", "maxItems": 0 } } },
+  "then": {
+    "type": "object",
+    "properties": { "show": { "type": "object", "required": ["movedOnAt"], "properties": { "movedOnAt": true } } },
+    "description": "A batch with no rows is only a report that the page moved on."
   },
   "$defs": {
     "row": {

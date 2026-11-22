@@ -86,6 +86,13 @@ class Device(db.Model):
     # revoked when that person is disabled or can no longer manage laptops
     # (accounts._withdraw_grants). None for keys made before 0018 or from the CLI.
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    # Chat lines this laptop sent from another seller's show, refused and not stored
+    # (services/ingest.py), and when the last such batch came. Only a count: nothing of
+    # the lines, nor the other seller's name.
+    other_channel_lines: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    other_channel_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     organization: Mapped[Organization] = relationship(back_populates="devices")
     created_by: Mapped["User | None"] = relationship()  # noqa: F821 (models/accounts.py)
@@ -123,19 +130,37 @@ class DevicePairing(db.Model):
 
 class Show(db.Model):
     __tablename__ = "shows"
-    __table_args__ = (UniqueConstraint("organization_id", "show_key", name="uq_shows_org_key"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "show_key", name="uq_shows_org_key"),
+        # Ingest looks up the parts of the laptop's recording on every batch.
+        Index("ix_shows_org_recording_key", "organization_id", "recording_key"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_id: Mapped[int] = mapped_column(
         ForeignKey("organizations.id"), nullable=False, index=True
     )
     show_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    # A part of a laptop recording that ran through two Whatnot shows (services/show_split.py):
+    # the laptop's own key for that recording, which it keeps uploading under. Its lines
+    # captured from this part's `started_at` on are stored here. None for every other show.
+    recording_key: Mapped[str | None] = mapped_column(String(64))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     show_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     source_url: Mapped[str | None] = mapped_column(String(512))
+    # The channel (the seller's Whatnot handle) the laptop read off the show's page when it
+    # started recording, as plain text; the first one sent stays. None for recordings from
+    # extensions before 1.10.0, for a page where it could not be read, and for made shows.
+    channel: Mapped[str | None] = mapped_column(String(80))
+    # When the server last heard from the laptop that the show's page moved on to another
+    # channel (Whatnot moves a viewer on when a show ends): the server's own clock at the
+    # report, never the laptop's. A hint that the show ended (services/whatnot/showend.py).
+    moved_on_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The Whatnot show this is a recording of (models/whatnot.py), once known. Several
     # recordings can be of one show (two laptops, or recording restarted). `whatnot_link`
-    # says who decided: "auto" (matched by time) may be re-decided, "manual" is a person's.
+    # says who decided: "auto" (matched by time) may be re-decided, "manual" is a person's,
+    # "made" the app made the show from Whatnot's record, "split" the app split a recording
+    # that ran through two shows and tied each half by the wins in it (never re-decided).
     whatnot_show_id: Mapped[int | None] = mapped_column(
         ForeignKey("whatnot_shows.id", ondelete="SET NULL", name="fk_shows_whatnot_show_id"),
         index=True,

@@ -39,6 +39,7 @@ const REASON_LABEL: Record<string, string> = {
   closed_after_picking: 'Closed after picking',
   swapped_after_picking: 'Product changed after picking',
   orders_left_out: 'Whatnot orders left out',
+  recording_two_shows: 'One recording, two shows',
   won_after_shipping: 'Won after the order shipped',
 }
 const ACTION_LABEL: Record<string, string> = {
@@ -354,7 +355,7 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
             (it left the order open for good). Every other item keeps it. */}
         {!mustName && (
           <button className="btn" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'dismiss' })}>
-            {item.reason === 'payment_declined' ? 'Keep declined' : item.reason === 'decline_seen' || item.reason === 'lot_won_twice' ? 'Leave it to Whatnot' : item.reason === 'order_declined' || item.reason === 'orders_left_out' ? 'Got it' : 'Ignore'}
+            {item.reason === 'payment_declined' ? 'Keep declined' : item.reason === 'decline_seen' || item.reason === 'lot_won_twice' ? 'Leave it to Whatnot' : item.reason === 'order_declined' || item.reason === 'orders_left_out' || item.reason === 'recording_two_shows' ? 'Got it' : 'Ignore'}
           </button>
         )}
       </div>

@@ -52,7 +52,7 @@ from ...models import (
 )
 from .. import jobs, rules, text
 from ..orders import WHATNOT_PAID
-from . import connection, sync, webhooks
+from . import connection, showend, sync, webhooks
 from .client import (
     MAX_CENTS,
     Busy,
@@ -697,13 +697,15 @@ def _shipments_read_at(org_id: int, ws: WhatnotShow) -> datetime | None:
 
 
 def _complete(org_id: int, ws: WhatnotShow) -> bool:
-    """The show has ended, and all its orders and all its parcels were read after that."""
-    if ws.status != "ended" or ws.ended_at is None:
+    """The show has ended (Whatnot's end, or the one showend.py works out when Whatnot gives
+    none), and all its orders and all its parcels were read after that."""
+    end = showend.end_of(ws)
+    if end is None:
         return False
-    if ws.orders_synced_at is None or ws.orders_synced_at < ws.ended_at:
+    if ws.orders_synced_at is None or ws.orders_synced_at < end:
         return False
     read_at = _shipments_read_at(org_id, ws)
-    return read_at is not None and read_at >= ws.ended_at
+    return read_at is not None and read_at >= end
 
 
 # An order of a show we have no record of yet is taken to be a show in progress if it is
@@ -735,22 +737,24 @@ def _in_a_show_still_live(org_id: int, ws: WhatnotShow, shipment_ids: set[str]) 
     ).all()
     if not rows:
         return set()
-    status = dict(
-        db.session.execute(
-            select(WhatnotShow.whatnot_id, WhatnotShow.status).where(
-                WhatnotShow.organization_id == org_id,
-                WhatnotShow.whatnot_id.in_({r[1] for r in rows}),
-            )
-        ).all()
-    )
+    others = db.session.scalars(
+        select(WhatnotShow).where(
+            WhatnotShow.organization_id == org_id,
+            WhatnotShow.whatnot_id.in_({r[1] for r in rows}),
+        )
+    ).all()
+    found = showend.endings(others)
+    # Over (showend.py: Whatnot ended it, or it is past the 12 hours or a laptop saw it end)
+    # or cancelled: nothing more can join the bundle from it.
+    done = {ws.whatnot_id for ws in others if ws.status == "cancelled" or found[id(ws)].over}
+    known = {ws.whatnot_id for ws in others}
     recent = datetime.now(UTC) - UNKNOWN_SHOW_IS_LIVE
     out = set()
     for shipment_id, other_show, newest in rows:
-        known = status.get(other_show)
-        if known in ("ended", "cancelled"):
+        if other_show in done:
             continue
-        if known is None and (newest is None or newest < recent):
-            continue
+        if other_show not in known and (newest is None or newest < recent):
+            continue  # a show we have no record of, and no recent order of it
         out.add(shipment_id)
     return out
 
@@ -826,7 +830,7 @@ def _view(show: Show) -> tuple[dict, list[tuple[int, str | None]]]:
         .execution_options(populate_existing=True)
     ):
         orders[o.buyer_username.lower()].append(o)
-    ended = ws.status == "ended"
+    ended = showend.is_over(ws)  # Whatnot ended it, or showend.py's rule did
     complete = _complete(org_id, ws)
     now = datetime.now(UTC)
     by_buyer: dict[str, dict] = {}
@@ -1681,13 +1685,5 @@ def due(org_id: int) -> bool:
         )
         .limit(1)
     )
-    recent_show = db.session.scalar(
-        select(WhatnotShow.id)
-        .where(
-            WhatnotShow.organization_id == org_id,
-            WhatnotShow.status == "ended",
-            WhatnotShow.ended_at >= datetime.now(UTC) - timedelta(days=3),
-        )
-        .limit(1)
-    )
-    return moving is not None or recent_show is not None
+    recent_show = bool(showend.ended_within(org_id, timedelta(days=3)))
+    return moving is not None or recent_show

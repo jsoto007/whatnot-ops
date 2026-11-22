@@ -30,7 +30,7 @@ from ..services import (
     shelves,
     show_merge,
 )
-from ..services.whatnot import WhatnotError, connection
+from ..services.whatnot import WhatnotError, connection, showend
 from ..services.whatnot import orders as whatnot_orders
 from ..services.whatnot import sync as whatnot_sync
 
@@ -495,7 +495,7 @@ def _whatnot_view(show: Show) -> dict:
         "connected": True,
         "mode": conn.orders_mode,
         "link": show.whatnot_link,
-        "show": serializers.whatnot_show(ws) if ws is not None else None,
+        "show": serializers.whatnot_show(ws, showend.ending(ws)) if ws is not None else None,
         "choices": [serializers.whatnot_show(c) for c in choices],
         "complete": False,
         "info": None,
