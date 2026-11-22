@@ -35,6 +35,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PyPdfError
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import aliased, selectinload
 
 from ...db import db
@@ -1408,7 +1409,8 @@ def parcels_of(org_id: int, orders: list[Order]) -> dict[int, dict]:
 
     `state`: "failed" (a delivery failed), "delivered" (every parcel), "moving" (the carrier
     has every parcel), "late" (not with the carrier LATE_AFTER after it was marked shipped),
-    "waiting" (a label, not with the carrier yet), "other" (a status the app does not know)."""
+    "waiting" (a label, not with the carrier yet), "nolabel" (an order not marked shipped
+    with a parcel that has no label yet), "other" (a status the app does not know)."""
     if not orders or connection.active(org_id) is None:
         return {}
     shows = dict(
@@ -1465,7 +1467,12 @@ def parcels_of(org_id: int, orders: list[Order]) -> dict[int, dict]:
             state = "moving"
         elif all(s in WITH_CARRIER or s in (OPEN, LABELLED) for s in statuses):
             late = o.shipped_at is not None and now - o.shipped_at > LATE_AFTER
-            state = "late" if late else "waiting"
+            if late:
+                state = "late"
+            elif o.status is not OrderStatus.shipped and OPEN in statuses:
+                state = "nolabel"  # nobody said it left, and a parcel has no label yet
+            else:
+                state = "waiting"
         else:
             state = "other"
         changed = [s.whatnot_updated_at or s.updated_at for s in parcels]
@@ -1491,24 +1498,29 @@ def parcels_of(org_id: int, orders: list[Order]) -> dict[int, dict]:
 
 def _carrier_has(buyers: list[dict]) -> list[tuple[int, str | None]]:
     """(order id, tracking) for each order of a buyer whose every package is with the
-    carrier while the order still waits to be picked, packed or marked shipped. An order
-    with an item nobody has settled (not every standing sale paid) is left for a person."""
+    carrier while the order is not marked shipped yet: open, or waiting to be picked or
+    packed. An order with an item the parcel does not settle
+    (`orders.held_from_the_carrier`) is left for a person."""
     from .. import orders as orders_service
 
     # Never a buyer with an item in no parcel that ships (`_state` already says so; kept here
     # too, since this is what moves orders): the carrier has not got that item.
     shipped = [b for b in buyers if b["state"] == "shipped" and not b["unplaced"]]
-    # Wins settled with no product (`orders.settled_unnamed_sales`) do not hold an order
-    # back: one query for every order here, not one per order.
-    settled = orders_service.settled_unnamed_ids(
-        [s for b in shipped for o in b["_orders"] for s in o.sales]
-    )
+    # Wins settled with no product (`orders.settled_unnamed_sales`) and wins paid on Whatnot
+    # with no product named: one query each for every order here, not one per order.
+    sales = [s for b in shipped for o in b["_orders"] for s in o.sales]
+    settled = orders_service.settled_unnamed_ids(sales)
+    paid_unnamed = orders_service.paid_unnamed_ids(sales)
     out = []
     for b in shipped:
         tracking = next((p["tracking"] for p in b["packages"] if p["tracking"]), None)
         for order in b["_orders"]:
-            if order.status.value in ("paid", "picking", "packed") and orders_service.verified(
-                order, settled=settled
+            if (
+                order.status.value in ("open", "paid", "picking", "packed")
+                and any(s.status in orders_service.STANDING for s in order.sales)
+                and not orders_service.held_from_the_carrier(
+                    order, settled=settled, paid_unnamed=paid_unnamed
+                )
             ):
                 out.append((order.id, tracking))
     return out
@@ -1528,9 +1540,10 @@ def mark_shipped(show: Show, *, actor_label: str = "Whatnot") -> int:
             .execution_options(populate_existing=True)
         )
         if order is None or order.status not in (
+            OrderStatus.open,
             OrderStatus.paid,
-            OrderStatus.picking,
             OrderStatus.packed,
+            OrderStatus.picking,
         ):
             continue
         try:
@@ -1538,6 +1551,11 @@ def mark_shipped(show: Show, *, actor_label: str = "Whatnot") -> int:
                 orders_service.ship_by_carrier(order, tracking=tracking, actor_label=actor_label)
         except (orders_service.OrderError, ValueError):
             continue  # an item still needs a person; the order stays where it is
+        except OperationalError:
+            # A person was deciding one of its Review items at this very moment (the two
+            # lock in opposite order): the savepoint is undone, the next pass ships it.
+            log.warning("mark_shipped: order %s was busy, left for the next pass", order_id)
+            continue
         n += 1
     return n
 

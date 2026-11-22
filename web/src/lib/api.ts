@@ -337,6 +337,8 @@ export interface Sale {
    * stays without a product here (no stock), but it no longer holds its order back. Null
    * where the server did not look. */
   notOurs?: boolean | null
+  /** Settled because it left in its buyer's parcel before its product was named. */
+  leftUnnamed?: boolean | null
   statusReason: string | null
   flagged: boolean
   /** Free gifts packed with this lot ("Gift 2" on the order slips); set by a person. */
@@ -419,8 +421,8 @@ export interface AiStatus {
 
 // ---------- orders / fulfilment (Phase 7) ----------
 export type OrderStatus = 'open' | 'paid' | 'picking' | 'packed' | 'shipped' | 'cancelled'
-/** Where a shipped order's parcel is, as Whatnot last said (labels.ts has the words). */
-export type ParcelState = 'waiting' | 'late' | 'moving' | 'delivered' | 'failed' | 'other'
+/** Where an order's parcel is, as Whatnot last said (labels.ts has the words). */
+export type ParcelState = 'nolabel' | 'waiting' | 'late' | 'moving' | 'delivered' | 'failed' | 'other'
 export interface OrderParcel {
   /** One word for the order: every parcel of the buyer in that show taken together. */
   state: ParcelState

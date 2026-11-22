@@ -115,7 +115,26 @@ def test_a_buyer_with_two_parcels_is_delivered_only_when_both_are(app, client, s
     assert listed(client)["buyer_a"]["parcel"]["state"] == "failed"
 
 
-def test_only_shipped_orders_of_a_connected_shop_carry_a_parcel(app, client, shop, sign_in):
+def test_an_order_not_marked_shipped_says_where_its_parcel_is_too(app, client, shop, sign_in):
+    """Every row of the Orders page says it at a glance, not only the Shipped tab
+    (Javier's call, 2026-11-22)."""
+    shop["say"](app, [win("buyer_a", "Red bundle"), win("buyer_b", "Red bundle")])
+    run(app, shop["show"])
+    a = parcel(shop, "buyer_a", [order(shop, "buyer_a", "Red bundle")])  # no label yet
+    parcel(shop, "buyer_b", [order(shop, "buyer_b", "Red bundle")], status="in_transit")
+    read(app, shop)
+    apply(app, shop)
+    read_shipments(app, shop)
+    sign_in(shop["org"], role="fulfillment")
+    got = listed(client, "")
+    assert (got["buyer_a"]["status"], got["buyer_a"]["parcel"]["state"]) == ("paid", "nolabel")
+    assert (got["buyer_b"]["status"], got["buyer_b"]["parcel"]["state"]) == ("paid", "moving")
+    shop["fake"].set_shipment(a["id"], status="label_generated", tracking_code="9400A")
+    read_shipments(app, shop)
+    assert listed(client, "")["buyer_a"]["parcel"]["state"] == "waiting"
+
+
+def test_a_disconnected_shop_shows_no_parcel(app, client, shop, sign_in):
     shop["say"](app, [win("buyer_a", "Red bundle")])
     run(app, shop["show"])
     parcel(shop, "buyer_a", [order(shop, "buyer_a", "Red bundle")], status="label_generated")
@@ -123,8 +142,6 @@ def test_only_shipped_orders_of_a_connected_shop_carry_a_parcel(app, client, sho
     apply(app, shop)
     read_shipments(app, shop)
     sign_in(shop["org"], role="fulfillment")
-    # Not shipped yet: the Shipping page is where its label and parcel are.
-    assert listed(client, "")["buyer_a"]["parcel"] is None
 
     with app.app_context():
         o = db.session.scalar(select(Order).where(Order.buyer_username == "buyer_a"))

@@ -48,7 +48,11 @@ export const saleStatusLabel = (s: string): string => SALE_STATUS_LABEL[s as Sal
 /** A win paid on Whatnot on a listing the shop marked "Not one of ours", its question ignored. */
 export const NOT_OURS_LABEL = 'Paid on Whatnot · not one of our products'
 /** A sale's state in words: as its status says, or settled with no product (`notOurs`). */
-export const saleLabel = (s: { status: string; notOurs?: boolean | null }): string => (s.notOurs ? NOT_OURS_LABEL : saleStatusLabel(s.status))
+/** A win that left in its buyer's parcel before anyone named its product. */
+export const LEFT_UNNAMED_LABEL = 'Shipped with no product named · fix the count in Inventory'
+/** A sale's state in words: as its status says, or settled with no product (`leftUnnamed`, `notOurs`). */
+export const saleLabel = (s: { status: string; notOurs?: boolean | null; leftUnnamed?: boolean | null }): string =>
+  s.leftUnnamed ? LEFT_UNNAMED_LABEL : s.notOurs ? NOT_OURS_LABEL : saleStatusLabel(s.status)
 
 /** Orders: `paid` means every item is paid, so the order is ready to pick. */
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
@@ -250,6 +254,7 @@ export const packageStatusLabel = (s: string): string => PACKAGE_STATUS[s] ?? (i
 
 /** Where a shipped order's parcel is: every parcel of the buyer in that show, in one phrase. */
 const PARCEL_STATE: Record<string, string> = {
+  nolabel: 'No label yet',
   waiting: 'Waiting for the carrier',
   late: 'Not with the carrier yet',
   moving: 'On its way',

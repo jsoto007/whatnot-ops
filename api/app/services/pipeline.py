@@ -2089,6 +2089,21 @@ def _refuse_leaving_unnamed(sale: Sale) -> None:
     raise ReviewError(message, 409)
 
 
+def _refuse_naming_what_left(sale: Sale) -> None:
+    """Raise when the sale went out in its buyer's parcel with no product named
+    (`orders.left_unnamed_ids`): naming it now, from any Review item or from its listing,
+    would take a unit out of stock for one that already left. The count is fixed by hand
+    in Inventory (Javier's call, 2026-11-21)."""
+    from .orders import left_unnamed_ids
+
+    if sale.id is not None and left_unnamed_ids([sale]):
+        raise ReviewError(
+            "This item already shipped with no product named. Fix the count in Inventory "
+            "instead of naming it here.",
+            409,
+        )
+
+
 def ask_for_product(sale: Sale) -> ReviewItem | None:
     """Open the sale's "which product is that?" question again when it must be named
     (`must_name`) and has no open one (an "Ignore" before that was refused left such wins
@@ -2177,6 +2192,7 @@ def resolve(item: ReviewItem, action: str, body: dict, *, user, actor=None) -> R
             raise ReviewError("this item has no sale to assign")
         if sale.status not in OPEN:
             raise ReviewError(f"sale {sale.id} is already {sale.status.value}", 409)
+        _refuse_naming_what_left(sale)
         sku = catalog.get_sku(item.organization_id, _id(body.get("skuId")))
         if sale.status is SaleStatus.reserved and sale.sku_id and sale.sku_id != sku.id:
             from . import sale_items

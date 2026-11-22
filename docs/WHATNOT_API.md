@@ -204,7 +204,12 @@ can differ on its own page):
      activity log says who did it;
    - when the carrier has every parcel of a buyer, the order can be marked shipped in one
      press (or is, in "Apply as they arrive") with its tracking number, without clicking
-     through picking and packing;
+     through picking and packing. An order still open goes too (Javier's call,
+     2026-11-21): a win Whatnot says is paid whose product nobody named left in that
+     parcel, so its "which product is that?" question is closed and it is never on the
+     pick list again. Its stock is not touched: the count is fixed by hand in Inventory.
+     Money questions (a card shown declined, a lot two buyers were shown winning) stay
+     open, and a win only chat saw (Whatnot has no order for it) still holds its order;
    - Orders → Shipped says where each parcel is, as Whatnot last said: waiting for the
      carrier, not with the carrier yet (three days after the order was marked shipped), on
      its way, delivered, or delivery failed, with the carrier and tracking number. The list
