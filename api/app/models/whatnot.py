@@ -138,6 +138,10 @@ class WhatnotShow(db.Model):
     # When it went live, as far as we know: the `shows.started` event, else its first order.
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When the app saw it go live or paused after knowing it as not on air (scheduled): with
+    # no `started_at`, its 12 hours count from this (services/whatnot/showend.py). None for
+    # a show first seen already on air (that is not when it began) and for rows before 0042.
+    live_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Its page in Seller Hub (a whatnot.com link, checked before it is kept).
     url: Mapped[str | None] = mapped_column(String(512))
     # When every order since the show began was last read; None before the first full read.
@@ -198,6 +202,9 @@ class WhatnotOrder(db.Model):
     synced_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
+    # When the app first stored it; a later read never moves it (`synced_at` moves on every
+    # read). None for rows stored before 0042.
+    first_stored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     items: Mapped[list["WhatnotOrderItem"]] = relationship(
         back_populates="order", order_by="WhatnotOrderItem.id", cascade="all, delete-orphan"

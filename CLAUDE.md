@@ -124,11 +124,24 @@ commands.
 - **Jobs.** `api/app/services/jobs.py` is the queue (`SELECT … FOR UPDATE
   SKIP LOCKED`); handlers register with `@handler("kind")`. `JOBS_INLINE=1`
   runs them synchronously (dev, e2e, CI); production runs `python -m
-  app.worker`. `parse_show` is claimed before other kinds; `requeue_stale`
-  fails a stale `running` job whose last allowed attempt never finished
-  (instead of re-queueing a job that kills its worker forever). The worker
-  survives a database outage (backs off) and never exits on one. An error marked
-  `final` (Whatnot's `Invalid`: a 4xx request error) fails its job at once.
+  app.worker`. `parse_show` is claimed before other kinds. A claim is
+  `locked_by` + `attempts`. While a handler runs, a thread beside it (its own
+  connection, one short UPDATE) stamps `jobs.heartbeat_at` every 15 s, and every
+  worker's poll (`worker._give_back`, not the 5-minute sweep) gives back a
+  `running` job silent for 90 s (`SILENT_SECONDS`, database time); a row with no
+  heartbeat (from before 0038) keeps the 15-minute rule on `locked_at`.
+  `requeue_stale` fails a stale job whose last allowed attempt never finished
+  (instead of re-queueing a job that kills its worker forever). The worker calls
+  it only while `jobs.reach.proven()`: the process has itself reached the
+  database, with no failure anywhere in it (the loop, a give-back, housekeeping,
+  a handler, its own heartbeat thread), for 90 s; a process that has just
+  started is not proven. While the database is away every live worker's beats
+  fail too, and that silence is not death. Any new database path in the worker
+  goes through `jobs.reach.watch()`. The beat and the job's end (`_settle`) are
+  conditional UPDATEs on the claim: a worker that was given up on writes
+  nothing. The worker survives a database outage (backs off) and never exits on
+  one. Known gap: a job whose own beats fail while its handler still reaches the
+  database can be run a second time by another worker.
 - **Migrations.** `flask db migrate` prints the generated path — rename
   *that* file (never `ls -t`), and when a downgrade drops tables that use
   Postgres enums, drop the enum types too (see 0004).
@@ -557,6 +570,57 @@ commands.
   - **Older-orders backfill** (`whatnot/backfill.py`): the end of Whatnot's list counts as the
     floor only after `STOP_AFTER` older orders in a row or two reads ending on the same order;
     a few old orders before an end never finish a run.
+- **Whose show (channel).** When a show ends, Whatnot moves a viewer to another seller's
+  show in the same tab (Javier, 2026-11-19). `extension/src/capture/channel.ts` reads the
+  seller's name off the page: the `/user/<handle>` address, else the small `CHANNEL_SOURCES`
+  table, which is NOT verified on whatnot.com (change only that table once checked). A
+  recording's channel is fixed only by the host's choice: the page where they click a chat
+  line after Start or Pick chat, or the address they started at. A name read later is never
+  adopted, by the panel or by the laptop's store. A different readable name pauses capture
+  and keeps nothing of that show; on a recording with no channel, any name that shows up is
+  a doubt: capture pauses and the panel asks the host to press Pick chat. Each line carries
+  the channel read when it was captured; the uploader sends one batch per show and channel
+  (`show.channel`, optional, so old builds are accepted). `services/ingest.py` keeps it on
+  `shows.channel` (first one wins) and refuses the whole batch (422, in words) when it
+  differs, case aside, from the Whatnot connection's username: nothing is stored, the lines
+  are counted in `devices.other_channel_lines`, and another seller's name is never stored or
+  logged. Every doubt reads as "not read", never as another channel. Deploy the API before
+  an extension that sends a new field, and roll them back together: against an older API
+  the uploader resends a batch once without `show.channel` only on that API's own
+  unknown-field 400 (`refusedUnknownShowField`), never on a 422, and that older API cannot
+  check the channel (`shared/README.md`).
+- **When a show is over** is decided only in `services/whatnot/showend.py` (`ending`,
+  `end_of`, `is_over`, `on_air`, `ended_within`). Never compare Whatnot's status or
+  `ended_at` yourself. Whatnot's own end time wins and is never written over. Otherwise a
+  show is over 12 hours after it began (`started_at`, else when the app saw it go live,
+  `live_seen_at`, never an older schedule), or sooner on a show laptop's moved-on word
+  (`shows.moved_on_at`, the server's time). While Whatnot still calls the show live or
+  paused, that word counts only with proof: every order read at least 30 minutes after the
+  move and none placed after it (an undated order counts from `first_stored_at`). A show
+  over by the app's rule that Whatnot still calls live keeps its orders read at every timer
+  pass, whatever the webhooks do (`showend.still_read`); if it sells again it goes back on
+  air, and labels, picks and "every order read" wait again. Nothing done while it looked
+  over is undone (a label, a pick, a sale that gave way), so keep anything irreversible
+  behind `end_of`. **An apply more than three days after a show's end** (whoever ended it:
+  `whatnot/orders._ended_long_ago`, `GIVE_WAY_WITHIN`) never makes a sale give way by
+  itself, a person's Apply included: the win keeps its "no order on Whatnot" item, no stock
+  moves, and a person decides. That keeps the 12-hour rule, an end time Whatnot fills in
+  late, and a first full read of an old show from cancelling paid sales days afterwards.
+- **One recording, two shows** (`services/show_split.py`). The laptop keeps one key from
+  Start to "Clear this show", so one recording can run through two of the shop's shows.
+  Only at a read of Whatnot's shows (`sync.sync_shows`, the shows webhook), never inside an
+  order apply, a recording with chat in the last 2 days is split when it holds sure wins of
+  two shows, each said while that show alone was on air. The split falls at the longest
+  quiet stretch of its own chat between them, and the later part becomes its own show by
+  re-pointing (chat, sales, per-buyer Orders, Review questions, lots, parcels), never
+  cancel-and-recreate: no stock moves. What Whatnot's orders told a person with no sale or
+  line to follow goes to the half whose Whatnot show it is about, as it was (open, dismissed
+  or resolved), so that show's next apply never asks twice
+  (`show_split._move_whatnot_questions`, before the re-tie and the made-show fold). Both halves get `whatnot_link` "split" (never
+  re-tied by the clock). Ingest routes each later line by capture time and never stores a
+  client id either half already holds. A box being picked, packed or shipped with a win
+  from the later show blocks the split (one Review item). Never split: a recording a person
+  matched, a made show, or one whose own address names the later show.
 - **Query cost.** A page or job must not cost a statement per row: eager-load what the
   serializer reads (`selectinload`), and batch-load what a loop reads
   (`reconcile.load_sales`) instead of `session.get` per row. `tests/test_query_counts.py`

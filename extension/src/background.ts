@@ -9,6 +9,7 @@ import {
   kvDelete,
   kvGet,
   kvSet,
+  markMoveSent,
   markParked,
   markUploaded,
   parkAllPending,
@@ -17,6 +18,7 @@ import {
   pendingRows,
   pruneShows,
   putRows,
+  unsentMoves,
   uploadedCount,
 } from './storage/db'
 import { cleanShipments, cleanShowLabel, MAX_ROWS, postShipments } from './shipments/upload'
@@ -24,7 +26,7 @@ import { fetchStock } from './stock/fetch'
 import { fetchBuyers, MAX_NAMES, NAME_MAX } from './buyers/known'
 import { migrateLegacyStorage } from './storage/migrate'
 import { type Tabs, claimRecording, endRecording, forgetRecording, resumeFor } from './storage/recording'
-import { clampRow, clampUrl } from './upload/limits'
+import { clampChannel, clampMovedOnAt, clampRow, clampUrl } from './upload/limits'
 import { configured, loadSettings } from './upload/settings'
 import { UploadTimer } from './upload/schedule'
 import { UploadError, type UploadOutcome, backoffSeconds, uploadOnce } from './upload/uploader'
@@ -127,7 +129,7 @@ async function flush(): Promise<UploadOutcome> {
     try {
       const settings = await loadSettings()
       const outcome = await uploadOnce(
-        { pendingRows, pendingCount, markUploaded, markParked, show: async (id) => (await getShow(id)) ?? undefined },
+        { pendingRows, pendingCount, markUploaded, markParked, show: async (id) => (await getShow(id)) ?? undefined, unsentMoves, markMoveSent },
         settings,
       )
       if (outcome.status === 'sent') {
@@ -209,7 +211,8 @@ const CMDS = new Set<Request['cmd']>(['rows', 'recording', 'getSession', 'clearS
 function cleanRows(msg: Extract<Request, { cmd: 'rows' }>): Extract<Request, { cmd: 'rows' }> | null {
   if (!msg.show || typeof msg.show.id !== 'string' || !Array.isArray(msg.rows) || msg.rows.length > 1000) return null
   const rows = msg.rows.filter((r) => r && typeof r.id === 'string' && r.id.length <= 64 && typeof r.seq === 'number').map(clampRow)
-  return { cmd: 'rows', show: { ...msg.show, url: clampUrl(msg.show.url) }, rows }
+  const show = { ...msg.show, url: clampUrl(msg.show.url), channel: clampChannel(msg.show.channel), movedOnAt: clampMovedOnAt(msg.show.movedOnAt) }
+  return { cmd: 'rows', show, rows }
 }
 
 const okSpot = (s: ChatSpot | null): boolean =>
@@ -226,7 +229,14 @@ function cleanRecording(msg: Extract<Request, { cmd: 'recording' }>): Extract<Re
   if (!msg.show || typeof msg.show.id !== 'string' || msg.show.id.length > 64 || typeof msg.show.startedAt !== 'string') return null
   if (!okSpot(msg.spot ?? null)) return null
   const spot = msg.spot ? { selectors: msg.spot.selectors, page: msg.spot.page } : null
-  return { cmd: 'recording', show: { id: msg.show.id, startedAt: msg.show.startedAt, url: clampUrl(msg.show.url) }, spot }
+  const show = {
+    id: msg.show.id,
+    startedAt: msg.show.startedAt,
+    url: clampUrl(msg.show.url),
+    channel: clampChannel(msg.show.channel),
+    movedOnAt: clampMovedOnAt(msg.show.movedOnAt),
+  }
+  return { cmd: 'recording', show, spot, ...(msg.chosen === true ? { chosen: true as const } : {}) }
 }
 
 async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promise<unknown> {
@@ -256,9 +266,12 @@ async function handle(msg: Request, sender: chrome.runtime.MessageSender): Promi
         return { ok: true }
       }
       // Register the show before its first lines arrive, so a reload right away still resumes it.
-      await putRows(msg.show, [])
+      // Only the host's choice of the page may give a show with no channel yet its channel.
+      await putRows(msg.show, [], { chosen: msg.chosen === true })
       await kvSet(KV_SESSION, { showId: msg.show.id } satisfies SessionRef)
       await claimRecording(msg.show.id, msg.spot, tabId, tabs)
+      // The page moved on to another channel: the server hears it soon, once the lines are sent.
+      if (msg.show.movedOnAt) scheduleFlush()
       return { ok: true }
     }
     case 'getUploadStatus':

@@ -329,6 +329,21 @@ def _show_merged(d: dict, _target: str) -> str:
     return text
 
 
+def _show_split(d: dict, _target: str) -> str:
+    from .show_merge import date_words
+
+    first = date_words(d) + (f" ({_q(d['title'])})" if d.get("title") else "")
+    second = date_words({"date": d.get("toDate")}) + (
+        f" ({_q(d['toTitle'])})" if d.get("toTitle") else ""
+    )
+    return (
+        f"Split a laptop recording that ran through two shows on Whatnot into {first} and "
+        f"{second}: {_plural(d.get('lines', 0), 'chat line')}, "
+        f"{_plural(d.get('sales', 0), 'sale')} and {_plural(d.get('orders', 0), 'order')} "
+        "went to the second"
+    )
+
+
 SALE_MODES = {"winners_pick": "winners pick in chat", "listing": "one product per listing"}
 
 
@@ -426,6 +441,7 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
     "show.mode": ("Changed how a show sells", _show_mode),
     "show.laptop_data_deleted": ("Deleted a show's laptop data", _laptop_data_deleted),
     "show.merged": ("Merged two shows of one Whatnot show", _show_merged),
+    "show.split": ("Split a recording that ran through two shows", _show_split),
     "sale.product_changed": (
         "Changed a sale's product",
         lambda d, t: (

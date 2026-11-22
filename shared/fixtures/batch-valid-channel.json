@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "show": { "id": "2026-11-19T20:00:00.000Z", "startedAt": "2026-11-19T20:00:00.000Z", "url": "/live/made-up-stream", "channel": "maple_cards_demo" },
+  "rows": [
+    {"id": "0123456789abcd01", "showId": "2026-11-19T20:00:00.000Z", "username": "fern_buyer", "body": "I will take 2", "rawText": "fern_buyer I will take 2", "capturedAt": "2026-11-19T20:01:00.000Z", "seq": 1},
+    {"id": "0123456789abcd02", "showId": "2026-11-19T20:00:00.000Z", "username": "", "body": "fern_buyer won the auction for Blue bundle #4 for $3.00", "rawText": "fern_buyer won the auction for Blue bundle #4 for $3.00", "capturedAt": "2026-11-19T20:01:09.000Z", "seq": 2, "source": "player"}
+  ]
+}

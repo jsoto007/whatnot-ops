@@ -19,7 +19,7 @@ this is Whatnot's own record, read with the shop's token.
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -410,14 +410,35 @@ def _hold_for_nameless(rows: list[Row], failed: list[Row]) -> None:
 
 
 def _complete(ws: WhatnotShow) -> bool:
-    """Every order of the show has been read after it ended: only then does a sale with
-    no order mean something."""
-    return (
-        ws.status == "ended"
-        and ws.ended_at is not None
-        and ws.orders_synced_at is not None
-        and ws.orders_synced_at >= ws.ended_at
-    )
+    """Every order of the show has been read after it ended (Whatnot's end, or the one
+    showend.py works out when Whatnot gives none): only then does a sale with no order mean
+    something."""
+    from . import showend
+
+    end = showend.end_of(ws)
+    return end is not None and ws.orders_synced_at is not None and ws.orders_synced_at >= end
+
+
+# A show Whatnot gave no end time for, and no laptop saw end, is over by the app's own clock
+# (showend.py: 12 hours after it began). Once that end is older than this, its applies no
+# longer make a sale give way to another win of its lot (`_one_win`): the first pass after the
+# 12-hour rule came in reads a month of such shows in full, and days after a show nobody is
+# watching it; a person decides instead. The same days the timer reads a show's parcels.
+GIVE_WAY_WITHIN = timedelta(days=3)
+
+
+def _ended_long_ago(ws: WhatnotShow) -> bool:
+    """The show's end, whoever said it (Whatnot, the 12-hour rule, a laptop's word), is more
+    than `GIVE_WAY_WITHIN` old. An apply this late never makes a paid sale give way by
+    itself: cancelling a sale and moving stock days after the show, with no person involved,
+    is worse than asking. The win keeps its "no order on Whatnot" item and a person decides.
+    Keyed on the end's age, not on who ended it: an end time Whatnot fills in days later, or
+    a first full read of an old show, must not undo what a person was asked to decide."""
+    from . import showend
+
+    now = datetime.now(UTC)
+    at = showend.end_of(ws, now)
+    return at is not None and at < now - GIVE_WAY_WITHIN
 
 
 # A plan row's action that only Whatnot's orders have: the declined win with no product
@@ -444,6 +465,9 @@ RECORDED_AGAIN = "declined twice here, then paid on Whatnot: recorded as a new s
 WAITING = "waiting for its product to be named"
 # The review item for a payment Whatnot declined when the app has no sale for the win.
 ORDER_DECLINED = "order_declined"
+# The item for a standing sale with no order among Whatnot's (once the show is over and read
+# in full): any order for the sale answers it, one still settling too.
+NOT_LISTED = "no_payment_record"
 # Items that doubt whether a standing sale was paid: the stream showed its card declined
 # (`pipeline.flag_decline`), the AI read as much in chat, or no order was found for it. A
 # paid order for the sale answers them.
@@ -451,7 +475,7 @@ ANSWERED_BY_PAYMENT = (
     pipeline.DECLINE_SEEN,
     pipeline.LOT_WON_TWICE,
     "payment_failed",
-    "no_payment_record",
+    NOT_LISTED,
 )
 
 HERE = {
@@ -856,7 +880,9 @@ def apply(show: Show, *, user=None) -> dict:
     # unpaid and none gives way to another win of its lot: that order may be the one that
     # pays it.
     whole = _complete(ws) and not _may_hide(info)
-    gave_way = _one_win(primary, plan, show_ids, whole)
+    # A show over only by the app's clock, days ago: no sale gives way by itself. A win with
+    # no order stays called out as such ("no payment record"), and a person decides.
+    gave_way = _one_win(primary, plan, show_ids, whole and not _ended_long_ago(ws))
     # A sale that gave way is no longer "a sale with no order": it is settled.
     plan.uncovered = [i for i in plan.uncovered if i not in gave_way]
     summary = plan.summary
@@ -877,7 +903,9 @@ def _one_win(show: Show, plan: Plan, show_ids: list[int], complete: bool) -> set
       sale still standing for the lot with no order of its own gives way: another buyer's
       (the lot was run again after their card was declined), or a second copy of the same
       win. Before that a missing order may simply not have arrived, and a sale is never
-      cancelled on a guess; it is the stream that asks a person meanwhile.
+      cancelled on a guess; it is the stream that asks a person meanwhile. Nor for a show
+      whose end is more than three days old (`_ended_long_ago`): the caller
+      passes `complete` False, and a win with no order keeps its "no payment record" item.
 
     Only auction orders that are paid, only titles that carry a lot number, and only sales
     won within half an hour of the order: a "buy it now" listing sells many times, a title
@@ -997,11 +1025,15 @@ def _flag_declines(show: Show, plan: Plan, show_ids: list[int]) -> None:
       from the stream leaves (`pipeline.review_decline`);
     - a sale that still stands and that Whatnot says is paid has its "the stream showed the
       card declined" items answered;
+    - a sale that still stands and that Whatnot has an order for that is still settling has
+      its "not among Whatnot's orders" item answered (only that one: whether it is paid is
+      still open, and a decline of that order is put to a person as any other);
     - a failed order with no sale here (`_flag_unrecorded`);
     - a second win of the same listing that the paid order did not cover (`_flag_twin`)."""
     by_itself = decides(show)
     sales = reconcile.load_sales(row.sale_id for row in plan.rows)
     answered: list[int] = []  # standing sales Whatnot says are paid
+    listed: list[int] = []  # standing sales Whatnot has an order for, still settling
     for row in plan.rows:
         sale = sales.get(row.sale_id) if row.sale_id else None
         if sale is None:
@@ -1014,18 +1046,24 @@ def _flag_declines(show: Show, plan: Plan, show_ids: list[int]) -> None:
             and sale.status in STANDING
         ):
             answered.append(sale.id)
+        elif row.status == "pending" and row.action == "unchanged" and sale.status in STANDING:
+            listed.append(sale.id)
     # Their open doubts about the payment, in one query for all of them.
-    for chunk in _chunks(answered):
-        for item in db.session.scalars(
-            select(ReviewItem).where(
-                ReviewItem.sale_id.in_(chunk),
-                ReviewItem.status == ReviewStatus.open,
-                ReviewItem.reason.in_(ANSWERED_BY_PAYMENT),
-            )
-        ):
-            item.status = ReviewStatus.resolved
-            item.resolution = {"by": "paid on Whatnot"}
-            item.resolved_at = datetime.now(UTC)
+    for ids, reasons, by in (
+        (answered, ANSWERED_BY_PAYMENT, "paid on Whatnot"),
+        (listed, (NOT_LISTED,), THERE["pending"]),
+    ):
+        for chunk in _chunks(ids):
+            for item in db.session.scalars(
+                select(ReviewItem).where(
+                    ReviewItem.sale_id.in_(chunk),
+                    ReviewItem.status == ReviewStatus.open,
+                    ReviewItem.reason.in_(reasons),
+                )
+            ):
+                item.status = ReviewStatus.resolved
+                item.resolution = {"by": by}
+                item.resolved_at = datetime.now(UTC)
     del sales
     _flag_unrecorded(show, plan, show_ids)
     _flag_twin(show, plan)

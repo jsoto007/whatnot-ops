@@ -34,7 +34,7 @@ from ...models import (
 )
 from .. import jobs, text
 from ..showdate import show_date
-from . import connection, webhooks
+from . import connection, showend, webhooks
 from .client import (
     MAX_CENTS,
     Forbidden,
@@ -52,7 +52,7 @@ from .client import (
 
 log = logging.getLogger(__name__)
 
-ACTIVE = ("live", "stopped")
+ACTIVE = showend.ON_AIR  # live, or paused (may resume): on air unless over (showend.py)
 OPEN_ORDER_STATUSES = ("pending", "pending_fulfillment")
 # How far before a show's start an order can still be its own (clock skew, a show that
 # went live before its scheduled time).
@@ -127,13 +127,15 @@ OPEN_ORDERS_EVERY = timedelta(minutes=60)
 # With webhooks arriving (one within this long), the open-order re-read is a safety net
 # and runs this often instead.
 OPEN_ORDERS_HOOKED = timedelta(hours=6)
-# A show "live" or "stopped" on Whatnot for longer than this is not on air any more for the
-# open-order re-read (a show left "stopped" must not hold it back for days).
-ON_AIR_AT_MOST = timedelta(hours=12)
+# A show Whatnot gives no end time for (or leaves "live" or "stopped") is over 12 hours after
+# it began, or sooner on a laptop's word: decided only in showend.py (`ON_AIR_AT_MOST`).
 LIVE_POLL_QUIET = timedelta(minutes=10)  # no webhook for this long during a live show
 # A show nobody recorded gets its own entry in Shows once it has been live this long (a
 # laptop that starts recording a little late has had its chance to appear).
 UNRECORDED_GRACE = timedelta(minutes=10)
+# `Show.whatnot_link` of the halves of a recording that ran through two shows: tied by the
+# wins in each half (services/show_split.py), never re-decided by the clock.
+SPLIT = "split"
 
 
 def _str(value, limit: int) -> str | None:
@@ -158,6 +160,7 @@ def upsert_show(org_id: int, data: dict) -> WhatnotShow | None:
         .where(WhatnotShow.organization_id == org_id, WhatnotShow.whatnot_id == whatnot_id)
         .with_for_update()
     )
+    was = row.status if row is not None else None  # None: first seen now
     if row is None:
         db.session.execute(
             insert(WhatnotShow)
@@ -171,6 +174,16 @@ def upsert_show(org_id: int, data: dict) -> WhatnotShow | None:
         )
     status = _str(data.get("status"), 16)
     if status:
+        if (
+            status in showend.ON_AIR
+            and was is not None
+            and was not in showend.ON_AIR
+            and row.live_seen_at is None
+        ):
+            # Seen going live: with no known start its 12 hours count from now, not from a
+            # scheduled time long past (showend.began). A show first seen already on air says
+            # nothing about when it began.
+            row.live_seen_at = datetime.now(UTC)
         row.status = status
     if isinstance(data.get("title"), str):
         row.title = (text.clean(data["title"]) or "").strip()[:300]
@@ -203,9 +216,19 @@ def sync_shows(org_id: int, client: WhatnotClient) -> int:
             if i >= 200:
                 break
     db.session.flush()
-    # A show the list no longer calls live has ended, even if its webhook never came.
+    # (A show the list keeps calling live, or calls ended with no end time, is over by
+    # showend.py's rule; nothing is written over what Whatnot says.)
     link_recordings(org_id)
+    _split_recordings(org_id)
     return n
+
+
+def _split_recordings(org_id: int) -> None:
+    """A laptop recording that ran through two of the shop's shows becomes two shows
+    (services/show_split.py). Only at a read of the shows, never inside an order apply."""
+    from .. import show_split
+
+    show_split.split_recordings(org_id)
 
 
 def _recording_window(show: Show) -> tuple[datetime, datetime]:
@@ -248,7 +271,8 @@ def link_recordings(org_id: int) -> int:
     """Point each recent recording at the Whatnot show it is a recording of: the show its
     address names, else the show that was live while it was recording. A recording made on
     ANOTHER stream's page (someone watching a different seller) is never tied by the clock
-    to a show that has a recording of its own. A link a person chose is never changed."""
+    to a show that has a recording of its own. A link a person chose is never changed, nor
+    one a split decided (services/show_split.py)."""
     since = datetime.now(UTC) - RECENT_SHOWS
     recordings = db.session.scalars(
         select(Show).where(
@@ -256,6 +280,7 @@ def link_recordings(org_id: int) -> int:
             Show.started_at >= since,
             Show.whatnot_link.is_distinct_from("manual"),
             Show.whatnot_link.is_distinct_from("made"),
+            Show.whatnot_link.is_distinct_from(SPLIT),
         )
     ).all()
     if not recordings:
@@ -282,6 +307,12 @@ def link_recordings(org_id: int) -> int:
         ws.id for ws in candidates if any(ws.whatnot_id.lower() in url for url in addresses)
     }
     now = datetime.now(UTC)
+    # Until when each show can have been live: its end once passed, else now. By Whatnot's
+    # word and the 12-hour rule only: the laptops' word comes from the very recordings this
+    # ties, and must not move the window it ties them by. A show left paused for days no
+    # longer overlaps every recording made since.
+    found = showend.endings(candidates, now, laptops=False)
+    until = {id(ws): showend.passed(found[id(ws)], now) or now for ws in candidates}
     linked = 0
     sure: set[int] = set()  # Whatnot shows a recording is tied to by its own address
     for rec in recordings:
@@ -303,7 +334,7 @@ def link_recordings(org_id: int) -> int:
                 continue
             exact = ws.started_at is not None and began == ws.started_at
             start = began - (RECORDING_LEAD if exact else RECORDING_LEAD_SCHEDULED)
-            seconds = _overlap(rec_start, rec_end + timedelta(minutes=1), start, ws.ended_at or now)
+            seconds = _overlap(rec_start, rec_end + timedelta(minutes=1), start, until[id(ws)])
             if seconds > 0 and (best is None or seconds > best[0]):
                 best = (seconds, ws)
         target = best[1].id if best else None
@@ -350,19 +381,28 @@ def by_address(show: Show, ws: WhatnotShow) -> bool:
     return bool(show.source_url) and ws.whatnot_id.lower() in show.source_url.lower()
 
 
+def pinned(show: Show, ws: WhatnotShow) -> bool:
+    """The app itself knows the recording is this Whatnot show's: its own page address names
+    the show, or the app split it off a recording that ran through two shows by the wins in
+    it (services/show_split.py). A made show may fold into such a recording on its own."""
+    return (show.whatnot_link == SPLIT and show.whatnot_show_id == ws.id) or by_address(show, ws)
+
+
 def is_sure(show: Show, ws: WhatnotShow) -> bool:
-    """The recording is this Whatnot show's for good: a person said so, or its own page
-    address names the show. A tie by the clock alone may be re-decided at the next read."""
-    return show.whatnot_link == "manual" or by_address(show, ws)
+    """The recording is this Whatnot show's for good: a person said so, its own page address
+    names the show, or a split tied it. A tie by the clock alone may be re-decided at the
+    next read."""
+    return show.whatnot_link == "manual" or pinned(show, ws)
 
 
 def _rank(whatnot_id):
     """How sure a show is to stay this Whatnot show's (`is_sure` in SQL): 0 a recording a
-    person matched or whose address names the show, 1 a show made from Whatnot's record,
-    2 a recording tied by the clock alone."""
+    person matched, whose address names the show or that a split tied, 1 a show made from
+    Whatnot's record, 2 a recording tied by the clock alone."""
     named = func.strpos(func.lower(func.coalesce(Show.source_url, "")), func.lower(whatnot_id))
     return case(
         (Show.whatnot_link == "manual", 0),
+        (Show.whatnot_link == SPLIT, 0),
         (named > 0, 0),
         (Show.whatnot_link == "made", 1),
         else_=2,
@@ -481,7 +521,8 @@ def upsert_order(org_id: int, data: dict) -> tuple[int | None, bool]:
         # A read without the buyer (a token that lost that permission) keeps who it was.
         update.pop("buyer_username")
         update.pop("buyer_id")
-    stmt = insert(WhatnotOrder).values(**values)
+    # When the app first stored it: on the insert only, never moved by a later read.
+    stmt = insert(WhatnotOrder).values(**values, first_stored_at=values["synced_at"])
     newer = stmt.excluded.whatnot_updated_at
     got = db.session.execute(
         stmt.on_conflict_do_update(
@@ -856,6 +897,7 @@ def _on_show(event: WhatnotEvent) -> None:
         ws.started_at = min(ws.started_at or event.event_at, event.event_at)
     db.session.flush()
     link_recordings(org_id)
+    _split_recordings(org_id)
     if event.topic == "shows.ended":
         # Every order of the show, read once more now that no more can come.
         jobs.enqueue(
@@ -953,11 +995,15 @@ def history(conn: WhatnotConnection, ws: WhatnotShow) -> bool:
     arrive" means from that choice on, not weeks of old shows turning into sales to sort
     out. Reconnecting does not move the line (a show already being followed stays
     followed). An ended show Whatnot gives no end time for is judged by its start, and
-    one with no time at all is history."""
+    one with no time at all is history. A show Whatnot still calls live or paused is
+    followed while on air; once the 12-hour rule ends it (showend.py), it is judged by that
+    end (the laptops' word is not asked here: it only ever makes a show history sooner)."""
+    line = conn.auto_since or conn.connected_at
     if ws.status in ACTIVE:
-        return False
+        e = showend.ending(ws, hint=None)
+        return e.over and e.at is not None and e.at < line
     over = ws.ended_at or ws.begins_at
-    return over is None or over < (conn.auto_since or conn.connected_at)
+    return over is None or over < line
 
 
 def on_air_now(org_id: int) -> bool:
@@ -972,10 +1018,9 @@ def on_air_now(org_id: int) -> bool:
 
 
 def on_air(shows, now: datetime | None = None) -> bool:
-    """Whether any of these shows (live or stopped on Whatnot) is on air: begun lately
-    enough that it is not one left "stopped" for days (`ON_AIR_AT_MOST`)."""
-    now = now or datetime.now(UTC)
-    return any((ws.started_at or ws.begins_at or now) >= now - ON_AIR_AT_MOST for ws in shows)
+    """Whether any of these shows (live or stopped on Whatnot) is on air: not over by
+    showend.py's rule (12 hours after it began, or sooner on a laptop's word)."""
+    return showend.on_air(shows, now)
 
 
 def begin_repair(org_id: int) -> datetime | None:
@@ -1006,13 +1051,9 @@ def _unread_shows(org_id: int, live: list[WhatnotShow]) -> list[WhatnotShow]:
     late and repair reads wait while a show is on air: they are not the first read of
     anything."""
     now = datetime.now(UTC)
-    shows = db.session.scalars(
-        select(WhatnotShow).where(
-            WhatnotShow.organization_id == org_id,
-            WhatnotShow.status == "ended",
-            WhatnotShow.ended_at >= now - RECENT_SHOWS,
-        )
-    ).all()
+    # Over (Whatnot's end, else showend.py's), with that end.
+    over = showend.ended_within(org_id, RECENT_SHOWS, now)
+    shows, ends = [ws for ws, _ in over], {ws.id: end for ws, end in over}
     late_ok = not on_air(live, now)
     repair = connection.sync_state(org_id, "repair:capped-reads").last_ok_at
     held = dict(
@@ -1027,8 +1068,8 @@ def _unread_shows(org_id: int, live: list[WhatnotShow]) -> list[WhatnotShow]:
     )
     out = []
     for ws in shows:
-        read = ws.orders_synced_at
-        if read is None or read < ws.ended_at:
+        read, end = ws.orders_synced_at, ends[ws.id]
+        if read is None or read < end:
             out.append(ws)
             continue
         if not late_ok:
@@ -1036,8 +1077,8 @@ def _unread_shows(org_id: int, live: list[WhatnotShow]) -> list[WhatnotShow]:
         if repair is not None and read < repair:
             out.append(ws)  # the one-time repair (`begin_repair`)
             continue
-        owed = [ws.ended_at + after for after in LATE_READS if ws.ended_at + after <= now]
-        if owed and read < max(owed) and ws.ended_at >= now - LATE_READS_WITHIN:
+        owed = [end + after for after in LATE_READS if end + after <= now]
+        if owed and read < max(owed) and end >= now - LATE_READS_WITHIN:
             out.append(ws)
             continue
         counted = (ws.analytics or {}).get("orders_count")
@@ -1069,14 +1110,12 @@ def _parcels_owed(org_id: int, now: datetime) -> list[WhatnotShow]:
     (`shipping._complete`). Asked of what is stored, not of what this pass happened to
     read: a show's orders can be read after it ended while the app still has it as live
     (the show list is read every 15 minutes), and then it is never "unread" again."""
-    shows = db.session.scalars(
-        select(WhatnotShow).where(
-            WhatnotShow.organization_id == org_id,
-            WhatnotShow.status == "ended",
-            WhatnotShow.ended_at >= now - PARCELS_AFTER,
-            WhatnotShow.orders_synced_at >= WhatnotShow.ended_at,
-        )
-    ).all()
+    over = [
+        (ws, end)
+        for ws, end in showend.ended_within(org_id, PARCELS_AFTER, now)
+        if ws.orders_synced_at is not None and ws.orders_synced_at >= end
+    ]
+    shows, ends = [ws for ws, _ in over], {ws.id: end for ws, end in over}
     if not shows:
         return []
     states = {
@@ -1092,7 +1131,7 @@ def _parcels_owed(org_id: int, now: datetime) -> list[WhatnotShow]:
     for ws in shows:
         state = states.get(f"shipments:{ws.id}")
         read = state is not None and state.last_ok_at is not None
-        if read and state.last_ok_at >= ws.ended_at:
+        if read and state.last_ok_at >= ends[ws.id]:
             continue
         if not _asked_lately(state, now):
             owed.append(ws)
@@ -1116,22 +1155,45 @@ def sync_job(payload: dict) -> None:
         db.session.commit()
     conn = connection.active(org_id)
     quiet = conn.last_event_at is None or datetime.now(UTC) - conn.last_event_at > LIVE_POLL_QUIET
-    live = db.session.scalars(
+    now = datetime.now(UTC)
+    # Whatnot's live or paused shows that are on air: one it never ended is over after 12
+    # hours, or sooner on a laptop's word (showend.py), and is then read like an ended one.
+    active = db.session.scalars(
         select(WhatnotShow).where(
             WhatnotShow.organization_id == org_id, WhatnotShow.status.in_(ACTIVE)
         )
     ).all()
+    found = showend.endings(active, now)
+    live = [ws for ws in active if not found[id(ws)].over]
+    # Over by the app's rule while Whatnot still calls them live or paused with no end time:
+    # the host may only have paused. Still polled like a live show, so an order placed after
+    # the laptop's move puts one back on air at the next pass (showend.still_read).
+    still = [ws for ws in active if showend.still_read(ws, found[id(ws)], now)]
+    # A live show whose laptop's word waits only for a read of its orders after the quiet
+    # period (showend.py's proof that nothing sold after the move): read even while webhooks
+    # arrive, or the word would never count.
+    proof = showend.awaiting_read(live, now)
     # An ended show whose orders were never read in full (its webhook never came), or not
     # again since a late order can have been placed (`LATE_READS`).
     begin_repair(org_id)
     unread = _unread_shows(org_id, live)
+    ends = {ws.id: end for ws, end in showend.ended_within(org_id, RECENT_SHOWS, now)}
     changed: set[str | None] = set()
-    now = datetime.now(UTC)
     if not _due(org_id, "orders:stalled", STALLED_RETRY):
         # The last catch-up walked its limit and got nowhere: only the shows of the last few
         # days (a short walk) are read until it is due again.
-        unread = [ws for ws in unread if ws.ended_at and ws.ended_at >= now - LATE_READS_WITHIN]
-    to_read = (live if quiet else []) + unread
+        unread = [ws for ws in unread if ends.get(ws.id, now) >= now - LATE_READS_WITHIN]
+    # A live show's orders come by webhook while webhooks arrive, so it is polled only when
+    # they are quiet. A show the app holds as over while Whatnot still calls it live is read
+    # at every pass whatever the webhooks do: "webhooks arrive" is not "this order's webhook
+    # arrived", and until the order is read the show is over and its labels are on offer.
+    polled = (live + still) if quiet else [ws for ws in live if ws.id in proof] + still
+    unread_ids = {ws.id for ws in unread}
+    to_read = list({ws.id: ws for ws in polled + unread}.values())
+    # A show still polled after it looked over is applied again only when its orders moved:
+    # every apply of a show that is over calls out its wins with no order once more.
+    still_only = [ws.whatnot_id for ws in still if ws.id not in unread_ids]
+    before = _orders_by_show(org_id, still_only)
     orders_failure = None
     over: list[str] = []  # ended shows read again this pass: a late order can bring a parcel
     if to_read:
@@ -1144,25 +1206,32 @@ def sync_job(payload: dict) -> None:
         if orders_failure is None:
             if (connection.sync_state(org_id, "orders").counts or {}).get("stalled"):
                 connection.sync_state(org_id, "orders:stalled").last_started_at = now
+            moved = _orders_by_show(org_id, still_only)
             for ws in to_read:
+                if ws.whatnot_id in before and before[ws.whatnot_id] == moved[ws.whatnot_id]:
+                    continue  # still polled after it looked over, and nothing moved
                 changed.add(ws.whatnot_id)
-                if ws.status == "ended" and ws.ended_at and ws.ended_at >= now - PARCELS_AFTER:
+                if ws.id in unread_ids and ws.id in ends and ends[ws.id] >= now - PARCELS_AFTER:
                     over.append(ws.whatnot_id)
         db.session.commit()
     # After the orders: a show this pass has just read in full is owed its parcels too. Not
     # while a show is on air (its orders need the request budget): nothing is marked asked,
     # so they are still owed, and asked for, at the first pass after it (`PARCELS_AFTER` is
-    # days, a show on air hours at most), with the one apply of a show that is over.
-    aired = on_air(live, now)
-    owed = [] if aired else _parcels_owed(org_id, datetime.now(UTC))
+    # days, a show on air hours at most), with the one apply of a show that is over. Asked of
+    # every live or paused show after the read: one this pass's read put back on air counts.
+    aired = on_air(active, now)
+    asked_at = datetime.now(UTC)
+    owed = [] if aired else _parcels_owed(org_id, asked_at)
     if aired:
         over = []  # an ended show read for the first time is owed its parcels after the show
     for ws in owed:
         state = connection.sync_state(org_id, f"shipments:{ws.id}")
-        if state.last_started_at is None:
+        end = showend.end_of(ws, asked_at)
+        if state.last_started_at is None or (end is not None and state.last_started_at < end):
             # Its orders are applied once more as those of a show that is over (what was
             # missing is flagged, an auction settles on one win): the last apply may have
-            # run while the app still had it as live. Once, not on every retry of the read.
+            # run while the app still had it as live. Once per end, not on every retry of the
+            # read: a show that looked over, went back on air and ended again is owed it again.
             changed.add(ws.whatnot_id)
         state.last_started_at = datetime.now(UTC)
     # Old orders Whatnot had not settled. Not while a show is on air: the show's orders
@@ -1219,6 +1288,22 @@ def sync_job(payload: dict) -> None:
     if orders_failure is not None:
         db.session.commit()  # what the rest of the pass queued is kept; only the job retries
         raise orders_failure  # the job is retried (everything else was spaced or done)
+
+
+def _orders_by_show(org_id: int, whatnot_show_ids: list[str]) -> dict:
+    """Each of these Whatnot shows' orders with their status: comparing before and after a
+    read tells whether a show's orders moved (one new, or one settled, failed or cancelled)."""
+    out: dict = {show_id: set() for show_id in whatnot_show_ids}
+    if not whatnot_show_ids:
+        return out
+    for show_id, order_id, status in db.session.execute(
+        select(WhatnotOrder.whatnot_show_id, WhatnotOrder.whatnot_id, WhatnotOrder.status).where(
+            WhatnotOrder.organization_id == org_id,
+            WhatnotOrder.whatnot_show_id.in_(whatnot_show_ids),
+        )
+    ):
+        out[show_id].add((order_id, status))
+    return out
 
 
 def _open_by_show(org_id: int) -> dict:

@@ -96,11 +96,13 @@ NEAR_WINDOW = timedelta(seconds=30)
 
 
 def closes_at(ws: WhatnotShow | None) -> datetime | None:
-    """When the worker reads the show's picks: ten minutes after it ended on Whatnot. None
-    while the show is not over (or Whatnot gave no end time)."""
-    if ws is None or ws.status != "ended" or ws.ended_at is None:
-        return None
-    return ws.ended_at + CLOSE_AFTER
+    """When the worker reads the show's picks: ten minutes after it ended (on Whatnot, or by
+    services/whatnot/showend.py's rule when Whatnot gives no end time). None while the show
+    is not over."""
+    from .whatnot import showend
+
+    end = showend.end_of(ws) if ws is not None else None
+    return end + CLOSE_AFTER if end is not None else None
 
 
 def clocks_sure(show_ids: list[int]) -> bool:
@@ -353,6 +355,7 @@ def run(show: Show, *, now: datetime | None = None) -> dict | None:
     at = closes_at(ws)
     if at is None or (now or datetime.now(UTC)) < at:
         return None
+    ended = at - CLOSE_AFTER  # Whatnot's end, or showend.py's when it gave none
     recordings = sync.recordings_of(ws) or [show]
     ids = sorted(s.id for s in recordings)
     # One at a time per show, and never while its chat is being parsed or its orders
@@ -396,16 +399,14 @@ def run(show: Show, *, now: datetime | None = None) -> dict | None:
             begins[sale.id] = start
         # How many products each win may hold: an offer the host or a trusted moderator
         # typed for its lot ("#45 is two for one"), or what a person set on the sale.
-        said = offers.of_show(ids, org, until=ws.ended_at)
+        said = offers.of_show(ids, org, until=ended)
         room = {
             sale.id: offers.allowed(sale, said) for starts in wins.values() for _, sale in starts
         }
         since = min((start for starts in wins.values() for start, _ in starts), default=None)
         lines = (
             # Picks close when the show ends: a line typed afterwards is not a pick.
-            _buyers_lines(ids, buyers, since - NEAR_WINDOW, ws.ended_at)
-            if since is not None
-            else {}
+            _buyers_lines(ids, buyers, since - NEAR_WINDOW, ended) if since is not None else {}
         )
         for buyer, theirs in wins.items():
             theirs.sort(key=lambda w: (w[0], w[1].id))
