@@ -584,6 +584,7 @@ def create_sale_from_order(
     sku_id: int | None = None,
     by_text: bool = True,
     won_at: datetime | None = None,
+    named: Sku | None = None,
 ) -> Sale:
     """A sale the app learnt of from Whatnot's own order record, not from a chat line or
     the video player (nobody was recording, or the win was missed). Whatnot vouches that
@@ -596,7 +597,9 @@ def create_sale_from_order(
     # A listing linked to a product names it; otherwise its text may, unless a person
     # said the listing is none of the shop's products (`by_text` False). Neither for a title
     # that says the winner chooses ("CHOOSE ANY…"): the winner's pick names it in Review.
-    sku = (
+    # `named`: the product a person already named for this very win (its declined sale,
+    # recorded again: `whatnot/orders.RECORDED_AGAIN`); it stands over everything else.
+    sku = named or (
         None
         if rules.is_choice_title(item_text or "")
         else listed_sku(show.organization_id, sku_id)
@@ -1350,6 +1353,48 @@ def _repay(sale: Sale, *, actor: Actor, reason: str | None) -> None:
             )
     if back:
         sale.paid_at = datetime.now(UTC)
+
+
+def settle_recorded_again(declined: Sale, paid: Sale) -> None:
+    """The declined sale's open questions about its payment are answered: Whatnot's paid
+    order for the win was recorded as `paid` (`whatnot/orders._plan`, RECORDED_AGAIN)."""
+    for item in db.session.scalars(
+        select(ReviewItem).where(
+            ReviewItem.sale_id == declined.id,
+            ReviewItem.status == ReviewStatus.open,
+            ReviewItem.reason.in_(("payment_declined", "unmatched_payment")),
+        )
+    ):
+        item.status = ReviewStatus.resolved
+        item.resolution = {"by": "paid on Whatnot", "saleId": paid.id}
+
+
+def shipped_without(sale: Sale) -> bool:
+    """The declined sale's buyer's order already left: paying it again here is a person's
+    call (`_repay` refuses it), never a payment row's."""
+    from .orders import OrderStatus
+
+    return sale.order is not None and sale.order.status is OrderStatus.shipped
+
+
+def may_record_again(sale: Sale) -> bool:
+    """Whatnot's paid order may be recorded as a new sale for this declined one
+    (`whatnot/orders.RECORDED_AGAIN`) only when the new sale is the same win in full and
+    lands where nobody has started packing: one product (a second product of the win would
+    not follow it, and stay on the shelf), and its buyer's order not being picked, packed
+    or shipped (the new sale would join that order unseen). Anything else: a person."""
+    from .orders import FULFILLMENT
+
+    if len(_rows(sale)) != 1:
+        return False
+    return sale.order is None or sale.order.status not in FULFILLMENT
+
+
+def needs_round(sale: Sale) -> bool:
+    """Paying this declined sale again would move stock: one of its products is back on the
+    shelf (`_repay` moves only those). A sale declined after picking began kept its units
+    out, so paying it again moves nothing and needs no new ledger round."""
+    return any(_row_out(row) < row.quantity for row in _rows(sale))
 
 
 def _row_round(row) -> str:

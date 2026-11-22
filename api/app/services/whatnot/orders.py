@@ -437,6 +437,9 @@ def _may_hide(info: dict) -> bool:
 
 MAYBE_RETRIED = "declined, and an order with no buyer may be its retry"
 NEVER_RECORDED = "never recorded here, and not paid on Whatnot"
+# Declined twice here (paid again by a person in between) and now paid on Whatnot: the
+# ledger holds one "paid again" round per sale, so the payment is recorded as a new sale.
+RECORDED_AGAIN = "declined twice here, then paid on Whatnot: recorded as a new sale"
 # Paid on Whatnot, no product named yet: the win waits for its product (the winner's pick).
 WAITING = "waiting for its product to be named"
 # The review item for a payment Whatnot declined when the app has no sale for the win.
@@ -546,6 +549,24 @@ def _plan(show: Show, ws: WhatnotShow) -> tuple[Plan, dict, list[Show]]:
             # twice): the cancelled sale cannot come back, so the win is recorded again.
             row.sale_id, row.sale_hint = None, None
             row.note = "its first sale gave way to another win; recorded again"
+        elif (
+            row.action == "unmatched"
+            and sale is not None
+            and row.status == "paid"
+            and sale.status is SaleStatus.payment_failed
+            and sale.sku_id is not None
+            and pipeline._round(sale) == pipeline.REPAID
+            and pipeline.needs_round(sale)
+            and pipeline.may_record_again(sale)
+        ):
+            # Restored by a person (a decline Whatnot had no order for yet), then declined by
+            # Whatnot's failed order, and now paid on Whatnot: Whatnot decides, so the win
+            # counts. Its units are back on the shelf and its one "paid again" round is used,
+            # so the payment is recorded as a new sale (as for a sale that gave way), and
+            # the declined one stays closed. Never for a payment file: only Whatnot's word.
+            row.sale_id, row.sale_hint = None, None
+            row.note = RECORDED_AGAIN
+            plan.record_again[row.ref] = sale.id
         elif row.action == "unmatched" and sale is not None:
             # The two records disagree about a sale already closed or shipped here: a
             # person decides. Said in words (the engine's own note is written for a file).
@@ -684,6 +705,14 @@ def apply(show: Show, *, user=None) -> dict:
             return False
         pipeline._lock_buyer(org_id, row.buyer)
         sale = _existing_sale_for(org_id, row, taken)
+        again_id = plan.record_again.get(row.ref) if row.ref is not None else None
+        again = db.session.get(Sale, again_id) if again_id else None
+        if again is not None and again.external_order_id == row.external_id:
+            # The declined sale stays closed: this paid order is a sale of its own, and it
+            # takes the order's id (one sale per order item on the slips and the tiles).
+            again.external_order_id = None
+            if sale is not None and sale.id == again.id:
+                sale = None
         if sale is not None and sale.status not in STANDING:
             # This order's sale exists but was closed here (in a show that is no longer a
             # recording of this one): the two records disagree, so a person decides.
@@ -708,11 +737,20 @@ def apply(show: Show, *, user=None) -> dict:
                 settled=row.status == "paid",
                 sku_id=row.sku_id,
                 by_text=not row.listing_off,
+                # The product named for the declined sale is this win's too, unless the
+                # Whatnot listing itself is linked to a product (that link decides).
+                named=(
+                    again.sku
+                    if again is not None and pipeline.listed_sku(org_id, row.sku_id) is None
+                    else None
+                ),
             )
             created.append(sale.id)
             row.action = "recorded"
         else:
             row.action = "unchanged"
+        if again is not None and sale.id != again.id:
+            pipeline.settle_recorded_again(again, sale)
         _note_order_time(sale, row)
         row.sale_id = sale.id
         taken.add(sale.id)

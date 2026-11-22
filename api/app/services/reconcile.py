@@ -124,6 +124,9 @@ WHATNOT = Words(
 class Plan:
     rows: list[Row] = field(default_factory=list)
     uncovered: list[int] = field(default_factory=list)  # standing sales the file did not mention
+    # Whatnot's paid order item (`Row.ref`) → the declined sale it is recorded again for, as
+    # a sale of its own (Whatnot's orders only: `whatnot/orders._plan`).
+    record_again: dict[int, int] = field(default_factory=dict)
 
     @property
     def summary(self) -> dict:
@@ -289,7 +292,16 @@ def plan(
                 )
                 if sale.status is SaleStatus.payment_failed and sale.sku_id is not None:
                     # Declined at the win, paid another way before the show ended.
-                    if pipeline._round(sale) == pipeline.REPAID:
+                    if pipeline.shipped_without(sale):
+                        # Its order left without it: a person decides (`_repay` refuses).
+                        row.action, row.note = (
+                            "unmatched",
+                            f"sale #{sale.id} is payment_failed and its order already "
+                            "shipped; paid in the file",
+                        )
+                    # Unless its units never went back (declined after picking began):
+                    # paying it again then moves nothing and needs no new ledger round.
+                    elif pipeline._round(sale) == pipeline.REPAID and pipeline.needs_round(sale):
                         row.action, row.note = (
                             "unmatched",
                             f"sale #{sale.id} was declined twice; paid in the file",
@@ -333,10 +345,13 @@ def hold_for_whatnot(p: Plan) -> Plan:
     failed (`pipeline.whatnot_failed_order`, Javier's call 2026-11-20): the row is skipped
     with a note, and Whatnot's paid order restores the sale. Only for a file: Whatnot's own
     rows are Whatnot's word already."""
-    sales = load_sales(row.sale_id for row in p.rows if row.action == "mark_paid" and row.sale_id)
+    held = ("mark_paid", "unmatched")  # unmatched: a shipped or twice-declined sale
+    sales = load_sales(
+        row.sale_id for row in p.rows if row.action in held and row.status == "paid" and row.sale_id
+    )
     plans: dict = {}
     for row in p.rows:
-        sale = sales.get(row.sale_id) if row.action == "mark_paid" else None
+        sale = sales.get(row.sale_id) if row.action in held and row.status == "paid" else None
         if sale is None or sale.status is not SaleStatus.payment_failed:
             continue
         order = pipeline.whatnot_failed_order(sale, plans)

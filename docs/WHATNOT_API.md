@@ -136,6 +136,10 @@ can differ on its own page):
      the payment failed (also one read but not applied yet), and neither does a payment
      file's paid row: Whatnot decides, and when its order says paid, applying the orders
      restores the sale (with orders applied as they arrive, by itself).
+     A sale a person restored before Whatnot had any order for it, and that Whatnot's
+     failed order then declined again, is counted when Whatnot says paid: recorded as a
+     new sale (the declined one stays closed), or marked paid again if its units never
+     went back on the shelf.
    - "Payment declined: nothing recorded": Whatnot declined a payment for a win the app
      has no sale for. Nothing to undo; if they pay, the paid order records the sale.
 2. **Order slips.** With Whatnot's parcels read, the slips are the final pick list (one row
