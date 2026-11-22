@@ -1211,16 +1211,20 @@ def test_in_auto_mode_carrier_news_marks_the_order_shipped_on_its_own(app, clien
         assert activity.who(entry.action, entry.actor_type, entry.actor_label) == "Whatnot"
 
 
-def test_an_order_with_an_item_still_in_review_is_not_marked_shipped(app, shop):
+def test_an_order_whose_paid_win_has_no_product_is_marked_shipped_as_it_is(app, shop):
+    """It used to wait for its product. The parcel left, so there is nothing to wait for
+    (Javier's call, 2026-11-21): tests/test_carrier_ships_open_orders.py has the rest."""
     a = order(shop, "newbie", LOT, 700)
     parcel(shop, "newbie", [a], status="dropped_off", tracking="94")
     read(app, shop)
-    apply(app, shop)  # a sale with no product yet: the order needs review
+    apply(app, shop)  # a sale with no product yet: the order is open
     read_shipments(app, shop)
-    assert view(app, shop)["toMarkShipped"] == 0
+    assert view(app, shop)["toMarkShipped"] == 1
     with app.app_context():
-        assert shipping.mark_shipped(db.session.get(Show, shop["show"])) == 0
         assert db.session.scalar(select(Order)).status.value == "open"
+        assert shipping.mark_shipped(db.session.get(Show, shop["show"])) == 1
+        o = db.session.scalar(select(Order))
+        assert (o.status.value, [s.status.value for s in o.sales]) == ("shipped", ["detected"])
 
 
 @pytest.mark.usefixtures("inline_jobs")  # needs the job to have run by the next line

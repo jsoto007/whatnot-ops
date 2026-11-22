@@ -170,9 +170,10 @@ def list_orders():
 
 
 def _parcels(orders: list[Order]) -> dict[int, dict]:
-    """Where the parcel of each shipped order is, as Whatnot last said."""
-    shipped = [o for o in orders if o.status is OrderStatus.shipped]
-    return shipping.parcels_of(g.u.organization_id, shipped) if shipped else {}
+    """Where the parcel of each order is, as Whatnot last said: shipped here or not yet (an
+    open order's parcel may already be on its way). Three queries however many orders."""
+    live = [o for o in orders if o.status is not OrderStatus.cancelled]
+    return shipping.parcels_of(g.u.organization_id, live) if live else {}
 
 
 def _one(o: Order) -> dict:

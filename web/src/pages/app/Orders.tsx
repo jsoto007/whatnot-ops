@@ -9,7 +9,7 @@ import { Icon } from '../../components/Icon'
 import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
 import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleProduct, type SaleStatus, type Show, type ToPick } from '../../lib/api'
 import { SHOP_TZ, fmtDate, fmtLongDate, fmtWhen, plural } from '../../lib/format'
-import { NOT_OURS_LABEL, ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, pickStateWords, saleLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
+import { LEFT_UNNAMED_LABEL, NOT_OURS_LABEL, ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, pickStateWords, saleLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
 import { invalidateSales } from '../../lib/invalidate'
 
 const NEXT = ORDER_NEXT_STEP
@@ -30,9 +30,10 @@ const VIEWS: { key: string; label: string; match: (o: Order) => boolean }[] = [
   { key: 'shipped', label: 'Shipped', match: (o) => o.status === 'shipped' },
   { key: 'all', label: 'All', match: () => true },
 ]
-/** On the Shipped tab: where the parcels are, as Whatnot last said. */
+/** Narrow the list to where the parcels are, as Whatnot last said. */
 const PARCEL_FILTERS: { key: string; label: string; match: (o: Order) => boolean }[] = [
-  { key: '', label: 'All shipped', match: () => true },
+  { key: '', label: 'All', match: () => true },
+  { key: 'nolabel', label: 'No label yet', match: (o) => o.parcel?.state === 'nolabel' },
   { key: 'carrier', label: 'Not with the carrier yet', match: (o) => o.parcel?.state === 'waiting' || o.parcel?.state === 'late' },
   { key: 'moving', label: 'On its way', match: (o) => o.parcel?.state === 'moving' },
   { key: 'failed', label: 'Delivery failed', match: (o) => o.parcel?.state === 'failed' },
@@ -91,8 +92,8 @@ export function Orders() {
   const deferredFind = useDeferredValue(find)
   const needle = deferredFind.trim().toLowerCase()
   const inView = orders.filter(current.match)
-  // The Shipped tab can be narrowed to where the parcels are; it only shows once Whatnot says where any is.
-  const tracked = view === 'shipped' && inView.some((o) => o.parcel)
+  // Any tab can be narrowed to where the parcels are; the chips only show once Whatnot says where any is.
+  const tracked = inView.some((o) => o.parcel)
   const parcelFilter = (tracked && PARCEL_FILTERS.find((f) => f.key === (params.get('parcel') ?? ''))) || PARCEL_FILTERS[0]!
   const visible = inView.filter(parcelFilter.match).filter((o) => !needle || o.buyer.toLowerCase().includes(needle))
   // "Print ready slips": every order that is ready to pick, by show (the slips are a per-show document).
@@ -191,9 +192,11 @@ export function Orders() {
         <div className="parcel-filters" role="group" aria-label="Where the parcels are" data-testid="parcel-filters">
           {PARCEL_FILTERS.map((f) => {
             const n = inView.filter(f.match).length
+            if (f.key && n === 0 && parcelFilter.key !== f.key) return null
+            const label = !f.key && view === 'shipped' ? 'All shipped' : f.label
             return (
               <button key={f.key} type="button" className={'chip-btn' + (parcelFilter.key === f.key ? ' on' : '')} aria-pressed={parcelFilter.key === f.key} onClick={() => set({ parcel: f.key })}>
-                {f.label} <span className="tab-count">{n}</span>
+                {label} <span className="tab-count">{n}</span>
               </button>
             )
           })}
@@ -304,14 +307,15 @@ export function Orders() {
 
 /** "10 × $1 Beauty Pulls" with the lot numbers under it, one line per product. */
 function Items({ o }: { o: Order }) {
-  const groups = new Map<string, { title: string; qty: number; lots: number[]; unknown: boolean; notOurs: boolean }>()
+  const groups = new Map<string, { title: string; qty: number; lots: number[]; unknown: boolean; notOurs: boolean; left: boolean }>()
   for (const s of (o.sales ?? []).filter((s) => STANDING.includes(s.status))) {
     // One line per product: a win with two products ("two for one") counts under both.
     const parts = (s.products ?? []).length > 0 ? s.products!.map((p) => ({ title: `${p.sku.productName}${p.sku.name ? ' ' + p.sku.name : ''}`, qty: p.quantity })) : [{ title: titleOf(s), qty: s.quantity }]
     for (const part of parts) {
-      const g = groups.get(part.title) ?? { title: part.title, qty: 0, lots: [], unknown: !s.sku && !s.notOurs, notOurs: s.notOurs === true }
+      const g = groups.get(part.title) ?? { title: part.title, qty: 0, lots: [], unknown: !s.sku && !s.notOurs, notOurs: s.notOurs === true, left: false }
       // Settled with no product only when every win on the line is.
       g.notOurs = g.notOurs && s.notOurs === true
+      g.left = g.left || s.leftUnnamed === true
       g.qty += part.qty
       if (s.lot != null) g.lots.push(s.lot)
       groups.set(part.title, g)
@@ -326,7 +330,7 @@ function Items({ o }: { o: Order }) {
           </div>
           {g.notOurs && (
             <div className="small sub muted" data-testid="not-ours">
-              {NOT_OURS_LABEL}
+              {g.left ? LEFT_UNNAMED_LABEL : NOT_OURS_LABEL}
             </div>
           )}
           {g.lots.length > 0 && <Lots lots={g.lots} />}
@@ -391,14 +395,16 @@ function Status({ o }: { o: Order }) {
   )
 }
 
-/** Where a shipped order's parcel is, as Whatnot last said: one phrase, then each parcel's carrier and tracking number. */
+/** Where an order's parcel is, as Whatnot last said: one coloured word to read at a glance, then each parcel's carrier and tracking number. */
 function Parcel({ o }: { o: Order }) {
   const p = o.parcel!
   const many = p.parcels.length > 1
   return (
     <div className="small sub" data-testid={`parcel-${o.buyer}`}>
-      <span className={p.state === 'failed' || p.state === 'late' ? 'form-error' : ''}>{parcelStateLabel(p.state)}</span>
-      <span className="faint"> · {fmtWhen(p.changedAt)}</span>
+      <span className={`pill parcel ${p.state}`}>
+        <Icon name="truck" size={13} /> {parcelStateLabel(p.state)}
+      </span>
+      <span className="faint"> {fmtWhen(p.changedAt)}</span>
       {p.parcels.map((x, i) => (
         <div key={i} className="muted">
           {many ? `${packageStatusLabel(x.status)} · ` : ''}

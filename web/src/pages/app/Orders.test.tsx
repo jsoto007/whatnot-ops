@@ -325,9 +325,9 @@ test('the Shipped tab says where each parcel is, and narrows to the ones that ne
   expect(a).toHaveTextContent('USPS 9400A')
   expect(screen.getByTestId('parcel-buyer_b')).toHaveTextContent('Delivered')
   // The two that need a person are in the warning colour.
-  expect(within(screen.getByTestId('parcel-buyer_c')).getByText('Delivery failed')).toHaveClass('form-error')
-  expect(within(screen.getByTestId('parcel-buyer_d')).getByText('Not with the carrier yet')).toHaveClass('form-error')
-  expect(within(a).getByText('On its way')).not.toHaveClass('form-error')
+  expect(within(screen.getByTestId('parcel-buyer_c')).getByText('Delivery failed')).toHaveClass('pill', 'failed')
+  expect(within(screen.getByTestId('parcel-buyer_d')).getByText('Not with the carrier yet')).toHaveClass('pill', 'late')
+  expect(within(a).getByText('On its way')).toHaveClass('pill', 'moving')
   expect(screen.queryByTestId('parcel-buyer_e')).toBeNull()
   expect(screen.getByTestId('order-buyer_e')).toHaveTextContent('typed by hand 123')
 
@@ -357,12 +357,20 @@ test('with nothing known about any parcel the Shipped tab is as before: no filte
   expect(screen.queryByTestId('parcel-filters')).toBeNull()
 })
 
-test('the parcel filters belong to the Shipped tab only', async () => {
-  mount(undefined, '/app/orders?view=all&parcel=failed', SHIPPED)
-  await screen.findByTestId('order-buyer_a')
-  expect(screen.queryByTestId('parcel-filters')).toBeNull()
-  // A filter left in the address from the Shipped tab narrows nothing here.
-  expect(screen.getAllByTestId(/^order-/)).toHaveLength(5)
+test('every tab says where the parcel is: an order not marked shipped shows it too', async () => {
+  // Still open here (its product was never named), yet Whatnot says the parcel is on its way.
+  const open = order({ id: 31, buyer: 'buyer_f', status: 'open', parcel: parcel('moving', [box('in_transit', '9400F')]), sales: [sale({ buyer: 'buyer_f', orderId: 31 })] })
+  const fresh = order({ id: 32, buyer: 'buyer_g', status: 'paid', verified: true, parcel: parcel('nolabel', [box('created', null)]), sales: [sale({ buyer: 'buyer_g', orderId: 32, sku: RED, status: 'paid' })] })
+  mount(undefined, '/app/orders?view=all', [...SHIPPED, open, fresh])
+  const f = await screen.findByTestId('parcel-buyer_f')
+  expect(within(f).getByText('On its way')).toHaveClass('pill', 'moving')
+  expect(f).toHaveTextContent('USPS 9400F')
+  expect(within(screen.getByTestId('parcel-buyer_g')).getByText('No label yet')).toHaveClass('pill', 'nolabel')
+
+  const filters = screen.getByTestId('parcel-filters')
+  expect(within(filters).getAllByRole('button').map((b) => b.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['All 7', 'No label yet 1', 'Not with the carrier yet 1', 'On its way 2', 'Delivery failed 1', 'Delivered 1'])
+  fireEvent.click(within(filters).getByRole('button', { name: /On its way/ }))
+  await waitFor(() => expect(screen.getAllByTestId(/^order-/).map((r) => r.getAttribute('data-testid')).sort()).toEqual(['order-buyer_a', 'order-buyer_f']))
 })
 
 test("in a winner's-pick show an unnamed item waits for the winner, then reads did not pick", () => {

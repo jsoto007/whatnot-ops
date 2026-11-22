@@ -207,9 +207,22 @@ commands.
   the review route for a title that says the winner chooses (`rules.is_choice_title`). No
   AI call for such a title, from a chat line or an order. A win made more than
   `picks.NEAR_WINDOW` before the first recorded chat line reads `not_recorded`, never "did
-  not pick". An order whose parcel the carrier already has is shipped by the next
-  shipments pass once its last product is named (`shipping.sync_shipments_job`: the
-  parcel's own buyer, in any recording of the show), never before.
+  not pick". **The carrier's news ships an open order too** (Javier's call, 2026-11-21):
+  when the carrier has every parcel of a buyer, a win Whatnot's order says is paid and
+  nobody named leaves as it is (`orders.ship_by_carrier` → `_left_unnamed`: still
+  `detected`, no product, no stock moved, its product questions dismissed, off the pick
+  list for good); staff fix the count in Inventory by hand. What still holds an order is
+  only `orders._goes_with_the_parcel` saying no: a win only chat saw (no paid Whatnot
+  order) or a reserved sale. Money questions in Review are never closed by it, and
+  none of them brings the product question back: a win that left
+  (`orders._left_unnamed_sql`) is off the pick list and settled whatever else is open on
+  it, a "CHOOSE ANY…" title included, and naming it afterwards is refused
+  (`pipeline._refuse_naming_what_left`: it would take a second unit out of stock). The
+  screens say "Shipped with no product named" (`leftUnnamed`), never "not one of ours".
+  Every row of Orders says where the buyer's parcel is (`shipping.parcels_of`), shipped
+  here or not. Such a
+  held order is shipped by the next shipments pass once it is settled
+  (`shipping.sync_shipments_job`: the parcel's own buyer, in any recording of the show).
 - **One win per auction** (Javier's rule, 2026-11-13). An auction is a numbered lot of
   one show ("$1 BEAUTY PULLS #520": `pipeline.auction_of`; a title with no lot number
   names none and may be won many times), and only within half an hour: lot numbers start

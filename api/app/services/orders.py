@@ -78,7 +78,7 @@ def to_pick_sales(*where) -> list[Sale]:
     off = _listing_off().label("off")
     rows = db.session.execute(
         select(Sale, off)
-        .where(_paid_unnamed(), ~(_left_in_parcel() & _question_ignored()), *where)
+        .where(_paid_unnamed(), ~_left_unnamed_sql(), *where)
         .order_by(Sale.ordered_at.nulls_last(), Sale.id)
     ).all()
     return [sale for sale, is_off in rows if not is_off or rules.is_choice_title(sale.item_text)]
@@ -110,6 +110,37 @@ def _question_ignored():
         .exists()
     )
     return ignored & ~still_open
+
+
+def _left_unnamed_sql():
+    """SQL: the sale went out in its buyer's parcel with no product named: its order
+    shipped with it (`_left_in_parcel`) and its "which product is that?" question is
+    closed. Whatever else is open about it in Review (a price that differs, a money
+    question) never brings the product question back: the unit is gone, so naming it now
+    would take a second unit out of stock."""
+    asked = (
+        select(ReviewItem.id)
+        .where(
+            ReviewItem.sale_id == Sale.id,
+            ReviewItem.reason == "unmatched_item",
+            ReviewItem.status == ReviewStatus.dismissed,
+        )
+        .exists()
+    )
+    return _left_in_parcel() & asked
+
+
+def left_unnamed_ids(sales) -> set[int]:
+    """Which of these sales (Sale rows) left in a parcel with no product named
+    (`_left_unnamed_sql`). One query, and none when no sale could be."""
+    ids = [s.id for s in sales if _maybe_settled(s) and s.id is not None]
+    if not ids:
+        return set()
+    return set(
+        db.session.scalars(
+            select(Sale.id).where(Sale.id.in_(ids), _paid_unnamed(), _left_unnamed_sql())
+        )
+    )
 
 
 def _left_in_parcel():
@@ -144,17 +175,19 @@ def settled_unnamed_sales(*where) -> list[Sale]:
     stays settled, and is never asked about or named from its listing again."""
     from . import rules
 
-    found = db.session.scalars(
-        select(Sale)
+    gone = _left_unnamed_sql().label("gone")
+    found = db.session.execute(
+        select(Sale, gone)
         .where(
             _paid_unnamed(),
-            _listing_off() | _left_in_parcel(),
-            _question_ignored(),
+            (_listing_off() & _question_ignored()) | _left_unnamed_sql(),
             *where,
         )
         .order_by(Sale.id)
     ).all()
-    return [s for s in found if not rules.is_choice_title(s.item_text or "")]
+    # A title that says the winner chooses is never "not one of ours"; but one that left in
+    # its parcel is settled like any other (its money still counts, nobody is asked).
+    return [s for s, left in found if left or not rules.is_choice_title(s.item_text or "")]
 
 
 def _maybe_settled(s: Sale) -> bool:
@@ -189,6 +222,90 @@ def _waiting(order: Order, settled: set[int] | None = None) -> list[Sale]:
             db.session.flush()
         settled = settled_unnamed_ids(waiting)
     return [s for s in waiting if s.id not in settled]
+
+
+# The questions the carrier's news answers for a win that left with no product named: what
+# was it? Money questions (a card shown declined, a lot two buyers were shown winning, a win
+# after shipping) are never closed by it.
+PRODUCT_QUESTIONS = ("unmatched_item", "low_confidence")
+# What such a sale says of itself (`_left_unnamed`); the screens word it from this.
+LEFT_UNNAMED_REASON = "shipped with no product named (the carrier has it)"
+
+
+def paid_unnamed_ids(sales) -> set[int]:
+    """Which of these sales (Sale rows) are wins Whatnot's own order says are paid, with no
+    product named here (`_paid_unnamed`). One query, and none when no sale could be."""
+    ids = [s.id for s in sales if _maybe_settled(s) and s.id is not None]
+    if not ids:
+        return set()
+    return set(db.session.scalars(select(Sale.id).where(Sale.id.in_(ids), _paid_unnamed())))
+
+
+def _goes_with_the_parcel(sale: Sale, *, paid_on_whatnot: bool) -> bool:
+    """Whether the carrier's news settles this sale, which still keeps its order open: it
+    left in the buyer's parcel, so nobody is asked about it any more (Javier's call,
+    2026-11-21: staff fix the count in Inventory by hand).
+
+    `sale` is standing and neither paid nor shipped here: `detected` (no product, nothing
+    held in stock) or `reserved` (a product is held, the payment not settled).
+    `paid_on_whatnot`: Whatnot's own order for it is paid."""
+    # Only a win Whatnot's own order says is paid, with no product named (Javier's call,
+    # 2026-11-21). A win only chat saw is in no parcel, and a reserved sale holds stock
+    # nobody has settled: both stay for a person.
+    return paid_on_whatnot and sale.status is SaleStatus.detected and sale.sku_id is None
+
+
+def held_from_the_carrier(
+    order: Order, *, settled: set[int] | None = None, paid_unnamed: set[int] | None = None
+) -> list[Sale]:
+    """The order's sales that keep it from being shipped when the carrier has its parcel:
+    the waiting ones (`_waiting`) the parcel does not take with it
+    (`_goes_with_the_parcel`). `settled` / `paid_unnamed`: the ids looked up for many
+    orders at once (`settled_unnamed_ids`, `paid_unnamed_ids`)."""
+    waiting = _waiting(order, settled)
+    if not waiting:
+        return []
+    if paid_unnamed is None:
+        if any(s.id is None for s in waiting):
+            db.session.flush()
+        paid_unnamed = paid_unnamed_ids(waiting)
+    return [
+        s for s in waiting if not _goes_with_the_parcel(s, paid_on_whatnot=s.id in paid_unnamed)
+    ]
+
+
+def _left_unnamed(sale: Sale) -> None:
+    """The sale went out in its buyer's parcel with no product named. Its product questions
+    are closed, so it is never on the pick list or asked about again
+    (`_left_in_parcel` with `_question_ignored`). The sale stays as it is: no product, no
+    stock held or moved, never paid or fulfilled here."""
+    asked = False
+    for item in db.session.scalars(
+        select(ReviewItem).where(
+            ReviewItem.sale_id == sale.id, ReviewItem.reason.in_(PRODUCT_QUESTIONS)
+        )
+    ):
+        if item.status is ReviewStatus.open:
+            item.status = ReviewStatus.dismissed
+            item.resolution = {"by": "shipped"}
+            item.resolved_at = datetime.now(UTC)
+        asked = asked or (item.reason == "unmatched_item" and item.status is ReviewStatus.dismissed)
+    if not asked:
+        # Nobody was asked yet: the closed question is what says "left with no product".
+        db.session.add(
+            ReviewItem(
+                organization_id=sale.organization_id,
+                show_id=sale.show_id,
+                sale_id=sale.id,
+                reason="unmatched_item",
+                summary=f'{sale.buyer_username} bought "{sale.item_text or "(no item named)"}"'
+                " and it shipped before its product was named.",
+                status=ReviewStatus.dismissed,
+                resolution={"by": "shipped"},
+                resolved_at=datetime.now(UTC),
+            )
+        )
+    sale.status_reason = LEFT_UNNAMED_REASON
 
 
 class OrderError(ValueError):
@@ -317,14 +434,27 @@ def ship_by_carrier(order: Order, *, tracking: str | None, actor_label: str = "W
     order is shipped, whichever step of picking or packing the app had it at. Nobody has
     to click through steps that already happened on the packing table. Its paid sales
     become fulfilled, as when a person marks it shipped; nothing moves in stock (the
-    units left the shelf when they were paid)."""
+    units left the shelf when they were paid).
+
+    An order still open goes too when everything that kept it open left in the parcel
+    (`held_from_the_carrier`): a win with no product named is closed as it is
+    (`_left_unnamed`), with no stock change; the count is a person's to fix in Inventory."""
     from . import pipeline
     from .inventory import Actor
 
-    if order.status not in (OrderStatus.paid, OrderStatus.picking, OrderStatus.packed):
+    if order.status not in (
+        OrderStatus.open,
+        OrderStatus.paid,
+        OrderStatus.picking,
+        OrderStatus.packed,
+    ):
         raise OrderError(f"cannot mark a {order.status.value} order shipped")
-    if not verified(order):
+    if not any(s.status in STANDING for s in order.sales):
+        raise OrderError("nothing in this order stands")
+    if held_from_the_carrier(order):
         raise OrderError("every item must be paid before fulfilment (see Review)")
+    for s in _waiting(order):
+        _left_unnamed(s)
     now = datetime.now(UTC)
     order.picked_at = order.picked_at or now
     order.packed_at = order.packed_at or now

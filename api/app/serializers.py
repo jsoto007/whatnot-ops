@@ -1,6 +1,7 @@
 from .models import AuditLog, Device, Invite, Organization, Show, User
 from .services import activity, licence, rules, sale_mode
 from .services.admin import is_protected
+from .services.orders import LEFT_UNNAMED_REASON
 from .services.permissions import allowed, permissions_for
 
 
@@ -288,6 +289,9 @@ def sale(
         # Paid on Whatnot, its listing is "Not one of ours" and a person ignored its question:
         # still `detected` here (no product, no stock), but settled; its order ships with it.
         "notOurs": not_ours,
+        # Settled because it left in its buyer's parcel before anyone named its product
+        # (`orders._left_unnamed`): the count is a person's to fix in Inventory.
+        "leftUnnamed": bool(not_ours) and s.status_reason == LEFT_UNNAMED_REASON,
         "statusReason": s.status_reason,
         "flagged": s.flagged,
         "giftCount": s.gift_count,

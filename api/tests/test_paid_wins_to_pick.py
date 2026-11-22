@@ -359,11 +359,20 @@ def test_a_win_seconds_before_the_first_recorded_line_is_still_did_not_pick(app,
 
 
 # ---------- shipped once the last product is named ----------
+# A win Whatnot's order says is paid leaves with its parcel, named or not (Javier's call,
+# 2026-11-21: tests/test_carrier_ships_open_orders.py). What still holds an order back is a
+# win only chat saw: Whatnot has no order for it, so it is in no parcel.
+
+
+def _a_win_only_chat_saw(app, shop, n):
+    shop["say"](app, [win("made_up_ann", CHOOSE.format(n), "5.00")])
+    run(app, shop["show"])
 
 
 def test_an_order_named_after_its_parcel_left_is_shipped_at_the_next_pass(app, shop):
     set_mode(app, shop, "auto")
-    o = order(shop, "made_up_ann", CHOOSE.format(40), 1100)
+    _a_win_only_chat_saw(app, shop, 40)
+    o = order(shop, "made_up_ann", "Red bundle", 2500)
     shop["fake"].add_shipment(
         recipient="made_up_ann",
         order_ids=[o["id"]],
@@ -384,7 +393,7 @@ def test_an_order_named_after_its_parcel_left_is_shipped_at_the_next_pass(app, s
             return db.session.scalar(select(Order)).status.value
 
     shipments_pass()
-    assert status() == "open"  # its product is not named: never shipped on a guess
+    assert status() == "open"  # the win only chat saw is not named, and in no parcel
     with app.app_context():
         # The parcel has not changed since: nothing tells the next pass about this show.
         db.session.execute(
@@ -406,7 +415,8 @@ def test_an_order_in_the_shows_second_recording_is_shipped_once_named(app, shop)
     recording is already shipped, so only the buyer's own order, in either recording, says
     the show needs another look."""
     set_mode(app, shop, "auto")
-    o = order(shop, "made_up_ann", CHOOSE.format(41), 1100)
+    _a_win_only_chat_saw(app, shop, 41)
+    o = order(shop, "made_up_ann", "Red bundle", 2500)
     order(shop, "made_up_bo", "Red bundle", 2500)  # named, paid, and shipped below
     shop["fake"].add_shipment(
         recipient="made_up_ann",
