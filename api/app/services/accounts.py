@@ -319,10 +319,31 @@ def _expire_resets(user: User) -> None:
 
 # ---------- invites ----------
 
+# Shown to the inviter as they are: plain words, never a setting's or the vendor's name.
+INVITES_NEED_EMAIL = (
+    "invites can't be sent yet: email isn't set up for Sales Ops, so an invite would reach "
+    "no one. Ask your Sales Ops support to turn email on"
+)
+INVITE_MAIL_FAILED = (
+    "the invite email could not be sent, so nothing was saved; try again in a moment"
+)
+
+
+def invite_delivery() -> str:
+    """How an invite reaches the person: "email" (Mailgun sends them the link), "link" (the
+    inviter is shown the link to pass on; never in production, where it would be a working
+    account link in a browser tab), or "none" (it would reach no one, so inviting is refused
+    before anything is saved). The Team page reads it to explain itself before anyone types."""
+    if mail.configured():
+        return "email"
+    return "link" if is_dev(current_app.config.get("APP_ENV")) else "none"
+
 
 def create_invite(inviter: User, email: str, role: Role) -> tuple[Invite, str]:
     from .permissions import invitable_roles, role_label
 
+    if invite_delivery() == "none":
+        raise AccountError(INVITES_NEED_EMAIL, 503)
     email = normalise_email(email)
     allowed = invitable_roles(inviter.role)
     if role not in allowed:
@@ -372,16 +393,24 @@ def create_invite(inviter: User, email: str, role: Role) -> tuple[Invite, str]:
         target_id=invite.id,
         details={"email": email, "role": role.value},
     )
-    mail.send(
-        mail_templates.invite(
-            to=email,
-            inviter_name=inviter.name,
-            organization=inviter.organization.name,
-            role=role.value,
-            url=app_url(f"/invite/{token}"),
-            days=INVITE_DAYS,
+    try:
+        mail.send(
+            mail_templates.invite(
+                to=email,
+                inviter_name=inviter.name,
+                organization=inviter.organization.name,
+                role=role.value,
+                url=app_url(f"/invite/{token}"),
+                days=INVITE_DAYS,
+            )
         )
-    )
+    except mail.MailError as e:
+        # Sent before the commit on purpose: a failure keeps nothing. The new invite, its
+        # audit line and the expiry of an older invite to the same address all roll back,
+        # so that older link still works and a retry starts clean. Mailgun's words stay here.
+        log.warning("invite email not sent: %s", e)
+        db.session.rollback()
+        raise AccountError(INVITE_MAIL_FAILED, 502) from None
     db.session.commit()
     return invite, token
 

@@ -1,12 +1,11 @@
-from flask import Blueprint, current_app, g, jsonify, request
+from flask import Blueprint, g, jsonify, request
 from sqlalchemy import select
 
 from .. import serializers
 from ..auth import require
-from ..config import is_dev
 from ..db import db
 from ..models import Invite, Role, User
-from ..services import accounts, mail, offers, ratelimit, sale_mode, text
+from ..services import accounts, offers, ratelimit, sale_mode, text
 from ..services.accounts import AccountError
 from ..services.permissions import invitable_roles
 
@@ -44,6 +43,8 @@ def list_team():
             "users": [serializers.user(u) for u in users],
             "invites": [serializers.invite(i) for i in invites if i.pending],
             "invitableRoles": sorted(r.value for r in invitable_roles(g.u.role)),
+            # "email" | "link" | "none": whether an invite can reach anyone right now
+            "inviteDelivery": accounts.invite_delivery(),
         }
     )
 
@@ -54,8 +55,9 @@ def create_invite():
     ratelimit.per_user("invite", g.u.id, INVITES_PER_HOUR, 3600)
     d = request.get_json(silent=True) or {}
     invite, token = accounts.create_invite(g.u, d.get("email", ""), _role(d.get("role", "")))
-    body = {"invite": serializers.invite(invite), "emailSent": mail.configured()}
-    if not mail.configured() and is_dev(current_app.config.get("APP_ENV")):
+    delivery = accounts.invite_delivery()
+    body = {"invite": serializers.invite(invite), "emailSent": delivery == "email"}
+    if delivery == "link":
         body["acceptUrl"] = accounts.app_url("/invite/" + token)
     return jsonify(body), 201
 

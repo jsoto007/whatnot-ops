@@ -9,6 +9,8 @@ interface TeamData {
   users: User[]
   invites: Invite[]
   invitableRoles: Role[]
+  /** How an invite reaches the person right now; "none" means inviting is refused. */
+  inviteDelivery: 'email' | 'link' | 'none'
 }
 
 export function Team() {
@@ -27,7 +29,7 @@ export function Team() {
 
   if (team.isPending) return <p className="muted">Loading…</p>
   if (team.isError) return <p className="form-error">Could not load the team.</p>
-  const { users, invites, invitableRoles } = team.data
+  const { users, invites, invitableRoles, inviteDelivery } = team.data
   return (
     <section>
       <h2>Team</h2>
@@ -85,29 +87,36 @@ export function Team() {
       {can('team.invite') && (
         <>
           <h3>Invite someone</h3>
-          <Form
-            className="inline-form"
-            submitLabel="Send invite"
-            onSubmit={async () => {
-              const r = await api<{ acceptUrl?: string; emailSent: boolean }>('POST', '/api/team/invites', { email, role })
-              setLastInvite({ email, acceptUrl: r.acceptUrl, emailSent: r.emailSent })
-              setEmail('')
-              await refresh()
-            }}
-          >
-            <Field label="Email">
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-            </Field>
-            <Field label="Role">
-              <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-                {invitableRoles.map((r) => (
-                  <option key={r} value={r}>
-                    {roleLabel(r)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </Form>
+          {inviteDelivery === 'none' ? (
+            <p className="card muted" data-testid="invites-need-email">
+              Invites can’t be sent yet: email isn’t set up for Sales Ops, so an invite would reach no one. Ask your Sales Ops
+              support to turn email on.
+            </p>
+          ) : (
+            <Form
+              className="inline-form"
+              submitLabel="Send invite"
+              onSubmit={async () => {
+                const r = await api<{ acceptUrl?: string; emailSent: boolean }>('POST', '/api/team/invites', { email, role })
+                setLastInvite({ email, acceptUrl: r.acceptUrl, emailSent: r.emailSent })
+                setEmail('')
+                await refresh()
+              }}
+            >
+              <Field label="Email">
+                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+              </Field>
+              <Field label="Role">
+                <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
+                  {invitableRoles.map((r) => (
+                    <option key={r} value={r}>
+                      {roleLabel(r)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </Form>
+          )}
           {lastInvite && (
             <p className="card" data-testid="invite-result">
               {lastInvite.emailSent ? `Invite emailed to ${lastInvite.email}.` : `Email is not configured, so nothing was sent to ${lastInvite.email}.`}

@@ -1,11 +1,13 @@
 import re
 from unittest.mock import MagicMock
 
-from sqlalchemy import select
+import pytest
+import requests
+from sqlalchemy import func, select
 
 from app.db import db
-from app.models import AuditLog, Role, User
-from app.services import mail
+from app.models import AuditLog, Invite, Role, User
+from app.services import accounts, mail
 
 PW = "correct-horse-battery"
 
@@ -162,6 +164,7 @@ def test_owner_invites_manager_who_accepts(app, client):
     assert r.status_code == 201, r.get_json()
     body = r.get_json()
     assert body["emailSent"] is False  # Mailgun unset → logged, dev link returned
+    assert client.get("/api/team").get_json()["inviteDelivery"] == "link"
     token = body["acceptUrl"].rsplit("/", 1)[1]
 
     other = app.test_client()
@@ -251,6 +254,76 @@ def test_invite_sends_through_mailgun_when_configured(client, monkeypatch):
     assert link
     assert link.group(0) in kwargs["data"]["html"]  # HTML twin carries the same link
     assert "/logo.png" in kwargs["data"]["html"]
+    assert client.get("/api/team").get_json()["inviteDelivery"] == "email"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        {"return_value": MagicMock(status_code=500)},  # Mailgun answered with an error
+        {"side_effect": requests.ConnectionError("mailgun unreachable")},  # network
+    ],
+    ids=["mailgun-error", "network"],
+)
+def test_a_failed_invite_email_saves_nothing_and_says_so(app, client, monkeypatch, failure):
+    signup(client)
+    first = invite(client, "mia@shop.test", "viewer").get_json()  # dev link mode: kept
+    monkeypatch.setenv("MAILGUN_API_KEY", "key-test")
+    monkeypatch.setenv("MAILGUN_DOMAIN", "mg.example.com")
+    monkeypatch.setattr(mail.requests, "post", MagicMock(**failure))
+
+    r = invite(client, "mia@shop.test", "manager")  # would replace the first
+    assert r.status_code == 502
+    error = r.get_json()["error"]
+    assert error == accounts.INVITE_MAIL_FAILED
+    assert "mailgun" not in error.lower() and "500" not in error  # vendor words stay in the log
+
+    # Everything rolled back: the older invite was not expired, no new one, one audit line.
+    token = first["acceptUrl"].rsplit("/", 1)[1]
+    assert client.get("/api/auth/invites/" + token).get_json()["role"] == "viewer"
+    pending = [(i["email"], i["role"]) for i in client.get("/api/team").get_json()["invites"]]
+    assert pending == [("mia@shop.test", "viewer")]
+    with app.app_context():
+        assert db.session.scalar(select(func.count()).select_from(Invite)) == 1
+        created = select(func.count()).where(AuditLog.action == "invite.created")
+        assert db.session.scalar(created) == 1
+
+
+def test_an_invite_that_could_reach_no_one_is_refused_before_anything_is_saved(
+    app, client, monkeypatch
+):
+    signup(client)
+    monkeypatch.setattr(accounts, "invite_delivery", lambda: "none")
+    assert client.get("/api/team").get_json()["inviteDelivery"] == "none"
+    r = invite(client, "mia@shop.test", "viewer")
+    assert r.status_code == 503
+    assert r.get_json()["error"] == accounts.INVITES_NEED_EMAIL
+    assert "MAILGUN" not in r.get_json()["error"]  # never a setting's name on screen
+    with app.app_context():
+        assert db.session.scalar(select(func.count()).select_from(Invite)) == 0
+        created = select(AuditLog).where(AuditLog.action == "invite.created")
+        assert db.session.scalar(created) is None
+
+
+@pytest.mark.parametrize(
+    "env, mailgun, expected",
+    [
+        ("production", False, "none"),  # no email and no link: nobody would hear of it
+        ("production", True, "email"),
+        ("development", False, "link"),
+        ("development", True, "email"),  # set up on purpose: dev sends real email too
+        ("test", False, "link"),
+    ],
+)
+def test_how_an_invite_reaches_the_person(app, monkeypatch, env, mailgun, expected):
+    monkeypatch.setitem(app.config, "APP_ENV", env)
+    for key in ("MAILGUN_API_KEY", "MAILGUN_DOMAIN"):
+        if mailgun:
+            monkeypatch.setenv(key, "x")
+        else:
+            monkeypatch.delenv(key, raising=False)
+    with app.app_context():
+        assert accounts.invite_delivery() == expected
 
 
 # ---------- team management ----------

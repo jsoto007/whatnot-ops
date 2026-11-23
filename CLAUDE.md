@@ -57,7 +57,10 @@ commands.
   Render) for the client address; the first visitor request logs a WARNING
   "client address check … match/MISMATCH" against Cloudflare's header.
   Password-reset emails are a `reset_mail` job: the worker needs `MAILGUN_*`
-  too, and the web process puts the link's base URL in the job. `RATE_LIMITS=off` works
+  too, and the web process puts the link's base URL in the job. Invites are mailed inside
+  the request, before the commit: a failed send saves nothing and says so (502), and when
+  an invite could reach no one (`accounts.invite_delivery()` is "none") inviting is refused
+  up front (503) and the Team page says why. `RATE_LIMITS=off` works
   only in dev/test (the browser e2e sets it).
 - **Text from outside** (captured chat, uploaded CSVs, the show URL) goes
   through `services/text.py` before it is stored: no control characters or
