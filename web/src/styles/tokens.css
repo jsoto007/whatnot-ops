@@ -65,6 +65,18 @@
   --radius-l: 26px;
   --radius-xl: 34px;
   --pill: 999px;
+  /* Controls (the Orders page). A regular button is 44px, the touch minimum; its capsule corner is
+     half that. A toolbar row (tabs, search) shares one height: 40px with a mouse, 44px under a
+     finger (see the media query below). */
+  --control-lg: 44px;
+  --control-row: 40px;
+  --capsule-lg: calc(var(--control-lg) / 2);
+  --hit-min: 44px;
+  /* An action repeated on every row of a list: blue text on a light blue fill, so a long list is
+     not a wall of solid blue buttons. The ink keeps the label readable (~5.7:1 on the tint). */
+  --btn-tint: var(--accent-soft);
+  --btn-tint-hover: rgba(0, 96, 223, 0.22);
+  --btn-tint-ink: var(--tint-blue-ink);
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -79,7 +91,15 @@
   --motion: 160ms ease;
   --ease-glass: cubic-bezier(0.2, 0.8, 0.2, 1);
   --motion-slide: 380ms var(--ease-glass);
+  /* Pressing a control: it settles in a little and dims (listed in the control's transition). */
+  --motion-press: transform 140ms var(--ease-glass), filter 140ms ease;
+  --press-scale: 0.97;
+  --press-dim: 0.93;
   --sidebar-w: 248px;
   --sidebar-w-compact: 76px;
   --content-max: 1440px;
+}
+
+@media (pointer: coarse) {
+  :root { --control-row: var(--control-lg); }
 }

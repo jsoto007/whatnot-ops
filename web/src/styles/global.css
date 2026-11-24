@@ -1061,6 +1061,67 @@ body.sheet-open, body.modal-open { overflow: hidden; }
   .orders .foot { flex-direction: column; gap: 4px; }
 }
 
+/* ---------- orders list: each row at a glance, the rest opens under it ---------- */
+/* One height for the toolbar row (the tabs beside the search box), and the head's show menu as tall
+   as the Print button beside it. */
+.orders .tabs button { min-height: calc(var(--control-row) - 6px); transition: background var(--motion), box-shadow var(--motion), var(--motion-press); }
+.orders .search { min-height: var(--control-row); }
+.orders .show-select { min-height: var(--control-lg); }
+/* The head wraps (title, its line, the show menu, Print): a rounded rectangle concentric with its
+   44px buttons 10px in, instead of a stretched pill. On one line (64px) it is still a capsule. */
+@media (min-width: 901px) { .orders .page-head { border-radius: calc(var(--capsule-lg) + 10px); } }
+/* The action on every row is tinted, so the head's one blue button stands out. */
+.orders .btn.tinted { background: var(--btn-tint); color: var(--btn-tint-ink); }
+.orders .btn.tinted:hover { background: var(--btn-tint-hover); color: var(--btn-tint-ink); }
+/* Press: each control here settles in and dims while held; never larger, so it cannot cover the
+   one beside it. No movement when the system asks to reduce motion. */
+.orders :is(.icon-btn, .chip-btn) { transition: background var(--motion), var(--motion-press); }
+.orders :is(.btn, .icon-btn, .chip-btn, .tabs button, .disclose):active:not(:disabled) { transform: scale(var(--press-scale)); filter: brightness(var(--press-dim)); }
+@media (prefers-reduced-motion: reduce) {
+  .orders :is(.btn, .icon-btn, .chip-btn, .tabs button, .disclose):active:not(:disabled) { transform: none; }
+}
+/* A finger needs 44×44. Small buttons keep their look and get an invisible hit area reaching up
+   and down to 44px (not sideways, where a neighbour sits a few px away); the round "…" grows both ways. */
+@media (pointer: coarse) {
+  .orders :is(.btn.small, .chip-btn, .search-clear, .disclose, .icon-btn.sm) { position: relative; }
+  .orders :is(.btn.small, .chip-btn, .search-clear, .disclose)::after { content: ''; position: absolute; inset: min(0px, calc((100% - var(--hit-min)) / 2)) 0; }
+  .orders .icon-btn.sm::after { content: ''; position: absolute; inset: min(0px, calc((100% - var(--hit-min)) / 2)); }
+}
+/* Buyer: the chevron and the name on one line; a very long username (no spaces to wrap at) ends in
+   "…" rather than widening the table past the card. Show: "Nov 12" on one line. */
+.orders .c-buyer { white-space: nowrap; }
+.orders .c-buyer .buyer { display: inline-block; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+.orders .col-show { white-space: nowrap; }
+/* Items: a long title wraps to two lines at most. Status: the state on one line, then one short
+   mark each for what needs an eye. */
+.orders .item-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; max-width: 42ch; }
+.orders .status-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.orders .signals { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; }
+.orders .signals:empty { display: none; }
+/* The chevron opens the order's details under its row (as the show page's chat rows do). */
+.orders .disclose {
+  width: 28px; height: 28px; margin: 0 4px 0 -8px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted);
+  display: inline-grid; place-items: center; vertical-align: middle; cursor: pointer; transition: background var(--motion), var(--motion-press);
+}
+.orders .disclose:hover { background: var(--fill); color: var(--text); }
+.orders .disclose svg { transition: transform 200ms var(--ease-glass); }
+.orders .disclose[aria-expanded='true'] svg { transform: rotate(90deg); }
+.orders tr.is-open > td { border-bottom: 0; }
+.orders .order-details > td { padding: 0 16px 16px; }
+.orders .table tbody tr.order-details:hover td { background: transparent; }
+.order-details-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 var(--space-6); padding-left: 24px; }
+.order-details-grid .item-section { margin-bottom: var(--space-3); }
+.order-details-grid .details-open { justify-self: start; grid-column: 1 / -1; }
+@container orders (max-width: 700px) {
+  /* An open order's details: under its card, one block per line. */
+  .orders .table tr.is-open { border-bottom: 0; }
+  .orders .table tr.order-details { display: block; padding: 0 16px 14px; border-bottom: 1px solid var(--border); }
+  .orders .table tr.order-details:last-child { border-bottom: 0; }
+  .orders .table tr.order-details > td { display: block; padding: 0; }
+  .order-details-grid { grid-template-columns: 1fr; padding-left: 0; }
+  .orders .item-title { max-width: none; }
+}
+
 /* Settings → Whatnot: a short list of either/or choices, each with a line of explanation. */
 .radio-list { display: grid; gap: var(--space-2); margin: var(--space-2) 0 var(--space-3); }
 .radio-row { display: flex; align-items: flex-start; gap: var(--space-2); cursor: pointer; }

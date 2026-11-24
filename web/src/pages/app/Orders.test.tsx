@@ -322,7 +322,18 @@ test('the Shipped tab says where each parcel is, and narrows to the ones that ne
   mount(undefined, '/app/orders?view=shipped', SHIPPED)
   const a = await screen.findByTestId('parcel-buyer_a')
   expect(a).toHaveTextContent('On its way')
-  expect(a).toHaveTextContent('USPS 9400A')
+  // The row says where the parcel is; the tracking number is in the details under it.
+  expect(a).not.toHaveTextContent('9400A')
+  const toggle = screen.getByRole('button', { name: 'Details for buyer_a' })
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  expect(screen.queryByTestId('details-buyer_a')).toBeNull()
+  fireEvent.click(toggle)
+  expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  const details = screen.getByTestId('details-buyer_a')
+  expect(details).toHaveTextContent('USPS 9400A')
+  expect(within(details).getByRole('link', { name: 'Open the order' })).toHaveAttribute('href', '/app/orders/21')
+  fireEvent.click(toggle)
+  expect(screen.queryByTestId('details-buyer_a')).toBeNull()
   expect(screen.getByTestId('parcel-buyer_b')).toHaveTextContent('Delivered')
   // The two that need a person are in the warning colour.
   expect(within(screen.getByTestId('parcel-buyer_c')).getByText('Delivery failed')).toHaveClass('pill', 'failed')
@@ -345,8 +356,9 @@ test('the Shipped tab says where each parcel is, and narrows to the ones that ne
 
 test('a buyer with two parcels reads each one', async () => {
   mount(undefined, '/app/orders?view=shipped', [shippedOrder(21, 'buyer_a', parcel('moving', [box('delivered', '9400A'), box('in_transit', null)]))])
-  const a = await screen.findByTestId('parcel-buyer_a')
-  expect(a).toHaveTextContent('On its way')
+  expect(await screen.findByTestId('parcel-buyer_a')).toHaveTextContent('On its way')
+  fireEvent.click(screen.getByRole('button', { name: 'Details for buyer_a' }))
+  const a = screen.getByTestId('details-buyer_a')
   expect(a).toHaveTextContent('Delivered · USPS 9400A')
   expect(a).toHaveTextContent('In transit · USPS')
 })
@@ -364,13 +376,30 @@ test('every tab says where the parcel is: an order not marked shipped shows it t
   mount(undefined, '/app/orders?view=all', [...SHIPPED, open, fresh])
   const f = await screen.findByTestId('parcel-buyer_f')
   expect(within(f).getByText('On its way')).toHaveClass('pill', 'moving')
-  expect(f).toHaveTextContent('USPS 9400F')
+  fireEvent.click(screen.getByRole('button', { name: 'Details for buyer_f' }))
+  expect(screen.getByTestId('details-buyer_f')).toHaveTextContent('USPS 9400F')
   expect(within(screen.getByTestId('parcel-buyer_g')).getByText('No label yet')).toHaveClass('pill', 'nolabel')
 
   const filters = screen.getByTestId('parcel-filters')
   expect(within(filters).getAllByRole('button').map((b) => b.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['All 7', 'No label yet 1', 'Not with the carrier yet 1', 'On its way 2', 'Delivery failed 1', 'Delivered 1'])
   fireEvent.click(within(filters).getByRole('button', { name: /On its way/ }))
   await waitFor(() => expect(screen.getAllByTestId(/^order-/).map((r) => r.getAttribute('data-testid')).sort()).toEqual(['order-buyer_a', 'order-buyer_f']))
+})
+
+test('the row shows the first lots of a product; its details show every one', async () => {
+  // Eight wins of one product (made-up buyer): the row reads the first three and "+5 more".
+  const lots = [601, 602, 603, 604, 605, 606, 607, 608]
+  const many = order({ id: 40, buyer: 'made_up_many', status: 'paid', verified: true, sales: lots.map((lot, i) => sale({ id: 900 + i, buyer: 'made_up_many', orderId: 40, sku: RED, item: `$1 BEAUTY PULLS #${lot}`, lot, status: 'paid', paidAt: '2026-11-08T03:50:00Z', wonAt: '2026-11-08T03:50:00Z' })) })
+  mount(undefined, '/app/orders?view=all', [many])
+  const row = await screen.findByTestId('order-made_up_many')
+  expect(row).toHaveTextContent('8 × $1 Beauty Pulls')
+  expect(row).toHaveTextContent('#603')
+  expect(row).not.toHaveTextContent('#604')
+  expect(row).toHaveTextContent('+5 more')
+  fireEvent.click(screen.getByRole('button', { name: 'Details for made_up_many' }))
+  const details = screen.getByTestId('details-made_up_many')
+  for (const lot of lots) expect(details).toHaveTextContent(`#${lot}`)
+  expect(details).not.toHaveTextContent('more')
 })
 
 test("in a winner's-pick show an unnamed item waits for the winner, then reads did not pick", () => {
@@ -473,7 +502,7 @@ test("a lot whose title says the winner chooses is never offered as 'name it onc
   const row = await screen.findByTestId('order-made_up_ann')
   expect(screen.queryByTestId('stuck-banner')).toBeNull()
   // The order is open, but it is paid: it waits for the winner's pick, not for money.
-  expect(within(row).getByTestId('to-pick-made_up_ann')).toHaveTextContent('paid on Whatnot · 1 product to pick')
+  expect(within(row).getByTestId('to-pick-made_up_ann')).toHaveTextContent('paid on Whatnot')
   fireEvent.click(within(row).getByRole('button', { name: 'Name the product' }))
   const dialog = await screen.findByRole('dialog')
   expect(within(dialog).queryByTestId('apply-similar')).toBeNull()

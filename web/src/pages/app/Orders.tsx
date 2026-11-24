@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth } from '../../auth/useAuth'
@@ -72,6 +72,14 @@ export function Orders() {
   const [decline, setDecline] = useState<Sale | null>(null)
   const [changing, setChanging] = useState<ProductChange | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  // Orders whose details are open under their row (the show page's chat rows work the same way).
+  const [open, setOpen] = useState<ReadonlySet<number>>(() => new Set())
+  const toggle = (id: number) =>
+    setOpen((was) => {
+      const next = new Set(was)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
   const shows = useQuery({ queryKey: ['shows'], queryFn: () => apiGet<{ shows: Show[] }>('/api/shows') })
   const all = useQuery({ queryKey: ['orders', 'every', showId], queryFn: () => apiGet<{ orders: Order[]; truncated?: boolean }>(`/api/orders${showId ? '?show=' + showId : ''}`) })
   useEffect(() => {
@@ -258,16 +266,28 @@ export function Orders() {
             </thead>
             <tbody>
               {visible.map((o) => (
-                <tr key={o.id} data-testid={`order-${o.buyer}`}>
+                <Fragment key={o.id}>
+                <tr data-testid={`order-${o.buyer}`} className={open.has(o.id) ? 'is-open' : undefined}>
                   <td className="c-buyer">
-                    <Link to={`/app/orders/${o.id}`} className="buyer">
+                    <button
+                      type="button"
+                      className="disclose"
+                      aria-expanded={open.has(o.id)}
+                      aria-controls={`details-${o.id}`}
+                      aria-label={`Details for ${o.buyer}`}
+                      onClick={() => toggle(o.id)}
+                      data-testid={`details-toggle-${o.buyer}`}
+                    >
+                      <Icon name="chevron" size={16} />
+                    </button>
+                    <Link to={`/app/orders/${o.id}`} className="buyer" title={o.buyer}>
                       {o.buyer}
                     </Link>
                     <BuyerFlagChip name={o.buyer} />
                     <span className="show-inline">{fmtDate(o.showDate)}</span>
                   </td>
                   <td className="c-items">
-                    <Items o={o} />
+                    <Items o={o} compact />
                   </td>
                   <td className="num c-total">
                     <b>{money(o.totalCents)}</b>
@@ -280,6 +300,14 @@ export function Orders() {
                     <Actions o={o} onPick={openPicker} onDecline={setDecline} onChange={setChanging} onRemoved={done} />
                   </td>
                 </tr>
+                {open.has(o.id) && (
+                  <tr className="order-details" id={`details-${o.id}`} data-testid={`details-${o.buyer}`}>
+                    <td colSpan={6}>
+                      <Details o={o} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -305,8 +333,13 @@ export function Orders() {
   )
 }
 
-/** "10 × $1 Beauty Pulls" with the lot numbers under it, one line per product. */
-function Items({ o }: { o: Order }) {
+/** How many products the row shows before "+N more"; the details show them all. */
+const ROW_PRODUCTS = 2
+const ROW_LOTS = 3
+
+/** "10 × $1 Beauty Pulls" with the lot numbers under it, one line per product. On the row
+ *  (`compact`) a long title wraps to two lines at most and only the first products show. */
+function Items({ o, compact = false }: { o: Order; compact?: boolean }) {
   const groups = new Map<string, { title: string; qty: number; lots: number[]; unknown: boolean; notOurs: boolean; left: boolean }>()
   for (const s of (o.sales ?? []).filter((s) => STANDING.includes(s.status))) {
     // One line per product: a win with two products ("two for one") counts under both.
@@ -321,11 +354,13 @@ function Items({ o }: { o: Order }) {
       groups.set(part.title, g)
     }
   }
+  const all = [...groups.values()]
+  const shown = compact ? all.slice(0, ROW_PRODUCTS) : all
   return (
     <div className="item-lines">
-      {[...groups.values()].map((g) => (
+      {shown.map((g) => (
         <div key={g.title} className="item-line">
-          <div>
+          <div className={compact ? 'item-title' : undefined}>
             <b>{g.qty} ×</b> {g.unknown ? <span className="unknown">“{g.title}”</span> : g.title}
           </div>
           {g.notOurs && (
@@ -333,15 +368,18 @@ function Items({ o }: { o: Order }) {
               {g.left ? LEFT_UNNAMED_LABEL : NOT_OURS_LABEL}
             </div>
           )}
-          {g.lots.length > 0 && <Lots lots={g.lots} />}
+          {g.lots.length > 0 && <Lots lots={g.lots} max={compact ? ROW_LOTS : undefined} />}
         </div>
       ))}
+      {all.length > shown.length && <div className="small faint">+{plural(all.length - shown.length, 'more product', 'more products')}</div>}
     </div>
   )
 }
 
-function Lots({ lots }: { lots: number[] }) {
-  const shown = lots.slice(0, 6)
+/** The lot numbers of one product. The row shows the first `max` and "+N more"; the details under
+ *  it pass no `max`, so a packer can read every lot there. */
+function Lots({ lots, max }: { lots: number[]; max?: number }) {
+  const shown = max === undefined ? lots : lots.slice(0, max)
   return (
     <span className="lots">
       {shown.map((n, i) => (
@@ -354,20 +392,49 @@ function Lots({ lots }: { lots: number[] }) {
   )
 }
 
+/** When the order's state began, said beside it: "won 9:05 PM", "since 5:38 PM", "by Ana · 10:01 AM". */
+function stateTime(o: Order): string | null {
+  const won = wonAt(o)
+  if (o.status === 'paid' && won > 0) return `won ${time(new Date(won).toISOString())}`
+  if (o.status === 'picking' && o.pickedAt) return `since ${time(o.pickedAt)}`
+  if (o.status === 'packed') return (o.packedBy ? `by ${o.packedBy}` : 'packed') + (o.packedAt ? ` · ${time(o.packedAt)}` : '')
+  return null
+}
+
+/** The order at a glance: its state on one line, then one short mark each for what needs an eye
+ *  (paid but waiting for its product, a declined card, where the parcel is). The sentences, item
+ *  codes and tracking numbers are in the details under the row. */
 function Status({ o }: { o: Order }) {
   const unk = unnamed(o)
   const dec = declined(o)
-  const won = wonAt(o)
+  const when = stateTime(o)
   return (
     <>
-      <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
-      {o.status === 'open' && (o.toPick ?? 0) > 0 && (
-        <div className="small sub" data-testid={`to-pick-${o.buyer}`}>
-          paid on Whatnot · {plural(o.toPick ?? 0, 'product', 'products')} to pick
-        </div>
-      )}
-      {o.status === 'open' && <div className="small sub unknown">{unk.length ? unknownWords(unk) : 'older sale, waiting for the payment file'}</div>}
-      {o.status === 'paid' && won > 0 && <div className="small faint sub">won {time(new Date(won).toISOString())}</div>}
+      <div className="status-line">
+        <span className={`status ${o.status}`}>{orderStatusLabel(o.status)}</span>
+        {when && <span className="small faint">{when}</span>}
+      </div>
+      <div className="signals">
+        {o.status === 'open' && (o.toPick ?? 0) > 0 && (
+          <span className="status paid" data-testid={`to-pick-${o.buyer}`}>
+            paid on Whatnot
+          </span>
+        )}
+        {o.status === 'open' && <span className="small unknown">{unk.length ? unknownWords(unk) : 'older sale, waiting for the payment file'}</span>}
+        {dec.length > 0 && (
+          <span className="status payment_failed" data-testid={`declined-${o.buyer}`}>
+            {saleStatusLabel('payment_failed')}
+            {dec.length > 1 ? ` · ${dec.length}` : ''}
+          </span>
+        )}
+        {o.parcel ? (
+          <span data-testid={`parcel-${o.buyer}`}>
+            <ParcelPill state={o.parcel.state} />
+          </span>
+        ) : (
+          o.tracking && <span className="muted small">{o.tracking}</span>
+        )}
+      </div>
       {(o.sales ?? []).some((s) => s.review?.reason === 'lot_won_twice') && (
         <div className="small sub unknown" data-testid={`lot-won-twice-${o.buyer}`}>
           a lot here has two winners, see Review
@@ -378,32 +445,26 @@ function Status({ o }: { o: Order }) {
           card declined on the stream, waiting for Whatnot
         </div>
       )}
-      {o.status === 'picking' && o.pickedAt && <div className="small faint sub">since {time(o.pickedAt)}</div>}
-      {o.status === 'packed' && (
-        <div className="small faint sub">
-          {o.packedBy ? `by ${o.packedBy}` : 'packed'}
-          {o.packedAt ? ` · ${time(o.packedAt)}` : ''}
-        </div>
-      )}
-      {dec.length > 0 && (
-        <div className="small sub" data-testid={`declined-${o.buyer}`}>
-          <span className="status payment_failed">{saleStatusLabel('payment_failed')}</span> {dec.map((s) => `${s.quantity}× ${s.sku ? s.sku.code : s.item || '?'}`).join(', ')}
-        </div>
-      )}
-      {o.parcel ? <Parcel o={o} /> : o.tracking && <div className="muted small sub">{o.tracking}</div>}
     </>
   )
 }
 
-/** Where an order's parcel is, as Whatnot last said: one coloured word to read at a glance, then each parcel's carrier and tracking number. */
+/** Where the buyer's parcel is, as Whatnot last said: one coloured word. */
+function ParcelPill({ state }: { state: NonNullable<Order['parcel']>['state'] }) {
+  return (
+    <span className={`pill parcel ${state}`}>
+      <Icon name="truck" size={13} /> {parcelStateLabel(state)}
+    </span>
+  )
+}
+
+/** Each parcel's carrier and tracking number, and when Whatnot last said where it is. */
 function Parcel({ o }: { o: Order }) {
   const p = o.parcel!
   const many = p.parcels.length > 1
   return (
-    <div className="small sub" data-testid={`parcel-${o.buyer}`}>
-      <span className={`pill parcel ${p.state}`}>
-        <Icon name="truck" size={13} /> {parcelStateLabel(p.state)}
-      </span>
+    <div className="small" data-testid={`tracking-${o.buyer}`}>
+      <ParcelPill state={p.state} />
       <span className="faint"> {fmtWhen(p.changedAt)}</span>
       {p.parcels.map((x, i) => (
         <div key={i} className="muted">
@@ -411,6 +472,42 @@ function Parcel({ o }: { o: Order }) {
           {[x.carrier, x.tracking].filter(Boolean).join(' ') || (many ? 'no tracking number yet' : '')}
         </div>
       ))}
+    </div>
+  )
+}
+
+/** Under the row when it is opened: every product and lot, the payment, each parcel, and the way
+ *  to the order's own page. Built from the list's own data: opening it asks the server nothing. */
+function Details({ o }: { o: Order }) {
+  const unk = unnamed(o)
+  const dec = declined(o)
+  const won = wonAt(o)
+  return (
+    <div className="order-details-grid">
+      <div className="item-section">
+        <h4>Items</h4>
+        <Items o={o} />
+      </div>
+      <div className="item-section">
+        <h4>Payment</h4>
+        <div className="small">
+          {(o.toPick ?? 0) > 0 ? `paid on Whatnot · ${plural(o.toPick ?? 0, 'product', 'products')} to pick` : orderStatusLabel(o.status)}
+        </div>
+        {o.status === 'open' && unk.length > 0 && <div className="small unknown">{unknownWords(unk)}</div>}
+        {won > 0 && <div className="small faint">won {time(new Date(won).toISOString())}</div>}
+        {dec.length > 0 && (
+          <div className="small">
+            <span className="status payment_failed">{saleStatusLabel('payment_failed')}</span> {dec.map((s) => `${s.quantity}× ${s.sku ? s.sku.code : s.item || '?'}`).join(', ')}
+          </div>
+        )}
+      </div>
+      <div className="item-section">
+        <h4>Shipping</h4>
+        {o.parcel ? <Parcel o={o} /> : <div className="small muted">{o.tracking || 'Nothing from Whatnot about a parcel yet.'}</div>}
+      </div>
+      <Link to={`/app/orders/${o.id}`} className="btn ghost small details-open">
+        Open the order
+      </Link>
     </div>
   )
 }
@@ -437,13 +534,13 @@ function Actions({ o, onPick, onDecline, onChange, onRemoved }: { o: Order; onPi
   let declineInMenu = dec.length > 0 && canReview
   if (o.status === 'open' && unk.length > 0 && canReview) {
     primary = (
-      <button type="button" className="btn small primary" onClick={() => onPick(unk[0]!)} data-testid="name-product">
+      <button type="button" className="btn small tinted" onClick={() => onPick(unk[0]!)} data-testid="name-product">
         Name the product
       </button>
     )
   } else if (next && canFulfil) {
     primary = (
-      <button type="button" className="btn small primary" onClick={() => move.mutate(next.to)} disabled={move.isPending}>
+      <button type="button" className="btn small tinted" onClick={() => move.mutate(next.to)} disabled={move.isPending}>
         {next.label}
       </button>
     )
