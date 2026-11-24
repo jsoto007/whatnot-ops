@@ -167,7 +167,9 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   await expect(page.getByTestId('order-lani808')).toBeVisible()
   // Shipped: where the parcel is, as Whatnot last said. The carrier has it.
   await expect(page.getByTestId('parcel-lani808')).toContainText('On its way')
-  await expect(page.getByTestId('parcel-lani808')).toContainText('9400111899223344556677')
+  // The tracking number is in the details under the row.
+  await page.getByRole('button', { name: 'Details for lani808' }).click()
+  await expect(page.getByTestId('details-lani808')).toContainText('9400111899223344556677')
   await expect(page.getByTestId('parcel-filters').getByRole('button', { name: /On its way/ })).toContainText('1')
   await shot(page, '4c-orders-shipped-parcel')
   // Every tab says it at a glance, on the buyer's row: an order not marked shipped too.
