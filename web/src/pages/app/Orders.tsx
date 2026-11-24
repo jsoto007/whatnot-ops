@@ -368,7 +368,7 @@ function Items({ o, compact = false }: { o: Order; compact?: boolean }) {
               {g.left ? LEFT_UNNAMED_LABEL : NOT_OURS_LABEL}
             </div>
           )}
-          {g.lots.length > 0 && <Lots lots={g.lots} max={compact ? ROW_LOTS : 6} />}
+          {g.lots.length > 0 && <Lots lots={g.lots} max={compact ? ROW_LOTS : undefined} />}
         </div>
       ))}
       {all.length > shown.length && <div className="small faint">+{plural(all.length - shown.length, 'more product', 'more products')}</div>}
@@ -376,8 +376,10 @@ function Items({ o, compact = false }: { o: Order; compact?: boolean }) {
   )
 }
 
-function Lots({ lots, max = 6 }: { lots: number[]; max?: number }) {
-  const shown = lots.slice(0, max)
+/** The lot numbers of one product. The row shows the first `max` and "+N more"; the details under
+ *  it pass no `max`, so a packer can read every lot there. */
+function Lots({ lots, max }: { lots: number[]; max?: number }) {
+  const shown = max === undefined ? lots : lots.slice(0, max)
   return (
     <span className="lots">
       {shown.map((n, i) => (

@@ -386,6 +386,22 @@ test('every tab says where the parcel is: an order not marked shipped shows it t
   await waitFor(() => expect(screen.getAllByTestId(/^order-/).map((r) => r.getAttribute('data-testid')).sort()).toEqual(['order-buyer_a', 'order-buyer_f']))
 })
 
+test('the row shows the first lots of a product; its details show every one', async () => {
+  // Eight wins of one product (made-up buyer): the row reads the first three and "+5 more".
+  const lots = [601, 602, 603, 604, 605, 606, 607, 608]
+  const many = order({ id: 40, buyer: 'made_up_many', status: 'paid', verified: true, sales: lots.map((lot, i) => sale({ id: 900 + i, buyer: 'made_up_many', orderId: 40, sku: RED, item: `$1 BEAUTY PULLS #${lot}`, lot, status: 'paid', paidAt: '2026-11-08T03:50:00Z', wonAt: '2026-11-08T03:50:00Z' })) })
+  mount(undefined, '/app/orders?view=all', [many])
+  const row = await screen.findByTestId('order-made_up_many')
+  expect(row).toHaveTextContent('8 × $1 Beauty Pulls')
+  expect(row).toHaveTextContent('#603')
+  expect(row).not.toHaveTextContent('#604')
+  expect(row).toHaveTextContent('+5 more')
+  fireEvent.click(screen.getByRole('button', { name: 'Details for made_up_many' }))
+  const details = screen.getByTestId('details-made_up_many')
+  for (const lot of lots) expect(details).toHaveTextContent(`#${lot}`)
+  expect(details).not.toHaveTextContent('more')
+})
+
 test("in a winner's-pick show an unnamed item waits for the winner, then reads did not pick", () => {
   const waiting = sale({ buyer: 'made_up_ann', orderId: 8, saleMode: 'winners_pick', review: { id: 18, reason: 'unmatched_item' } })
   const noPick = sale({ buyer: 'made_up_ann', orderId: 8, saleMode: 'winners_pick', review: { id: 19, reason: 'unmatched_item', pick: 'none' } })
