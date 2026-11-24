@@ -3,9 +3,11 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import aliased
 
 from ..db import db
 from ..models import (
+    ChatMessage,
     EventKind,
     Order,
     OrderStatus,
@@ -90,6 +92,140 @@ def to_pick_ids(sale_ids) -> set[int]:
     if not ids:
         return set()
     return {s.id for s in to_pick_sales(Sale.id.in_(ids))}
+
+
+# Whatnot's word for an auction win (services/whatnot/orders.AUCTION): only an auction's
+# declined attempt can be paid on a retry here. "Buy it now" orders are left alone.
+_AUCTION = "auction"
+
+
+def paid_on_retry(sales) -> dict[int, int]:
+    """Which of these declined sales were paid on a retry: declined sale id → the standing
+    sale of the later, paid Whatnot order for the same win.
+
+    A card declined at the win and paid a while later is two orders on Whatnot, a failed one
+    and a paid one. The app pairs them when it reads them (`whatnot/orders._skip_retried`),
+    but only within half an hour, and builds before 2026-11-14 recorded the payment as a
+    second sale. Either way the declined sale is history, not a decline: the win stands as
+    its retry's sale. Derived on every read, never stored: if the retry's sale stops
+    standing (Whatnot cancels it), the declined sale reads as declined again. It changes
+    no money and no stock; the screens only stop calling it declined.
+
+    Two queries for any number of sales, none when no sale could be one."""
+    ids = [
+        s.id
+        for s in sales
+        if s.status is SaleStatus.payment_failed and s.external_order_id and s.id is not None
+    ]
+    if not ids:
+        return {}
+    declined, retry = aliased(Sale), aliased(Sale)
+    failed, paid = aliased(WhatnotOrder), aliased(WhatnotOrder)
+    # When each sale's own win line (a chat line or the video player's banner) was read.
+    declined_event, retry_event = aliased(ParsedEvent), aliased(ParsedEvent)
+    declined_line, retry_line = aliased(ChatMessage), aliased(ChatMessage)
+    pairs = db.session.execute(
+        select(declined, failed, retry, paid, declined_line.captured_at, retry_line.captured_at)
+        .select_from(declined)
+        .join(
+            failed,
+            (failed.organization_id == declined.organization_id)
+            & (failed.whatnot_id == declined.external_order_id),
+        )
+        .join(
+            retry,
+            (retry.organization_id == declined.organization_id)
+            & (func.lower(retry.buyer_username) == func.lower(declined.buyer_username))
+            & (retry.id != declined.id)
+            & retry.status.in_(STANDING)
+            & retry.external_order_id.is_not(None),
+        )
+        .join(
+            paid,
+            (paid.organization_id == declined.organization_id)
+            & (paid.whatnot_id == retry.external_order_id),
+        )
+        .outerjoin(declined_event, declined_event.id == declined.event_id)
+        .outerjoin(declined_line, declined_line.id == declined_event.message_id)
+        .outerjoin(retry_event, retry_event.id == retry.event_id)
+        .outerjoin(retry_line, retry_line.id == retry_event.message_id)
+        .where(
+            declined.id.in_(ids),
+            failed.status == "failed",
+            paid.status.in_(WHATNOT_PAID),
+            # Narrows the rows only (a busy buyer has many standing sales); `_is_retry` decides.
+            paid.whatnot_show_id == failed.whatnot_show_id,
+            paid.ordered_at > failed.ordered_at,
+        )
+        .order_by(declined.id, paid.ordered_at, retry.id)
+    ).all()
+    if not pairs:
+        return {}
+    # Whatnot's listing ids of both orders: two listings are two auctions, never one win.
+    listings: dict[int, set[str]] = {}
+    for order_id, product_id in db.session.execute(
+        select(WhatnotOrderItem.order_id, WhatnotOrderItem.product_id).where(
+            WhatnotOrderItem.order_id.in_({o.id for _, f, _, p, *_ in pairs for o in (f, p)})
+        )
+    ):
+        if product_id:
+            listings.setdefault(order_id, set()).add(product_id)
+    out: dict[int, int] = {}
+    for d, f, r, p, d_won, r_won in pairs:
+        if d.id not in out and _is_retry(
+            d, f, r, p, listings, declined_won=d_won or d.ordered_at, retry_won=r_won
+        ):
+            out[d.id] = r.id
+    return out
+
+
+def _is_retry(
+    declined: Sale,
+    failed: WhatnotOrder,
+    retry: Sale,
+    paid: WhatnotOrder,
+    listings: dict[int, set[str]],
+    *,
+    declined_won: datetime | None = None,
+    retry_won: datetime | None = None,
+) -> bool:
+    """Whether `paid` (the order of the standing sale `retry`) is the paid retry of the win
+    whose attempt `failed` declined `declined`. The query already holds the shop, the buyer
+    (name, case aside), `failed` saying failed, `paid` saying paid and `retry` standing.
+    `listings` maps a Whatnot order's row id to the listing ids of its items.
+    `declined_won`: when the declined sale was won (its win line, else its order time).
+    `retry_won`: when the retry's sale's OWN win line was read, None when Whatnot's order
+    made it (a retry is a charge, never a new win banner)."""
+    from .pipeline import SAME_WIN_WINDOW, auction_of  # one numbered lot of one show: one win
+
+    # Lot numbers start again in every show: both orders must be pinned to the same one.
+    if not failed.whatnot_show_id or failed.whatnot_show_id != paid.whatnot_show_id:
+        return False
+    # Only a payment placed after the declined attempt can be its retry; no time, no proof.
+    if failed.ordered_at is None or paid.ordered_at is None:
+        return False
+    if paid.ordered_at <= failed.ordered_at:
+        return False
+    # "Buy it now" orders are left alone: only an auction is one win per lot.
+    if failed.transaction_type != _AUCTION or paid.transaction_type != _AUCTION:
+        return False
+    # The same numbered lot (Javier's rule: the same buyer on the same lot is the same win).
+    # A title with no lot number may be won many times, so it names no one win.
+    lot = auction_of(declined.item_text)
+    if lot is None or lot != auction_of(retry.item_text):
+        return False
+    # Two listings are two auctions; a listing unknown on one side does not refuse it.
+    were, are = listings.get(failed.id), listings.get(paid.id)
+    if were and are and were.isdisjoint(are):
+        return False
+    # The retry's sale was read as a win of its own: it is this win only when that line is
+    # this win's (another laptop's copy, half an hour at most, as `pipeline.holders`). A later
+    # banner is the lot auctioned again; its payment says nothing about this decline.
+    if retry_won is not None:
+        first = declined_won or failed.ordered_at
+        if first is None or abs(retry_won - first) > SAME_WIN_WINDOW:
+            return False
+    return True
 
 
 def _question_ignored():

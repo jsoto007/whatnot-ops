@@ -240,11 +240,14 @@ def sale(
     review=None,
     to_pick: bool | None = None,
     not_ours: bool | None = None,
+    retried_by: int | None = None,
 ) -> dict:
     """`review` is the open review item waiting on this sale, when the caller looked it up.
     `to_pick`: whether Whatnot says it is paid while its product is still to pick
     (`orders.to_pick_ids`), when the caller looked it up; None otherwise. `not_ours`: whether
-    it is settled with no product (`orders.settled_unnamed_ids`), likewise."""
+    it is settled with no product (`orders.settled_unnamed_ids`), likewise. `retried_by`: for
+    a declined sale whose win was paid in a later Whatnot order, that payment's sale
+    (`orders.paid_on_retry`), when the caller looked it up."""
     # A sale the app learnt of from Whatnot's order has no chat line: its order time.
     won = s.event.message.captured_at if s.event else s.ordered_at
     out = {
@@ -292,6 +295,9 @@ def sale(
         # Settled because it left in its buyer's parcel before anyone named its product
         # (`orders._left_unnamed`): the count is a person's to fix in Inventory.
         "leftUnnamed": bool(not_ours) and s.status_reason == LEFT_UNNAMED_REASON,
+        # Declined, then paid on a retry: the win stands as this other sale, so the screens
+        # never call this one a declined payment (`orders.paid_on_retry`).
+        "paidOnRetry": retried_by,
         "statusReason": s.status_reason,
         "flagged": s.flagged,
         "giftCount": s.gift_count,
@@ -332,10 +338,18 @@ def chat_message(m) -> dict:
     }
 
 
-def review_item(r, context, shelf: dict | None = None, *, to_pick: set[int] | None = None) -> dict:
+def review_item(
+    r,
+    context,
+    shelf: dict | None = None,
+    *,
+    to_pick: set[int] | None = None,
+    retried: dict[int, int] | None = None,
+) -> dict:
     """`shelf`: the spot the winner named in chat, on a show with shelves (services/shelves.py).
     `to_pick`: the ids of the sales Whatnot says are paid with their product still to pick
-    (`orders.to_pick_ids`), when the caller looked them up."""
+    (`orders.to_pick_ids`), when the caller looked them up. `retried`: declined sale id → the
+    sale of its paid retry (`orders.paid_on_retry`)."""
     return {
         "id": r.id,
         "showId": r.show_id,
@@ -349,7 +363,11 @@ def review_item(r, context, shelf: dict | None = None, *, to_pick: set[int] | No
         "context": [
             {"seq": m.seq, "username": m.username, "body": m.body} for m in context["lines"]
         ],
-        "sale": sale(r.sale, to_pick=(r.sale.id in to_pick) if to_pick is not None else None)
+        "sale": sale(
+            r.sale,
+            to_pick=(r.sale.id in to_pick) if to_pick is not None else None,
+            retried_by=(retried or {}).get(r.sale.id),
+        )
         if r.sale
         else None,
         "shelf": shelf,
@@ -366,12 +384,14 @@ def order(
     parcel: dict | None = None,
     to_pick: set[int] | None = None,
     settled: set[int] | None = None,
+    retried: dict[int, int] | None = None,
 ) -> dict:
     """`with_gifts` adds the buyer's gift lines for the show (one query; detail view only).
     `reviews` maps sale id → the open review item waiting on it (routes/orders looks them up).
     `to_pick`: the ids of the sales Whatnot says are paid with their product still to pick
     (`orders.to_pick_ids`, one query for the whole list). `settled`: the ids of the wins
-    settled with no product (`orders.settled_unnamed_ids`, one query for the whole list)."""
+    settled with no product (`orders.settled_unnamed_ids`, one query for the whole list).
+    `retried`: declined sale id → the sale its paid retry made (`orders.paid_on_retry`)."""
     from .services.orders import gifts_for, verified
 
     standing = [
@@ -405,6 +425,7 @@ def order(
                 review=(reviews or {}).get(s.id),
                 to_pick=(s.id in to_pick) if to_pick is not None else None,
                 not_ours=(s.id in settled) if settled is not None else None,
+                retried_by=(retried or {}).get(s.id),
             )
             for s in o.sales
         ]

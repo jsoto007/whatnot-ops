@@ -131,10 +131,16 @@ def list_review():
     # Paid on Whatnot with no product yet: the screen hides "Ignore" for these (the server
     # refuses it, `pipeline.must_name`). One query for the page.
     to_pick = orders.to_pick_ids(s.id for s in waiting)
+    # A declined payment whose win was paid on a retry: "They paid after all" is not offered.
+    retried = orders.paid_on_retry(
+        [i.sale for i in items if i.reason == "payment_declined" and i.sale is not None]
+    )
     return jsonify(
         {
             "items": [
-                serializers.review_item(i, context[i.id], spots.get(i.sale_id), to_pick=to_pick)
+                serializers.review_item(
+                    i, context[i.id], spots.get(i.sale_id), to_pick=to_pick, retried=retried
+                )
                 for i in items
             ],
             "total": total,

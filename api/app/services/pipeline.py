@@ -2064,7 +2064,18 @@ def whatnot_failed_order(sale: Sale | None, plans: dict | None = None) -> str | 
 def refuse_restoring(sale: Sale | None) -> None:
     """Raise when a person's "They paid after all" would restore a declined win Whatnot's
     order says failed (`whatnot_failed_order`). A win declined by the stream or by a
-    payment file, with no failed Whatnot order for it, is still restored by hand."""
+    payment file, with no failed Whatnot order for it, is still restored by hand.
+
+    Nor a declined sale whose win the buyer paid in a later Whatnot order that already stands
+    as its own sale here (`orders.paid_on_retry`): marking it paid would count the win twice."""
+    from . import orders
+
+    if sale is not None and sale.id in orders.paid_on_retry([sale]):
+        raise ReviewError(
+            "The buyer paid for this win in a later order on Whatnot, which is already its own "
+            "sale here. Marking this one paid too would count the win twice.",
+            409,
+        )
     number = whatnot_failed_order(sale)
     if number is None:
         return

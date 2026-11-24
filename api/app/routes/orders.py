@@ -151,6 +151,8 @@ def list_orders():
     parcels = _parcels(rows)
     to_pick = orders.to_pick_ids(s.id for o in rows for s in o.sales)
     settled = orders.settled_unnamed_ids([s for o in rows for s in o.sales])
+    # A declined sale whose win was paid on a retry is not shown as declined.
+    retried = orders.paid_on_retry([s for o in rows for s in o.sales]) if with_sales else {}
     return jsonify(
         {
             "orders": [
@@ -161,6 +163,7 @@ def list_orders():
                     parcel=parcels.get(o.id),
                     to_pick=to_pick,
                     settled=settled,
+                    retried=retried,
                 )
                 for o in rows
             ],
@@ -185,6 +188,7 @@ def _one(o: Order) -> dict:
         parcel=_parcels([o]).get(o.id),
         to_pick=orders.to_pick_ids(s.id for s in o.sales),
         settled=orders.settled_unnamed_ids(o.sales),
+        retried=orders.paid_on_retry(o.sales),
     )
 
 
@@ -281,11 +285,14 @@ def buyer_history(username: str):
     reviews = _open_reviews(rows)
     to_pick = orders.to_pick_ids(s.id for o in rows for s in o.sales)
     settled = orders.settled_unnamed_ids([s for o in rows for s in o.sales])
+    retried = orders.paid_on_retry([s for o in rows for s in o.sales])
     return jsonify(
         {
             "buyer": username,
             "orders": [
-                serializers.order(o, reviews=reviews, to_pick=to_pick, settled=settled)
+                serializers.order(
+                    o, reviews=reviews, to_pick=to_pick, settled=settled, retried=retried
+                )
                 for o in rows
             ],
         }

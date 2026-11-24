@@ -21,6 +21,7 @@ from ..models import (
 from ..services import (
     audit,
     jobs,
+    orders,
     picks,
     pipeline,
     ratelimit,
@@ -414,7 +415,10 @@ def sales(show_id: int):
         .order_by(Sale.id)
     ).all()
     chat = sale_chat.around(rows)
-    return jsonify({"sales": [serializers.sale(s, chat[s.id]) for s in rows]})
+    retried = orders.paid_on_retry(rows)  # declined, then paid on a retry: not a decline
+    return jsonify(
+        {"sales": [serializers.sale(s, chat[s.id], retried_by=retried.get(s.id)) for s in rows]}
+    )
 
 
 @bp.get("/<int:show_id>/messages")

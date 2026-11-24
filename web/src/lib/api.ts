@@ -339,6 +339,10 @@ export interface Sale {
   notOurs?: boolean | null
   /** Settled because it left in its buyer's parcel before its product was named. */
   leftUnnamed?: boolean | null
+  /** Declined, then paid in a later Whatnot order: the sale that payment made (the win stands
+   * as that one), so this one is history, never shown as a declined payment. Null where the
+   * server did not look or it was not paid on a retry. */
+  paidOnRetry?: number | null
   statusReason: string | null
   flagged: boolean
   /** Free gifts packed with this lot ("Gift 2" on the order slips); set by a person. */

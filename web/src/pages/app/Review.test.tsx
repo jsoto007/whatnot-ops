@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import type { Product, ReviewItem, Sale, Sku } from '../../lib/api'
@@ -307,4 +307,25 @@ test('a win made before the laptop recorded any chat is not read as "did not pic
   const card = await screen.findByTestId('review-41')
   expect(card).toHaveTextContent('No laptop was recording the chat yet when this lot was won')
   expect(card).not.toHaveTextContent('Did not pick')
+})
+
+test('a declined payment whose win was paid on a retry offers only "Keep declined", and says why', async () => {
+  // Made-up buyer. The first sale is declined; the buyer paid the win in a later order (sale 61).
+  const declined = { id: 60, item: 'CHOOSE ANY PRODUCT YOU WANT #9', status: 'payment_failed', sku: null, paidOnRetry: 61 } as Sale
+  const still = { id: 62, item: 'Red bundle', status: 'payment_failed', sku: { id: 1, code: 'RED', name: '', productName: 'Red bundle' }, paidOnRetry: null } as Sale
+  const posts = mount(
+    [
+      { ...item, reason: 'payment_declined', summary: "made_up_cy's payment was declined for 1 × CHOOSE ANY PRODUCT YOU WANT #9 ($27.00).", sale: declined },
+      { ...item, id: 8, reason: 'payment_declined', summary: "made_up_di's payment was declined for 1 × Red bundle ($25.00).", sale: still },
+    ],
+    '/app/review/3',
+  )
+  const card = await screen.findByTestId('review-7')
+  expect(within(card).getByTestId('paid-on-retry-note')).toHaveTextContent('paid for this win in a later order on Whatnot')
+  expect(within(card).queryByTestId('mark-paid-after-decline')).toBeNull()
+  fireEvent.click(within(card).getByRole('button', { name: 'Keep declined' }))
+  await waitFor(() => expect(posts).toHaveLength(1))
+  expect(posts[0]).toEqual({ url: '/api/review/7/resolve', body: { action: 'dismiss' } })
+  // A decline nobody paid for keeps "They paid after all".
+  expect(within(screen.getByTestId('review-8')).getByTestId('mark-paid-after-decline')).toBeInTheDocument()
 })

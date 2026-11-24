@@ -1065,8 +1065,61 @@ def _flag_declines(show: Show, plan: Plan, show_ids: list[int]) -> None:
                 item.resolution = {"by": by}
                 item.resolved_at = datetime.now(UTC)
     del sales
+    _answer_paid_retries(show_ids)
     _flag_unrecorded(show, plan, show_ids)
     _flag_twin(show, plan)
+
+
+# How an open "payment declined" item is answered when the win was paid on a retry.
+PAID_ON_RETRY = "paid on Whatnot in a later order"
+
+
+def _answer_paid_retries(show_ids: list[int]) -> None:
+    """A declined sale whose win the buyer paid in a later Whatnot order (`orders.
+    paid_on_retry`: the retry stands as its own sale, for example paid more than half an
+    hour after the decline) has its open "payment declined" item answered: nothing is left
+    for a person to chase. And the other way: once that retry no longer stands (Whatnot
+    cancelled it), the item this answered is asked again, as any declined payment is.
+
+    Runs after `review_decline`, so an item opened by this very apply is answered too, and
+    only that kind of item: the "take it out of the package" note of a decline after picking
+    is about a unit, not the money, and stays. Two or three queries a run."""
+    from .. import orders
+
+    found = db.session.execute(
+        select(ReviewItem, Sale)
+        .join(Sale, Sale.id == ReviewItem.sale_id)
+        .where(
+            Sale.show_id.in_(show_ids),
+            Sale.status == SaleStatus.payment_failed,
+            ReviewItem.status.in_((ReviewStatus.open, ReviewStatus.resolved)),
+            ReviewItem.reason == "payment_declined",
+        )
+    ).all()
+    # Open items, and the items this answered before (a person's own answers are left alone).
+    found = [
+        (item, sale)
+        for item, sale in found
+        if item.status is ReviewStatus.open or (item.resolution or {}).get("by") == PAID_ON_RETRY
+    ]
+    if not found:
+        return
+    retried = orders.paid_on_retry([sale for _, sale in found])
+    asking = {sale.id for item, sale in found if item.status is ReviewStatus.open}
+    for item, sale in found:
+        if item.status is ReviewStatus.open and sale.id in retried:
+            item.status = ReviewStatus.resolved
+            item.resolution = {"by": PAID_ON_RETRY, "sale": retried[sale.id]}
+            item.resolved_at = datetime.now(UTC)
+        elif (
+            item.status is ReviewStatus.resolved
+            and sale.id not in retried
+            and sale.id not in asking
+        ):
+            asking.add(sale.id)  # one open question per declined sale
+            item.status = ReviewStatus.open
+            item.resolution = None
+            item.resolved_at = None
 
 
 def _flag_twin(show: Show, plan: Plan) -> None:

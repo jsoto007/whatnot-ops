@@ -189,6 +189,16 @@ commands.
   paid on Whatnot goes back to waiting for its product (`pipeline.await_product`, the
   one allowed step back: no stock was ever held, and never once the buyer's order has
   shipped); with a product it is paid again through `_repay`.
+  **Paid on a retry** (`orders.paid_on_retry`, derived on every read, never stored): a
+  declined sale whose win the same buyer paid in a LATER Whatnot order, in the same Whatnot
+  show, on the same numbered auction lot, with that payment standing as its own sale here (a
+  retry the 30-minute pairing missed, or a second sale an older build recorded), is history,
+  not a decline. The Orders pages, Review and the show's sales list never show it as declined
+  (`paidOnRetry`), applying Whatnot's orders answers its open `payment_declined` item
+  (`_answer_paid_retries`), and "They paid after all" is refused for it
+  (`pipeline.refuse_restoring`: the win would count twice). It moves no money and no stock.
+  The pairing window itself is unchanged; the dashboard's and buyers' decline counts and the
+  Excel sheets still count it (the owner's call).
 - **Paid wins waiting for their product** ("CHOOSE ANY…": the winner picks in chat). Such a
   sale stays `detected` (no stock held, not paid here, its order `open`, picking refused)
   until its product is named; what Whatnot says about its money is derived, never stored.
