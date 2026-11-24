@@ -7,7 +7,7 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from app.db import db
-from app.models import AuditLog, Order, OrderStatus, ReviewItem, Sale, Show
+from app.models import AuditLog, Order, OrderStatus, ReviewItem, Sale, Show, WhatnotOrder
 from app.services import buyers, order_board
 from tests import test_whatnot_orders as wo
 from tests.test_giveaways import give
@@ -310,3 +310,45 @@ def test_hiding_cancelled_orders_never_hides_a_giveaway_that_still_needs_a_perso
     b = found["made_up_cancel"]
     assert b["tab"] == "review" and b["cancelled"] and not b["hideable"]
     assert counts["cancelled"] == 0
+
+
+# ------- Found by Codex on PR 91 (2026-11-24): red before the fix, green after -------
+
+
+def test_an_old_show_stays_listed_while_its_cancelled_order_has_a_question_open(
+    app, client, shop, sign_in
+):
+    order(shop, "made_up_old_cancel", "Red bundle")
+    read(app, shop)
+    apply(app, shop)
+    with app.app_context():
+        show = db.session.get(Show, shop["show"])
+        show.show_date = show.show_date - timedelta(days=90)  # past the board's 60 days
+        o = db.session.scalar(select(Order).where(Order.buyer_username == "made_up_old_cancel"))
+        o.status = OrderStatus.cancelled
+        db.session.commit()
+    sign_in(shop["org"], "manager")
+    listed = lambda: [s["showId"] for s in client.get("/api/orders/board").get_json()["shows"]]  # noqa: E731
+    assert shop["show"] not in listed()  # nothing left to decide: history, like shipped boxes
+    _question(app, shop, "made_up_old_cancel", "payment_declined")
+    assert shop["show"] in listed()
+
+
+def test_a_giveaway_older_than_the_giveaways_list_still_holds_its_buyers_box(
+    app, client, shop, sign_in
+):
+    order(shop, "made_up_paid", "Red bundle")
+    give(shop, buyer="made_up_paid")
+    read(app, shop)
+    apply(app, shop)
+    with app.app_context():  # won 70 days ago, still no product (past "Giveaways to assign")
+        g = db.session.scalar(
+            select(WhatnotOrder).where(WhatnotOrder.transaction_type == "giveaway")
+        )
+        g.ordered_at = g.ordered_at - timedelta(days=70)
+        db.session.commit()
+    sign_in(shop["org"], "manager")
+    assert client.get("/api/giveaways").get_json()["giveaways"] == []  # the list's window
+    found, _ = board(client, shop)
+    assert found["made_up_paid"]["tab"] == "review"
+    assert [g["product"] for g in found["made_up_paid"]["giveaways"]] == [None]

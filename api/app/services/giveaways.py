@@ -250,9 +250,40 @@ def listing(org_id: int) -> dict:
     """ "Giveaways to assign": the recent giveaways of the shows the app follows, the ones
     still waiting for a product first (newest show first), then the ones a person named.
     One Whatnot cancelled is listed only while a product is still on it, to be taken off."""
-    conn = connection.active(org_id)
     since = datetime.now(UTC) - RECENT
-    found = _items(org_id, WhatnotOrder.ordered_at >= since)
+    rows = _rows(org_id, _items(org_id, WhatnotOrder.ordered_at >= since))
+    # Waiting first; inside each group the newest show first, then the order they were won.
+    rows.sort(key=lambda r: (r["product"] is not None, -_day(r["showDate"]), r["wonAt"] or ""))
+    waiting = sum(1 for r in rows if r["product"] is None)
+    return {"giveaways": rows, "waiting": waiting}
+
+
+def of_shows(org_id: int, show_ids: set[int]) -> list[dict]:
+    """The giveaways of these app shows, shaped as `listing` lists them, however old: the
+    Orders page keeps a show with work left on it past `listing`'s window. A giveaway is under
+    the show that prints it (its Whatnot show's first recording), so a second recording asked
+    about gets none of its own. A fixed number of queries per Whatnot show, as `listing`."""
+    if not show_ids:
+        return []
+    whatnot_ids = set(
+        db.session.scalars(
+            select(WhatnotShow.whatnot_id)
+            .join(Show, Show.whatnot_show_id == WhatnotShow.id)
+            .where(Show.organization_id == org_id, Show.id.in_(show_ids))
+        )
+    )
+    if not whatnot_ids:
+        return []
+    rows = _rows(org_id, _items(org_id, WhatnotOrder.whatnot_show_id.in_(whatnot_ids)))
+    return [r for r in rows if r["showId"] in show_ids]
+
+
+def _rows(org_id: int, found: list[tuple[WhatnotOrderItem, WhatnotOrder]]) -> list[dict]:
+    """`listing`'s rows for these giveaway order items: under the show that prints them, with
+    the product a person named. Left out: a show the app does not follow (or that was over
+    before the shop followed Whatnot's orders), an order with no buyer, and one Whatnot
+    cancelled with no product on it."""
+    conn = connection.active(org_id)
     shows: dict[str, Show | None] = {}
 
     def show_of(whatnot_show_id: str | None) -> Show | None:
@@ -301,10 +332,7 @@ def listing(org_id: int) -> dict:
                 ),
             }
         )
-    # Waiting first; inside each group the newest show first, then the order they were won.
-    rows.sort(key=lambda r: (r["product"] is not None, -_day(r["showDate"]), r["wonAt"] or ""))
-    waiting = sum(1 for r in rows if r["product"] is None)
-    return {"giveaways": rows, "waiting": waiting}
+    return rows
 
 
 def _day(iso: str) -> int:

@@ -25,7 +25,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
 from ..db import db
@@ -218,8 +218,9 @@ def _buyers(org_id: int, show_ids: set[int]) -> tuple[dict[int, dict[str, Buyer]
         b.reasons.add(reason)
         if reason in HOLDS:
             b.keys.add(f"r{item_id}")
-    # Whatnot's giveaways, under the show that prints them (a show's first recording).
-    rows = [r for r in giveaways.listing(org_id)["giveaways"] if r["showId"] in show_ids]
+    # Whatnot's giveaways, under the show that prints them (a show's first recording), however
+    # old: a show kept here for its open work keeps its giveaways too.
+    rows = giveaways.of_shows(org_id, show_ids)
     for r in rows:
         b = get(r["showId"], r["buyer"])
         if r["cancelled"]:
@@ -268,8 +269,20 @@ def summary(org_id: int) -> list[dict]:
     show with work left whatever its age, and every show of the last RECENT days. A show with
     nobody in any tab is left out."""
     since = (datetime.now(SHOP_TZ) - RECENT).date()
+    # An order Whatnot cancelled stays work while a question on it is open (a declined card,
+    # "take it out of the package"); with none left it is history and ages out like a shipped box.
+    question_open = (
+        select(ReviewItem.id)
+        .join(Sale, Sale.id == ReviewItem.sale_id)
+        .where(Sale.order_id == Order.id, ReviewItem.status == ReviewStatus.open)
+        .exists()
+    )
     open_work = select(Order.show_id).where(
-        Order.organization_id == org_id, Order.status.in_(OPEN_WORK)
+        Order.organization_id == org_id,
+        or_(
+            Order.status.in_(OPEN_WORK),
+            and_(Order.status == OrderStatus.cancelled, question_open),
+        ),
     )
     shows = db.session.execute(
         select(Show.id, Show.show_date, WhatnotShow.title)

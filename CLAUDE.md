@@ -297,7 +297,9 @@ commands.
   Whatnot decides; a box packed past one is restocked behind the packer's back) and changes no
   order, sale, stock or gate. The tab counts, the per-show list and the slips' `only=pack`
   printout all read `tab_of`; that printout also holds back an unmarked box whose slip fails
-  `order_slips._packable` (a "No Pick" row, a sale Whatnot does not list). The
+  `order_slips._packable` (a "No Pick" row, a sale Whatnot does not list). The page lists the
+  shows of the last 60 days and any older one with work left (a cancelled order counts while a
+  question on it is open), and reads a show's giveaways with no window (`giveaways.of_shows`). The
   copper/silver/gold badge is `buyers.tier_of` (paid and show dates, both; no money on screen).
 - **Giveaways** (`services/giveaways.py`, `/app/orders/giveaways`). A giveaway in
   Whatnot's orders is never a sale: no price, not in any sales count or revenue, untouched
