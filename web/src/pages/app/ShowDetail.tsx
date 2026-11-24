@@ -7,7 +7,7 @@ import { MergeShows } from '../../components/MergeShows'
 import { LiveGaps } from '../../components/LiveGaps'
 import { api, apiGet, money, type ChatMessage, type LiveGap, type ParseStats, type ParsedEvent, type Sale, type SaleChatLine, type SaleMode, type SaleStatus, type Shelf, type Show, type ShowSplit, type ShowTiles, type TopBuyer, type TopSku, type WalkAway, type WhatnotRecap as WhatnotRecapData } from '../../lib/api'
 import { fmtLongDate, fmtShopClock, fmtShopTime, plural } from '../../lib/format'
-import { SALE_MODE_LABEL, lotLabel, saleModeHelp, saleModeLabel, saleStatusLabel } from '../../lib/labels'
+import { SALE_MODE_LABEL, lotLabel, saleLabel, saleModeHelp, saleModeLabel } from '../../lib/labels'
 import { useDebounced } from '../../lib/useDebounced'
 import { Kpis, Tally, TopLists } from './Dashboard'
 import { Reconcile } from './Reconcile'
@@ -425,8 +425,9 @@ const FILTERS: { key: string; label: string; match: (s: Sale) => boolean }[] = [
   { key: 'all', label: 'All', match: () => true },
   { key: 'paid', label: 'Paid', match: (s) => s.status === 'paid' || s.status === 'fulfilled' },
   { key: 'flagged', label: 'Needs a decision', match: (s) => s.flagged || s.status === 'detected' },
-  { key: 'declined', label: 'Payment declined', match: (s) => s.status === 'payment_failed' },
-  { key: 'lost', label: 'Cancelled / declined', match: (s) => s.status === 'cancelled' || s.status === 'payment_failed' },
+  // A decline whose win was paid on a retry is history, not a declined or lost win.
+  { key: 'declined', label: 'Payment declined', match: (s) => s.status === 'payment_failed' && !s.paidOnRetry },
+  { key: 'lost', label: 'Cancelled / declined', match: (s) => s.status === 'cancelled' || (s.status === 'payment_failed' && !s.paidOnRetry) },
 ]
 
 /**
@@ -507,7 +508,7 @@ function SalesTab({ sales, loading }: { sales: Sale[]; loading: boolean }) {
                 <td className="num">{money((s.priceCents ?? 0) * s.quantity)}</td>
                 <td className="muted">{lotLabel(s.auctionType)}</td>
                 <td>
-                  <span className={`status ${s.status}`}>{saleStatusLabel(s.status)}</span>
+                  <span className={`status ${s.paidOnRetry ? 'retried' : s.status}`}>{saleLabel(s)}</span>
                   {s.statusReason && <div className="muted small">{s.statusReason}</div>}
                 </td>
                 <td>

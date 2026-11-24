@@ -9,15 +9,18 @@ import { Icon } from '../../components/Icon'
 import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
 import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleProduct, type SaleStatus, type Show, type ToPick } from '../../lib/api'
 import { SHOP_TZ, fmtDate, fmtLongDate, fmtWhen, plural } from '../../lib/format'
-import { LEFT_UNNAMED_LABEL, NOT_OURS_LABEL, ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, pickStateWords, saleLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
+import { LEFT_UNNAMED_LABEL, NOT_OURS_LABEL, ORDER_NEXT_STEP, PAID_ON_RETRY_LABEL, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, pickStateWords, saleLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
 import { invalidateSales } from '../../lib/invalidate'
 
 const NEXT = ORDER_NEXT_STEP
 
 /** Whatnot charges the winner at the win, so nothing waits for a payment: an order is ready to
  * pick at once. `open` only means an item still needs a person (not recognised); a declined
- * card shows on the order and in its own tab. */
-const declined = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'payment_failed')
+ * card shows on the order and in its own tab, unless the buyer paid the win in a later order
+ * (`paidOnRetry`): that attempt is history, and the win stands as the payment's own sale. */
+const declined = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'payment_failed' && !s.paidOnRetry)
+/** Declined attempts whose win was paid on a retry: said once in the details, never as a decline. */
+const retried = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'payment_failed' && !!s.paidOnRetry)
 /** Lots with no product yet (the order stays open until each one is named). */
 const unnamed = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'detected' && !s.sku)
 /** The ones a person can name from here: a decision is still open on them. */
@@ -481,6 +484,7 @@ function Parcel({ o }: { o: Order }) {
 function Details({ o }: { o: Order }) {
   const unk = unnamed(o)
   const dec = declined(o)
+  const again = retried(o)
   const won = wonAt(o)
   return (
     <div className="order-details-grid">
@@ -498,6 +502,11 @@ function Details({ o }: { o: Order }) {
         {dec.length > 0 && (
           <div className="small">
             <span className="status payment_failed">{saleStatusLabel('payment_failed')}</span> {dec.map((s) => `${s.quantity}× ${s.sku ? s.sku.code : s.item || '?'}`).join(', ')}
+          </div>
+        )}
+        {again.length > 0 && (
+          <div className="small faint" data-testid={`paid-on-retry-${o.buyer}`}>
+            {PAID_ON_RETRY_LABEL}: {again.map((s) => `${s.quantity}× ${s.item || (s.sku ? s.sku.code : '?')}`).join(', ')}
           </div>
         )}
       </div>
@@ -890,7 +899,8 @@ function Ticks({ n }: { n: number }) {
  */
 function PackingSlip({ o }: { o: Order }) {
   const shipping = (o.sales ?? []).filter((s) => !NOT_SHIPPING.includes(s.status))
-  const dropped = (o.sales ?? []).filter((s) => NOT_SHIPPING.includes(s.status))
+  // A declined attempt paid on a retry ships, as the payment's own sale: it is not "dropped".
+  const dropped = (o.sales ?? []).filter((s) => NOT_SHIPPING.includes(s.status) && !s.paidOnRetry)
   const gifts = o.gifts ?? []
   const date = fmtLongDate(o.showDate)
   const count = o.items + gifts.length // the sheet counts gift lines among the items
@@ -956,7 +966,7 @@ function PackingSlip({ o }: { o: Order }) {
       </table>
       {dropped.length > 0 && (
         <p className="muted small no-print">
-          Not shipping: {dropped.map((s) => `${s.sku ? s.sku.productName : s.item} (${s.status === 'payment_failed' ? 'payment declined' : s.status})`).join(', ')}
+          Not shipping: {dropped.map((s) => `${s.sku ? s.sku.productName : s.item} (${saleStatusLabel(s.status)})`).join(', ')}
         </p>
       )}
       {o.notes && (

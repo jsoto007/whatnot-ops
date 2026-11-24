@@ -519,3 +519,36 @@ test('a paid win on a listing that is not one of ours, its question ignored, rea
   expect(within(zed).getByRole('button', { name: 'Start picking' })).toBeInTheDocument()
   expect(within(zed).queryByRole('button', { name: 'Name the product' })).toBeNull()
 })
+
+test('a card declined and then paid on a retry is not a declined payment: the row reads paid, the details say so once', async () => {
+  // Made-up buyer. Whatnot's failed order closed the first sale; its paid retry made the second.
+  const declined = sale({ id: 950, buyer: 'made_up_retry', orderId: 50, item: 'CHOOSE ANY PRODUCT YOU WANT #9', itemTitle: 'CHOOSE ANY PRODUCT YOU WANT', lot: 9, status: 'payment_failed', externalOrderId: 'WN-1', paidOnRetry: 951 })
+  const paid = sale({ id: 951, buyer: 'made_up_retry', orderId: 50, sku: RED, item: 'CHOOSE ANY PRODUCT YOU WANT #9', itemTitle: 'CHOOSE ANY PRODUCT YOU WANT', lot: 9, status: 'paid', externalOrderId: 'WN-2', paidAt: '2026-11-08T03:50:00Z' })
+  const genuine = sale({ id: 952, buyer: 'made_up_still', orderId: 51, sku: RED, item: '$1 BEAUTY PULLS #540', lot: 540, status: 'payment_failed', externalOrderId: 'WN-3', review: { id: 30, reason: 'payment_declined' } })
+  const list = [
+    order({ id: 50, buyer: 'made_up_retry', status: 'paid', verified: true, items: 1, sales: [declined, paid] }),
+    order({ id: 51, buyer: 'made_up_still', status: 'cancelled', items: 0, sales: [genuine] }),
+  ]
+  mount(undefined, '/app/orders?view=all', list)
+  const row = await screen.findByTestId('order-made_up_retry')
+  expect(row).toHaveTextContent('Ready to pick')
+  expect(within(row).queryByTestId('declined-made_up_retry')).toBeNull()
+  expect(row).not.toHaveTextContent('payment declined')
+  expect(within(row).queryByRole('button', { name: 'Resolve decline' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Details for made_up_retry' }))
+  expect(screen.getByTestId('paid-on-retry-made_up_retry')).toHaveTextContent('declined, then paid on a retry: 1× CHOOSE ANY PRODUCT YOU WANT #9')
+  // A decline nobody paid for still reads as one.
+  expect(within(await screen.findByTestId('order-made_up_still')).getByTestId('declined-made_up_still')).toHaveTextContent('payment declined')
+})
+
+test('the Declined tab leaves out a decline that was paid on a retry', async () => {
+  const declined = sale({ id: 960, buyer: 'made_up_retry', orderId: 60, status: 'payment_failed', externalOrderId: 'WN-4', paidOnRetry: 961 })
+  const paid = sale({ id: 961, buyer: 'made_up_retry', orderId: 60, sku: RED, status: 'paid', externalOrderId: 'WN-5', paidAt: '2026-11-08T03:50:00Z' })
+  const genuine = sale({ id: 962, buyer: 'made_up_still', orderId: 61, sku: RED, status: 'payment_failed', externalOrderId: 'WN-6' })
+  mount(undefined, '/app/orders?view=declined', [
+    order({ id: 60, buyer: 'made_up_retry', status: 'paid', verified: true, items: 1, sales: [declined, paid] }),
+    order({ id: 61, buyer: 'made_up_still', status: 'cancelled', items: 0, sales: [genuine] }),
+  ])
+  expect(await screen.findByTestId('order-made_up_still')).toBeInTheDocument()
+  expect(screen.queryByTestId('order-made_up_retry')).toBeNull()
+})

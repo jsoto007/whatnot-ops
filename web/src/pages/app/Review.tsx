@@ -5,7 +5,7 @@ import { Icon } from '../../components/Icon'
 import { SkuPicker } from '../../components/SkuPicker'
 import { api, apiGet, type PickFound, type Product, type ReviewItem, type Sku } from '../../lib/api'
 import { fmtLongDate, plural } from '../../lib/format'
-import { pickWords, reviewSourceLabel } from '../../lib/labels'
+import { PAID_ON_RETRY_WORDS, pickWords, reviewSourceLabel } from '../../lib/labels'
 import { groupByShow, NO_SHOW, reasonKey, type ShowGroup } from '../../lib/reviewGroups'
 import { invalidateSales } from '../../lib/invalidate'
 
@@ -327,7 +327,12 @@ function Item({ item, skus, onDone }: { item: ReviewItem; skus: ReviewSku[]; onD
         )}
         {/* Whatnot lets a declined buyer pay another way until the show ends. "Keep declined"
             leaves the sale closed and the item in stock. */}
-        {item.reason === 'payment_declined' && item.sale?.status === 'payment_failed' && (
+        {item.reason === 'payment_declined' && item.sale?.status === 'payment_failed' && !!item.sale.paidOnRetry && (
+          <p className="small muted" data-testid="paid-on-retry-note">
+            {PAID_ON_RETRY_WORDS}
+          </p>
+        )}
+        {item.reason === 'payment_declined' && item.sale?.status === 'payment_failed' && !item.sale.paidOnRetry && (
           <>
             {/* The win's item was never recognised: say which product it was first. */}
             {!item.sale.sku && (

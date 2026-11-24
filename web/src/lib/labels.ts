@@ -50,9 +50,15 @@ export const NOT_OURS_LABEL = 'Paid on Whatnot · not one of our products'
 /** A sale's state in words: as its status says, or settled with no product (`notOurs`). */
 /** A win that left in its buyer's parcel before anyone named its product. */
 export const LEFT_UNNAMED_LABEL = 'Shipped with no product named · fix the count in Inventory'
-/** A sale's state in words: as its status says, or settled with no product (`leftUnnamed`, `notOurs`). */
-export const saleLabel = (s: { status: string; notOurs?: boolean | null; leftUnnamed?: boolean | null }): string =>
-  s.leftUnnamed ? LEFT_UNNAMED_LABEL : s.notOurs ? NOT_OURS_LABEL : saleStatusLabel(s.status)
+/** A card declined at the win and paid in a later Whatnot order (`paidOnRetry`): the win stands
+ * as the payment's own sale, so this one is history, not a declined payment. */
+export const PAID_ON_RETRY_LABEL = 'declined, then paid on a retry'
+/** Review: why "They paid after all" is not offered for such a decline. */
+export const PAID_ON_RETRY_WORDS = 'The buyer paid for this win in a later order on Whatnot, which is already its own sale here. Nothing is left to chase: keep this one declined.'
+/** A sale's state in words: as its status says, or settled with no product (`leftUnnamed`,
+ * `notOurs`), or a declined attempt whose win was paid on a retry (`paidOnRetry`). */
+export const saleLabel = (s: { status: string; notOurs?: boolean | null; leftUnnamed?: boolean | null; paidOnRetry?: number | null }): string =>
+  s.leftUnnamed ? LEFT_UNNAMED_LABEL : s.notOurs ? NOT_OURS_LABEL : s.status === 'payment_failed' && s.paidOnRetry ? PAID_ON_RETRY_LABEL : saleStatusLabel(s.status)
 
 /** Orders: `paid` means every item is paid, so the order is ready to pick. */
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
