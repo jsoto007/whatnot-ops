@@ -7,42 +7,53 @@ import { ChangeProduct } from '../../components/ChangeProduct'
 import { DeclineDialog } from '../../components/DeclineDialog'
 import { Icon } from '../../components/Icon'
 import { ProductPicker, type PickerTarget } from '../../components/ProductPicker'
-import { ApiError, api, apiGet, money, type Order, type OrderStatus, type PickItem, type Sale, type SaleProduct, type SaleStatus, type Show, type ToPick } from '../../lib/api'
-import { SHOP_TZ, fmtDate, fmtLongDate, fmtWhen, plural } from '../../lib/format'
-import { LEFT_UNNAMED_LABEL, NOT_OURS_LABEL, ORDER_NEXT_STEP, ORDER_STEP_BACK, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, pickStateWords, saleLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
+import { ApiError, api, apiGet, money, type BoardBuyer, type BoardShow, type BoardTab, type BuyerTier, type Giveaway, type Order, type OrderStatus, type PickItem, type Sale, type SaleProduct, type SaleStatus, type ShowBoard, type ToPick } from '../../lib/api'
+import { SHOP_TZ, fmtLongDate, fmtWhen, plural } from '../../lib/format'
+import { BOARD_TAB_LABEL, LEFT_UNNAMED_LABEL, NOT_OURS_LABEL, ORDER_NEXT_STEP, ORDER_STEP_BACK, TIER_LABEL, lotLabel, lotText, orderStatusLabel, packageStatusLabel, parcelStateLabel, pickStateWords, saleLabel, saleStatusLabel, unknownWords } from '../../lib/labels'
 import { invalidateSales } from '../../lib/invalidate'
+import { NameGiveaway } from './Giveaways'
 
 const NEXT = ORDER_NEXT_STEP
 
 /** Whatnot charges the winner at the win, so nothing waits for a payment: an order is ready to
  * pick at once. `open` only means an item still needs a person (not recognised); a declined
- * card shows on the order and in its own tab. */
+ * card shows on the order. */
 const declined = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'payment_failed')
 /** Lots with no product yet (the order stays open until each one is named). */
 const unnamed = (o: Order) => (o.sales ?? []).filter((s) => s.status === 'detected' && !s.sku)
 /** The ones a person can name from here: a decision is still open on them. */
 const unknown = (o: Order) => unnamed(o).filter((s) => s.review?.reason === 'unmatched_item')
-const VIEWS: { key: string; label: string; match: (o: Order) => boolean }[] = [
-  { key: 'queue', label: 'Ready to pick', match: (o) => o.status === 'paid' },
-  { key: 'progress', label: 'In progress', match: (o) => o.status === 'picking' || o.status === 'packed' },
-  { key: 'review', label: 'Needs review', match: (o) => o.status === 'open' },
-  { key: 'declined', label: 'Payment declined', match: (o) => declined(o).length > 0 },
-  { key: 'shipped', label: 'Shipped', match: (o) => o.status === 'shipped' },
-  { key: 'all', label: 'All', match: () => true },
+const TABS: BoardTab[] = ['review', 'pack', 'shipped']
+/** Links made before the three tabs (2026-11-24) land on the tab that now holds those orders. */
+const VIEW_OF: Record<string, BoardTab> = { review: 'review', declined: 'review', all: 'review', pack: 'pack', queue: 'pack', progress: 'pack', shipped: 'shipped' }
+/** Narrow the Shipped tab to where the parcels are, as Whatnot last said. */
+const PARCEL_FILTERS: { key: string; label: string; match: (state: string | null | undefined) => boolean }[] = [
+  { key: '', label: 'All shipped', match: () => true },
+  { key: 'carrier', label: 'Not with the carrier yet', match: (s) => s === 'waiting' || s === 'late' || s === 'nolabel' },
+  { key: 'moving', label: 'On its way', match: (s) => s === 'moving' },
+  { key: 'failed', label: 'Delivery failed', match: (s) => s === 'failed' },
+  { key: 'delivered', label: 'Delivered', match: (s) => s === 'delivered' },
 ]
-/** Narrow the list to where the parcels are, as Whatnot last said. */
-const PARCEL_FILTERS: { key: string; label: string; match: (o: Order) => boolean }[] = [
-  { key: '', label: 'All', match: () => true },
-  { key: 'nolabel', label: 'No label yet', match: (o) => o.parcel?.state === 'nolabel' },
-  { key: 'carrier', label: 'Not with the carrier yet', match: (o) => o.parcel?.state === 'waiting' || o.parcel?.state === 'late' },
-  { key: 'moving', label: 'On its way', match: (o) => o.parcel?.state === 'moving' },
-  { key: 'failed', label: 'Delivery failed', match: (o) => o.parcel?.state === 'failed' },
-  { key: 'delivered', label: 'Delivered', match: (o) => o.parcel?.state === 'delivered' },
-]
-const RANK: Record<OrderStatus, number> = { paid: 0, picking: 1, packed: 2, open: 3, shipped: 4, cancelled: 5 }
 const STANDING: SaleStatus[] = ['reserved', 'paid', 'fulfilled', 'detected']
+/** Whether the Need review tab leaves out orders Whatnot cancelled: kept on this laptop. */
+const HIDE_CANCELLED_KEY = 'wn.ordersHideCancelled'
+const readHide = (): boolean => {
+  try {
+    return localStorage.getItem(HIDE_CANCELLED_KEY) === 'yes'
+  } catch {
+    return false
+  }
+}
+const saveHide = (on: boolean) => {
+  try {
+    localStorage.setItem(HIDE_CANCELLED_KEY, on ? 'yes' : 'no')
+  } catch {
+    /* private window or storage off: the choice lasts for this visit */
+  }
+}
 
 const titleOf = (s: Sale) => (s.sku ? `${s.sku.productName}${s.sku.name ? ' ' + s.sku.name : ''}` : s.itemTitle || s.item || '?')
+const nameOf = (s: { productName: string; name: string }) => `${s.productName} ${s.name}`.trim()
 /** A change to one sale's products: change one (which, when it holds several), or add one. */
 interface ProductChange {
   sale: Sale
@@ -61,27 +72,36 @@ function wonAt(o: Order): number {
   return Math.max(0, ...(o.sales ?? []).map((s) => (s.wonAt ? Date.parse(s.wonAt) : s.paidAt ? Date.parse(s.paidAt) : 0)))
 }
 
+/** What the page's dialogs act on: the row that opened them passes what it knows. */
+interface Acts {
+  onPick: (sale: Sale, similar: Sale[], applyToSimilar?: boolean) => void
+  onDecline: (sale: Sale) => void
+  onChange: (c: ProductChange) => void
+  onGiveaway: (g: Giveaway) => void
+  onDone: (msg: string) => void | Promise<void>
+}
+
+/**
+ * Orders, one show at a time, in three tabs: Need review (something waits on a person), Ready
+ * to pack (print the pick list and the labels) and Shipped (where each parcel is). A buyer's
+ * wins and Whatnot giveaways of one show are one row: one box, one label. The server places
+ * each buyer (`services/order_board.py`); new and returning buyers share the list, each with
+ * a small badge for how much and how often they buy.
+ */
 export function Orders() {
-  const { can } = useAuth()
   const qc = useQueryClient()
   const [params, setParams] = useSearchParams()
-  const view = params.get('view') ?? 'queue'
   const showId = params.get('show') ?? ''
   const [find, setFind] = useState('')
+  const [hideCancelled, setHideCancelled] = useState(readHide)
   const [picking, setPicking] = useState<PickerTarget | null>(null)
   const [decline, setDecline] = useState<Sale | null>(null)
   const [changing, setChanging] = useState<ProductChange | null>(null)
+  const [naming, setNaming] = useState<Giveaway | null>(null)
   const [toast, setToast] = useState<string | null>(null)
-  // Orders whose details are open under their row (the show page's chat rows work the same way).
-  const [open, setOpen] = useState<ReadonlySet<number>>(() => new Set())
-  const toggle = (id: number) =>
-    setOpen((was) => {
-      const next = new Set(was)
-      if (!next.delete(id)) next.add(id)
-      return next
-    })
-  const shows = useQuery({ queryKey: ['shows'], queryFn: () => apiGet<{ shows: Show[] }>('/api/shows') })
-  const all = useQuery({ queryKey: ['orders', 'every', showId], queryFn: () => apiGet<{ orders: Order[]; truncated?: boolean }>(`/api/orders${showId ? '?show=' + showId : ''}`) })
+  // Shows opened or closed by hand; the rest follow the default (the newest one open).
+  const [opened, setOpened] = useState<Record<number, boolean>>({})
+  const board = useQuery({ queryKey: ['orders', 'board'], queryFn: () => apiGet<{ shows: BoardShow[] }>('/api/orders/board') })
   useEffect(() => {
     if (!toast) return
     const t = setTimeout(() => setToast(null), 4000)
@@ -95,53 +115,37 @@ export function Orders() {
     }
     setParams(next)
   }
-  const orders = useMemo(() => (all.data?.orders ?? []).slice().sort((a, b) => RANK[a.status] - RANK[b.status] || wonAt(a) - wonAt(b) || a.id - b.id), [all.data])
-  const current = VIEWS.find((v) => v.key === view) ?? VIEWS[0]!
+  const shows = board.data?.shows ?? []
+  const count = (s: BoardShow, t: BoardTab) => (t === 'review' && hideCancelled ? s.review - s.cancelled : s[t])
+  const inShow = shows.filter((s) => !showId || String(s.showId) === showId)
+  const total = (t: BoardTab) => inShow.reduce((a, s) => a + count(s, t), 0)
+  // With no tab asked for, the first one with someone in it (work first: Need review).
+  const tab: BoardTab = VIEW_OF[params.get('view') ?? ''] ?? TABS.find((t) => total(t) > 0) ?? 'review'
+  const listed = shows.filter((s) => (!showId || String(s.showId) === showId) && count(s, tab) > 0)
+  const cancelled = inShow.reduce((n, s) => n + s.cancelled, 0)
   const deferredFind = useDeferredValue(find)
   const needle = deferredFind.trim().toLowerCase()
-  const inView = orders.filter(current.match)
-  // Any tab can be narrowed to where the parcels are; the chips only show once Whatnot says where any is.
-  const tracked = inView.some((o) => o.parcel)
-  const parcelFilter = (tracked && PARCEL_FILTERS.find((f) => f.key === (params.get('parcel') ?? ''))) || PARCEL_FILTERS[0]!
-  const visible = inView.filter(parcelFilter.match).filter((o) => !needle || o.buyer.toLowerCase().includes(needle))
-  // "Print ready slips": every order that is ready to pick, by show (the slips are a per-show document).
-  const readyByShow = useMemo(() => {
-    const m = new Map<number, { showDate: string; n: number }>()
-    for (const o of orders) if (o.status === 'paid') m.set(o.showId, { showDate: o.showDate, n: (m.get(o.showId)?.n ?? 0) + 1 })
-    return m
-  }, [orders])
+  const parcel = PARCEL_FILTERS.find((f) => f.key === (params.get('parcel') ?? '')) ?? PARCEL_FILTERS[0]!
+  const isOpen = (s: BoardShow, i: number) => opened[s.showId] ?? (i === 0 || !!showId || !!needle)
 
-  // Lots nobody has named yet, grouped by show and title: "$1 BEAUTY PULLS #520" and "#521" are one group.
-  // Never a lot whose title says the winner chooses ("CHOOSE ANY…"): every one is another product.
-  const { groups, biggest } = useMemo(() => {
-    const g = new Map<string, Sale[]>()
-    for (const o of orders)
-      for (const s of unknown(o)) {
-        if (s.choiceTitle) continue
-        const key = groupKey(s)
-        if (!key) continue
-        const list = g.get(key)
-        if (list) list.push(s)
-        else g.set(key, [s])
-      }
-    return { groups: g, biggest: [...g.values()].sort((a, b) => b.length - a.length)[0] }
-  }, [orders])
-  const stuck = biggest && biggest.length > 1 && can('review.act') ? biggest : null
-  const stuckOrders = stuck ? new Set(stuck.map((s) => s.orderId)).size : 0
-
-  const openPicker = (sale: Sale, applyToSimilar = false) => {
-    if (!sale.review) return
-    const key = groupKey(sale)
-    const similar = (key ? (groups.get(key) ?? []) : []).filter((s) => s.id !== sale.id)
-    setPicking({ sale, buyer: sale.buyer, showDate: sale.showDate, reviewId: sale.review.id, similar, applyToSimilar })
-  }
   /** The dialog stays up until the list has refetched, so no button can act on a lot just settled. */
   const done = async (msg: string) => {
     await invalidateSales(qc)
     setPicking(null)
     setDecline(null)
     setChanging(null)
+    setNaming(null)
     setToast(msg)
+  }
+  const acts: Acts = {
+    onPick: (sale, similar, applyToSimilar = false) => {
+      if (!sale.review) return
+      setPicking({ sale, buyer: sale.buyer, showDate: sale.showDate, reviewId: sale.review.id, similar, applyToSimilar })
+    },
+    onDecline: setDecline,
+    onChange: setChanging,
+    onGiveaway: setNaming,
+    onDone: done,
   }
 
   return (
@@ -149,44 +153,29 @@ export function Orders() {
       <div className="page-head">
         <div>
           <h2>Orders</h2>
-          <div className="sub">One order per buyer per show. Whatnot charges the winner at the win, so orders are ready to pick right away; the oldest win is first.</div>
+          <div className="sub">One box per buyer per show: every win and giveaway of the show together, one label. Whatnot decides what was sold, paid and cancelled.</div>
         </div>
         <div className="head-actions">
           <select className="show-select" value={showId} onChange={(e) => set({ show: e.target.value })} aria-label="Show">
             <option value="">All shows</option>
-            {shows.data?.shows.map((s) => (
-              <option key={s.id} value={s.id}>
-                {fmtLongDate(s.date)}
+            {shows.map((s) => (
+              <option key={s.showId} value={s.showId}>
+                {fmtLongDate(s.showDate)}
+                {s.title ? ` · ${s.title}` : ''}
               </option>
             ))}
           </select>
-          {showId && (
-            <>
-              <Link className="btn ghost" to={`/app/orders/slips/${showId}`}>
-                <Icon name="print" size={16} />
-                Order slips
-              </Link>
-              <Link className="btn ghost" to={`/app/orders/pick-list/${showId}`}>
-                <Icon name="clipboard" size={16} />
-                Pick list
-              </Link>
-              <Link className="btn ghost" to={`/app/orders/shipping/${showId}`} data-testid="shipping-link">
-                Shipping
-              </Link>
-            </>
-          )}
           <GiveawaysLink />
-          <PrintReady byShow={readyByShow} />
         </div>
       </div>
       <div className="toolbar">
         <div className="tabs" role="tablist" style={{ marginBottom: 0, borderBottom: 0 }}>
-          {VIEWS.map((v) => {
-            const n = orders.filter(v.match).length
+          {TABS.map((t) => {
+            const n = total(t)
             return (
-              <button key={v.key} role="tab" aria-selected={view === v.key} className={(view === v.key ? 'active' : '') + (n === 0 && v.key !== 'all' ? ' zero' : '')} onClick={() => set({ view: v.key })}>
-                {v.label}
-                {v.key !== 'all' ? <span className="tab-count">{n}</span> : null}
+              <button key={t} role="tab" aria-selected={tab === t} className={(tab === t ? 'active' : '') + (n === 0 ? ' zero' : '')} onClick={() => set({ view: t, parcel: '' })} data-testid={`tab-${t}`}>
+                {BOARD_TAB_LABEL[t]}
+                <span className="tab-count">{n}</span>
               </button>
             )
           })}
@@ -196,140 +185,389 @@ export function Orders() {
           <input type="search" value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a buyer" aria-label="Find a buyer" />
         </label>
       </div>
-      {tracked && (
-        <div className="parcel-filters" role="group" aria-label="Where the parcels are" data-testid="parcel-filters">
-          {PARCEL_FILTERS.map((f) => {
-            const n = inView.filter(f.match).length
-            if (f.key && n === 0 && parcelFilter.key !== f.key) return null
-            const label = !f.key && view === 'shipped' ? 'All shipped' : f.label
-            return (
-              <button key={f.key} type="button" className={'chip-btn' + (parcelFilter.key === f.key ? ' on' : '')} aria-pressed={parcelFilter.key === f.key} onClick={() => set({ parcel: f.key })}>
-                {label} <span className="tab-count">{n}</span>
-              </button>
-            )
-          })}
+      {tab === 'review' && cancelled > 0 && (
+        <div className="parcel-filters" role="group" aria-label="Cancelled orders">
+          <button
+            type="button"
+            className={'chip-btn' + (hideCancelled ? ' on' : '')}
+            aria-pressed={hideCancelled}
+            onClick={() => {
+              saveHide(!hideCancelled)
+              setHideCancelled(!hideCancelled)
+            }}
+            data-testid="hide-cancelled"
+          >
+            Hide cancelled orders <span className="tab-count">{cancelled}</span>
+          </button>
         </div>
       )}
-      {all.data?.truncated && (
-        <p className="muted small" role="status" data-testid="orders-truncated">
-          Showing the newest {all.data.orders.length} orders. Older ones are left out: pick a show above to see all of its orders.
-        </p>
-      )}
-      {stuck && (
-        <section className="banner" aria-label="Orders waiting on one unknown item" data-testid="stuck-banner">
-          <div className="banner-main">
-            <span className="banner-icon" aria-hidden>
-              <Icon name="help" size={20} />
-            </span>
-            <div>
-              <b>
-                {plural(stuckOrders, 'order is', 'orders are')} waiting on one item the shop does not know yet.
-              </b>
-              <div className="small">
-                The chat called it “{stuck[0]!.itemTitle} #…”. Name the product once and every one of these lots is settled.
-              </div>
-            </div>
-          </div>
-          <div className="btns">
-            <button type="button" className="btn" onClick={() => set({ view: 'review', show: String(stuck[0]!.showId) })}>
-              See them
+      {tab === 'shipped' && (
+        <div className="parcel-filters" role="group" aria-label="Where the parcels are" data-testid="parcel-filters">
+          {PARCEL_FILTERS.map((f) => (
+            <button key={f.key} type="button" className={'chip-btn' + (parcel.key === f.key ? ' on' : '')} aria-pressed={parcel.key === f.key} onClick={() => set({ parcel: f.key })}>
+              {f.label}
             </button>
-            <button type="button" className="btn primary" onClick={() => openPicker(stuck[0]!, true)} data-testid="name-it-once">
-              Name it once
-            </button>
-          </div>
-        </section>
+          ))}
+        </div>
       )}
-      {all.isPending ? (
+      {board.isPending ? (
         <p className="muted">Loading…</p>
-      ) : all.isError ? (
+      ) : board.isError ? (
         <p className="form-error">Could not load orders.</p>
-      ) : visible.length === 0 ? (
+      ) : listed.length === 0 ? (
         <div className="empty">
-          <b>{needle ? 'No buyer by that name here' : view === 'queue' ? 'Nothing to pick' : view === 'review' ? 'Nothing needs review' : view === 'declined' ? 'No declined payments' : 'No orders here'}</b>
-          {needle ? '' : view === 'queue' ? 'Orders arrive here as soon as a buyer wins.' : view === 'declined' ? 'A card Whatnot declines after a win shows here. The item goes back in stock unless picking had started.' : ''}
+          <b>{tab === 'review' ? 'Nothing needs review' : tab === 'pack' ? 'Nothing to pack' : 'Nothing shipped yet'}</b>
+          {tab === 'review' ? 'A win with no product, a declined card, a giveaway with no product or a cancelled order shows here.' : tab === 'pack' ? 'A buyer is ready to pack once nothing of theirs waits for a person.' : ''}
         </div>
       ) : (
-        <div className="card flush">
-          <table className="table" data-testid="orders">
-            <thead>
-              <tr>
-                <th>Buyer</th>
-                <th>Items</th>
-                <th className="num">Total</th>
-                <th className="col-show">Show</th>
-                <th>Status</th>
-                <th>
-                  <span className="sr-only">Next step</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((o) => (
-                <Fragment key={o.id}>
-                <tr data-testid={`order-${o.buyer}`} className={open.has(o.id) ? 'is-open' : undefined}>
-                  <td className="c-buyer">
-                    <button
-                      type="button"
-                      className="disclose"
-                      aria-expanded={open.has(o.id)}
-                      aria-controls={`details-${o.id}`}
-                      aria-label={`Details for ${o.buyer}`}
-                      onClick={() => toggle(o.id)}
-                      data-testid={`details-toggle-${o.buyer}`}
-                    >
-                      <Icon name="chevron" size={16} />
-                    </button>
-                    <Link to={`/app/orders/${o.id}`} className="buyer" title={o.buyer}>
-                      {o.buyer}
-                    </Link>
-                    <BuyerFlagChip name={o.buyer} />
-                    <span className="show-inline">{fmtDate(o.showDate)}</span>
-                  </td>
-                  <td className="c-items">
-                    <Items o={o} compact />
-                  </td>
-                  <td className="num c-total">
-                    <b>{money(o.totalCents)}</b>
-                  </td>
-                  <td className="muted col-show">{fmtDate(o.showDate)}</td>
-                  <td className="c-status">
-                    <Status o={o} />
-                  </td>
-                  <td className="c-action">
-                    <Actions o={o} onPick={openPicker} onDecline={setDecline} onChange={setChanging} onRemoved={done} />
-                  </td>
-                </tr>
-                {open.has(o.id) && (
-                  <tr className="order-details" id={`details-${o.id}`} data-testid={`details-${o.buyer}`}>
-                    <td colSpan={6}>
-                      <Details o={o} />
-                    </td>
-                  </tr>
-                )}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {!all.isPending && !all.isError && visible.length > 0 && (
-        <div className="small faint foot">
-          <span>
-            {plural(visible.length, 'order', 'orders')}
-            {visible.length !== orders.length ? ` of ${orders.length}` : ''} · oldest win first
-          </span>
-        </div>
+        listed.map((s, i) => (
+          <ShowBlock
+            key={s.showId}
+            show={s}
+            tab={tab}
+            open={isOpen(s, i)}
+            onToggle={() => setOpened((was) => ({ ...was, [s.showId]: !isOpen(s, i) }))}
+            count={count(s, tab)}
+            needle={needle}
+            hideCancelled={hideCancelled}
+            parcel={parcel.match}
+            acts={acts}
+          />
+        ))
       )}
       {picking && <ProductPicker target={picking} onClose={() => setPicking(null)} onDone={done} />}
       {changing && <ChangeProduct sale={changing.sale} buyer={changing.sale.buyer} showDate={changing.sale.showDate} product={changing.product} add={changing.add} onClose={() => setChanging(null)} onDone={done} />}
       {decline && decline.review && <DeclineDialog sale={decline} buyer={decline.buyer} showDate={decline.showDate} reviewId={decline.review.id} onClose={() => setDecline(null)} onDone={done} />}
+      {naming && <NameGiveaway giveaway={naming} onClose={() => setNaming(null)} onDone={done} />}
       {toast && (
         <div className="toast" role="status">
           {toast}
         </div>
       )}
     </section>
+  )
+}
+
+/** One show in the current tab: its heading (open or closed), and once open its buyers. The
+ *  buyers are read only while the show is open: each show is one costly read. */
+function ShowBlock({ show, tab, open, onToggle, count, needle, hideCancelled, parcel, acts }: { show: BoardShow; tab: BoardTab; open: boolean; onToggle: () => void; count: number; needle: string; hideCancelled: boolean; parcel: (state: string | null | undefined) => boolean; acts: Acts }) {
+  const { can } = useAuth()
+  const q = useQuery({ queryKey: ['orders', 'board', show.showId], queryFn: () => apiGet<ShowBoard>(`/api/orders/shows/${show.showId}/board`), enabled: open })
+  const id = `show-${show.showId}-${tab}`
+  const everyone = q.data?.buyers ?? []
+  const rows = everyone
+    .filter((b) => b.tab === tab)
+    .filter((b) => !(tab === 'review' && hideCancelled && b.hideable))
+    .filter((b) => tab !== 'shipped' || parcel(b.order?.parcel?.state ?? b.parcel))
+    .filter((b) => !needle || b.username.toLowerCase().includes(needle))
+    // Buyers who bought come first; those who won only a giveaway after them, marked as such.
+    .sort((a, b) => Number(a.giveawayOnly) - Number(b.giveawayOnly) || (a.order ? wonAt(a.order) : 0) - (b.order ? wonAt(b.order) : 0) || a.username.localeCompare(b.username))
+  // Lots nobody has named yet, grouped by title: "$1 BEAUTY PULLS #520" and "#521" are one group.
+  // Never a lot whose title says the winner chooses ("CHOOSE ANY…"): every one is another product.
+  const groups = useMemo(() => {
+    const g = new Map<string, Sale[]>()
+    for (const b of everyone)
+      for (const s of b.order ? unknown(b.order) : []) {
+        if (s.choiceTitle) continue
+        const key = groupKey(s)
+        if (!key) continue
+        const list = g.get(key)
+        if (list) list.push(s)
+        else g.set(key, [s])
+      }
+    // Oldest win first: "Name it once" names that lot and the rest follow.
+    const when = (s: Sale) => (s.wonAt ? Date.parse(s.wonAt) : 0)
+    for (const list of g.values()) list.sort((a, b) => when(a) - when(b) || a.id - b.id)
+    return g
+  }, [everyone])
+  const similar = (sale: Sale) => {
+    const key = groupKey(sale)
+    return (key ? (groups.get(key) ?? []) : []).filter((s) => s.id !== sale.id)
+  }
+  const biggest = [...groups.values()].sort((a, b) => b.length - a.length)[0]
+  const stuck = tab === 'review' && biggest && biggest.length > 1 && can('review.act') ? biggest : null
+  const firstGiftOnly = rows.findIndex((b) => b.giveawayOnly)
+  return (
+    <section className="show-block" aria-label={`Show of ${fmtLongDate(show.showDate)}`} data-testid={`show-${show.showId}`}>
+      <div className="show-block-head">
+        <button type="button" className="show-block-toggle" aria-expanded={open} aria-controls={id} onClick={onToggle}>
+          <Icon name="chevron" size={16} />
+          <b>{fmtLongDate(show.showDate)}</b>
+          {show.title && <span className="muted show-title">{show.title}</span>}
+          <span className="tab-count">{plural(count, 'buyer', 'buyers')}</span>
+        </button>
+        {tab === 'pack' && (
+          <div className="btns">
+            <Link className="btn primary small" to={`/app/orders/slips/${show.showId}?only=pack`} data-testid={`print-pick-list-${show.showId}`}>
+              <Icon name="print" size={16} />
+              Print pick list
+            </Link>
+            <Link className="btn small" to={`/app/orders/shipping/${show.showId}`} data-testid={`labels-${show.showId}`}>
+              <Icon name="truck" size={16} />
+              Shipping labels
+            </Link>
+            <Link className="btn small ghost" to={`/app/orders/pick-list/${show.showId}`} title="How many of each product to pull for this show">
+              <Icon name="clipboard" size={16} />
+              Products to pull
+            </Link>
+          </div>
+        )}
+      </div>
+      {open && (
+        <div id={id}>
+          {stuck && <StuckBanner stuck={stuck} onName={() => acts.onPick(stuck[0]!, similar(stuck[0]!), true)} />}
+          {q.isPending ? (
+            <p className="muted small">Loading…</p>
+          ) : q.isError ? (
+            <p className="form-error">Could not load this show’s orders.</p>
+          ) : rows.length === 0 ? (
+            <p className="muted small">{needle ? 'No buyer by that name in this show.' : 'Nobody left here.'}</p>
+          ) : (
+            <div className="card flush">
+              <table className="table" data-testid="orders">
+                <thead>
+                  <tr>
+                    <th>Buyer</th>
+                    <th>Items</th>
+                    <th className="num">Total</th>
+                    <th>Status</th>
+                    <th>
+                      <span className="sr-only">Next step</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((b, i) => (
+                    <Fragment key={b.username}>
+                      {i === firstGiftOnly && (
+                        <tr className="group-row">
+                          <td colSpan={5}>Won a giveaway, bought nothing</td>
+                        </tr>
+                      )}
+                      <BuyerRow b={b} showId={show.showId} tab={tab} similar={similar} acts={acts} />
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+/** Several orders wait on one item the shop does not know yet: name it once for every lot. */
+function StuckBanner({ stuck, onName }: { stuck: Sale[]; onName: () => void }) {
+  const n = new Set(stuck.map((s) => s.orderId)).size
+  return (
+    <section className="banner" aria-label="Orders waiting on one unknown item" data-testid="stuck-banner">
+      <div className="banner-main">
+        <span className="banner-icon" aria-hidden>
+          <Icon name="help" size={20} />
+        </span>
+        <div>
+          <b>{plural(n, 'order is', 'orders are')} waiting on one item the shop does not know yet.</b>
+          <div className="small">The chat called it “{stuck[0]!.itemTitle} #…”. Name the product once and every one of these lots is settled.</div>
+        </div>
+      </div>
+      <div className="btns">
+        <button type="button" className="btn primary" onClick={onName} data-testid="name-it-once">
+          Name it once
+        </button>
+      </div>
+    </section>
+  )
+}
+
+/** The small badge beside a buyer's name: copper, silver or gold for how much and how often they
+ *  buy (both), or "new" on their first show. Never printed. */
+function TierBadge({ tier, shows, bought }: { tier: BuyerTier | null; shows: number; bought: boolean }) {
+  if (tier)
+    return (
+      <span className={`tier ${tier}`} title={`${TIER_LABEL[tier]} · ${plural(shows, 'show', 'shows')}`} data-testid={`tier-${tier}`}>
+        <span className="sr-only">{TIER_LABEL[tier]}</span>
+      </span>
+    )
+  if (bought && shows <= 1)
+    return (
+      <span className="tier-new" title="Their first show with the shop">
+        new
+      </span>
+    )
+  return null
+}
+
+/** Whatnot's giveaways for the buyer in this show, beside their wins: marked "Giveaway" in its own
+ *  colour, with the product a person named, or that it still needs one. */
+function GiveawayLines({ list }: { list: Giveaway[] }) {
+  if (!list.length) return null
+  return (
+    <div className="item-lines">
+      {list.map((g) => (
+        <div key={g.id} className="item-line giveaway-line" data-testid={`giveaway-line-${g.id}`}>
+          <div className="item-title">
+            <span className="pill giveaway">
+              <Icon name="gift" size={12} /> Giveaway
+            </span>{' '}
+            <b>{g.quantity} ×</b> {g.product ? nameOf(g.product) : <span className="unknown">needs a product</span>}
+          </div>
+          {g.cancelled && <div className="small muted">Whatnot cancelled it: take the product off to put it back in stock.</div>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** One buyer of one show: every win (their order) and every giveaway, one box. */
+function BuyerRow({ b, showId, tab, similar, acts }: { b: BoardBuyer; showId: number; tab: BoardTab; similar: (s: Sale) => Sale[]; acts: Acts }) {
+  const { can } = useAuth()
+  const [open, setOpen] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const o = b.order
+  const canReview = can('review.act')
+  const waiting = b.giveaways.find((g) => !g.product && !g.cancelled)
+  const slip = `/app/orders/slips/${showId}?buyer=${encodeURIComponent(b.username)}`
+  const mark = async (ready: boolean) => {
+    setError(null)
+    try {
+      await api('POST', `/api/orders/shows/${showId}/ready`, { buyer: b.username, ready })
+      await acts.onDone(ready ? `${b.username}'s box is marked ready to pack.` : `${b.username} is back in Need review.`)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not save that. Try again.')
+    }
+  }
+  const takeOff = async (g: Giveaway) => {
+    setError(null)
+    try {
+      await api('DELETE', `/api/giveaways/${g.id}/product`)
+      await acts.onDone(`${g.product ? nameOf(g.product) : 'The product'} is off ${b.username}'s giveaway and back in stock.`)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not save that. Try again.')
+    }
+  }
+  // What this buyer's row adds to the order's own menu: giveaways, the manager's mark, the slip.
+  const extra: ReactNode[] = []
+  if (canReview)
+    for (const g of b.giveaways) {
+      if (!g.cancelled)
+        extra.push(
+          <button key={`gv-${g.id}`} type="button" role="menuitem" onClick={() => acts.onGiveaway(g)} data-testid={`name-giveaway-${g.id}`}>
+            <Icon name="gift" size={16} />
+            {g.product ? 'Change the giveaway’s product' : 'Name the giveaway’s product'}
+          </button>,
+        )
+      if (g.product)
+        extra.push(
+          <button key={`gv-off-${g.id}`} type="button" role="menuitem" onClick={() => void takeOff(g)}>
+            <Icon name="minus" size={16} />
+            Take the product off the giveaway
+          </button>,
+        )
+    }
+  if (canReview && b.mayMarkReady)
+    extra.push(
+      <button key="ready" type="button" role="menuitem" onClick={() => void mark(true)} data-testid={`mark-ready-${b.username}`}>
+        <Icon name="check" size={16} />
+        Mark ready to pack
+      </button>,
+    )
+  if (canReview && b.readyMarked && b.tab === 'pack')
+    extra.push(
+      <button key="unready" type="button" role="menuitem" onClick={() => void mark(false)} data-testid={`unmark-ready-${b.username}`}>
+        <Icon name="undo" size={16} />
+        Back to Need review
+      </button>,
+    )
+  extra.push(
+    <Link key="slip" role="menuitem" to={slip}>
+      <Icon name="print" size={16} />
+      Print this buyer’s slip
+    </Link>,
+  )
+  // A giveaway with no product is the row's one verb when the order itself has none.
+  const lead =
+    tab === 'review' && waiting && canReview ? (
+      <button type="button" className="btn small tinted" onClick={() => acts.onGiveaway(waiting)} data-testid="name-giveaway">
+        Name the giveaway
+      </button>
+    ) : tab === 'pack' ? (
+      <Link className="btn small ghost" to={slip} data-testid={`print-slip-${b.username}`} aria-label={`Print ${b.username}'s slip`}>
+        <Icon name="print" size={16} />
+        Slip
+      </Link>
+    ) : null
+  return (
+    <>
+      <tr data-testid={`order-${b.username}`} className={(open ? 'is-open' : '') + (b.giveawayOnly ? ' gift-only' : '') || undefined}>
+        <td className="c-buyer">
+          {o && (
+            <button type="button" className="disclose" aria-expanded={open} aria-controls={`details-${o.id}`} aria-label={`Details for ${b.username}`} onClick={() => setOpen((v) => !v)} data-testid={`details-toggle-${b.username}`}>
+              <Icon name="chevron" size={16} />
+            </button>
+          )}
+          {o ? (
+            <Link to={`/app/orders/${o.id}`} className="buyer" title={b.username}>
+              {b.username}
+            </Link>
+          ) : (
+            <span className="buyer" title={b.username}>
+              {b.username}
+            </span>
+          )}
+          <TierBadge tier={b.tier} shows={b.shows} bought={!!o} />
+          <BuyerFlagChip name={b.username} />
+        </td>
+        <td className="c-items">
+          {o && <Items o={o} compact />}
+          <GiveawayLines list={b.giveaways} />
+        </td>
+        <td className="num c-total">{o ? <b>{money(o.totalCents)}</b> : <span className="muted small">no charge</span>}</td>
+        <td className="c-status">
+          {o ? (
+            <Status o={o} />
+          ) : (
+            <>
+              <div className="status-line">
+                <span className="pill giveaway">Giveaway only</span>
+              </div>
+              <div className="signals">
+                {waiting ? <span className="small unknown">needs a product</span> : null}
+                {b.parcel && <ParcelPill state={b.parcel} />}
+              </div>
+            </>
+          )}
+          {b.readyMarked && (
+            <div className="small sub muted" data-testid={`marked-ready-${b.username}`}>
+              marked ready to pack by a manager
+            </div>
+          )}
+          {b.cancelled && (
+            <div className="small sub muted" data-testid={`cancelled-${b.username}`}>
+              cancelled on Whatnot
+            </div>
+          )}
+        </td>
+        <td className="c-action">
+          {o ? (
+            <Actions o={o} onPick={(s) => acts.onPick(s, similar(s))} onDecline={acts.onDecline} onChange={acts.onChange} onRemoved={acts.onDone} lead={lead} extra={extra} held={tab === 'review'} />
+          ) : (
+            <div className="acts">
+              {lead}
+              <Menu label={`More for ${b.username}`}>{extra}</Menu>
+            </div>
+          )}
+          {error && <div className="form-error small">{error}</div>}
+        </td>
+      </tr>
+      {o && open && (
+        <tr className="order-details" id={`details-${o.id}`} data-testid={`details-${b.username}`}>
+          <td colSpan={5}>
+            <Details o={o} />
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 
@@ -512,8 +750,11 @@ function Details({ o }: { o: Order }) {
   )
 }
 
-/** One verb for the order's next step, and a menu for the rest. */
-function Actions({ o, onPick, onDecline, onChange, onRemoved }: { o: Order; onPick: (sale: Sale) => void; onDecline: (sale: Sale) => void; onChange: (c: ProductChange) => void; onRemoved: (msg: string) => void | Promise<void> }) {
+/** One verb for the order's next step, and a menu for the rest. `lead`: the row's own verb, shown
+ *  when the order has none (a giveaway to name, the slip to print); `extra`: the row's own menu
+ *  entries (giveaways, the manager's mark, the slip). `held`: the box waits in Need review, so
+ *  its fulfilment step is not offered (the menu keeps the step back). */
+function Actions({ o, onPick, onDecline, onChange, onRemoved, lead = null, extra = [], held = false }: { o: Order; onPick: (sale: Sale) => void; onDecline: (sale: Sale) => void; onChange: (c: ProductChange) => void; onRemoved: (msg: string) => void | Promise<void>; lead?: ReactNode; extra?: ReactNode[]; held?: boolean }) {
   const { can } = useAuth()
   const qc = useQueryClient()
   const [error, setError] = useState<string | null>(null)
@@ -538,7 +779,7 @@ function Actions({ o, onPick, onDecline, onChange, onRemoved }: { o: Order; onPi
         Name the product
       </button>
     )
-  } else if (next && canFulfil) {
+  } else if (next && canFulfil && !held) {
     primary = (
       <button type="button" className="btn small tinted" onClick={() => move.mutate(next.to)} disabled={move.isPending}>
         {next.label}
@@ -643,58 +884,16 @@ function Actions({ o, onPick, onDecline, onChange, onRemoved }: { o: Order; onPi
         {back.label}
       </button>,
     )
+  more.splice(1, 0, ...extra)
   return (
     <>
       <div className="acts">
         {primary}
+        {lead}
         <Menu label={`More for ${o.buyer}`}>{more}</Menu>
       </div>
       {error && <div className="form-error small">{error}</div>}
     </>
-  )
-}
-
-/** Opens the show's order slips for the orders that are ready to pick, ready to print. The slips
- * are a per-show document, so with ready orders in several shows the button lists each show. */
-function PrintReady({ byShow }: { byShow: Map<number, { showDate: string; n: number }> }) {
-  const shows = [...byShow.entries()].sort((a, b) => b[1].showDate.localeCompare(a[1].showDate) || b[0] - a[0])
-  const total = shows.reduce((n, [, s]) => n + s.n, 0)
-  const label = total ? `Print ${plural(total, 'ready slip', 'ready slips')}` : 'Print ready slips'
-  const to = (id: number) => `/app/orders/slips/${id}?only=ready`
-  if (total === 0)
-    return (
-      <button type="button" className="btn primary" disabled data-testid="print-ready">
-        <Icon name="print" size={16} />
-        {label}
-      </button>
-    )
-  if (shows.length === 1)
-    return (
-      <Link className="btn primary" to={to(shows[0]![0])} data-testid="print-ready">
-        <Icon name="print" size={16} />
-        {label}
-      </Link>
-    )
-  return (
-    <Menu
-      label="Print ready slips, by show"
-      className="btn primary"
-      testId="print-ready"
-      trigger={
-        <>
-          <Icon name="print" size={16} />
-          {label}
-          <Icon name="chevron" size={16} />
-        </>
-      }
-    >
-      {shows.map(([id, s]) => (
-        <Link key={id} role="menuitem" to={to(id)}>
-          <Icon name="print" size={16} />
-          {fmtLongDate(s.showDate)} · {plural(s.n, 'order', 'orders')}
-        </Link>
-      ))}
-    </Menu>
   )
 }
 
@@ -1043,7 +1242,7 @@ export function PickList() {
   return (
     <section>
       <p>
-        <Link to={`/app/orders?view=queue&show=${showId}`}>← Orders</Link>
+        <Link to={`/app/orders?view=pack&show=${showId}`}>← Orders</Link>
       </p>
       <h2>Pick list</h2>
       <p className="muted small">Quantities to pull for every paid item of this show that has not shipped, product by product.</p>

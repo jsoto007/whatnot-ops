@@ -603,6 +603,37 @@ def problems(org_id: int, lows: list[str]) -> list[dict]:
     ]
 
 
+# The badge beside a buyer's name on the Orders page, best first: what they have paid in all
+# (cents) and on how many show dates, under every name they have used. Both must be met. A
+# buyer below copper gets none; one whose first show is this one reads "new".
+TIERS = (("gold", 50_000, 8), ("silver", 20_000, 4), ("copper", 5_000, 2))
+
+
+def tier_of(paid_cents: int, shows: int) -> str | None:
+    return next((t for t, cents, n in TIERS if paid_cents >= cents and shows >= n), None)
+
+
+def tiers(org_id: int, names) -> dict[str, dict]:
+    """For each name (lower-case key): the buyer's badge (`tier_of`) and on how many show
+    dates they have bought, under any name they have used. No money leaves this function:
+    every role that sees the Orders page sees the badge. Four queries however many names."""
+    lows = sorted({n.lower() for n in (name_of(n) for n in names) if n})
+    if not lows:
+        return {}
+    held = holders(org_id, lows)
+    by_buyer = _names(org_id, {b.id for b in held.values()})
+    mine = {
+        low: [n.name_lower for n in by_buyer.get(held[low].id, [])] if low in held else [low]
+        for low in lows
+    }
+    figures = dashboard.buyer_figures(org_id, sorted({n for ns in mine.values() for n in ns}))
+    out = {}
+    for low in lows:
+        total = _total([figures[n] for n in mine[low] if n in figures])
+        out[low] = {"tier": tier_of(total["paidCents"], total["shows"]), "shows": total["shows"]}
+    return out
+
+
 def badges(org_id: int, names, *, before: date) -> dict[str, dict]:
     """For each name asked about (lower-case key): the team's flag, and what the person
     had bought on show dates before `before`, under any name they have used. `firstTime`

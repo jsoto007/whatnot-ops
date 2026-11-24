@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { AuthContext, type AuthState } from '../../auth/context'
-import type { Order, Product, Sale, Show, Sku } from '../../lib/api'
+import type { BoardBuyer, BoardTab, Giveaway, Order, Product, Sale, Sku } from '../../lib/api'
 import { unknownWords } from '../../lib/labels'
 import { Orders } from './Orders'
 
@@ -20,8 +20,6 @@ const auth = (permissions: string[]): AuthState => ({
   setMe: () => {},
   logout: async () => {},
 })
-
-const SHOW: Show = { id: 3, key: 'k', date: '2026-11-07', startedAt: '2026-11-08T02:00:00Z', updatedAt: '2026-11-08T02:00:00Z', sourceUrl: null, messageCount: 9 }
 
 let nextId = 100
 const sale = (over: Partial<Sale> & { buyer: string; orderId: number }): Sale => ({
@@ -114,18 +112,51 @@ const products: Product[] = [
   { id: 2, name: 'Beauty Blind Bag', notes: null, active: true, skus: [sku(8, 2, 'BB-01', '')] },
 ]
 
-function mount(permissions = ['orders.view', 'orders.fulfill', 'review.act', 'inventory.view'], path = '/app/orders?view=all', list: Order[] = orders) {
+/** The server's tab rule (`order_board.tab_of`) for these fixtures: anything open, cancelled or
+ *  with a question that holds the box waits in Need review. */
+const HOLDS = ['unmatched_item', 'payment_declined', 'decline_seen', 'lot_won_twice']
+const tabOf = (o: Order): BoardTab =>
+  o.status === 'shipped' ? 'shipped' : o.status === 'open' || o.status === 'cancelled' || (o.sales ?? []).some((s) => s.review && HOLDS.includes(s.review.reason)) ? 'review' : 'pack'
+const buyerOf = (o: Order, over: Partial<BoardBuyer> = {}): BoardBuyer => ({
+  username: o.buyer,
+  tab: tabOf(o),
+  orderId: o.id,
+  order: o,
+  giveaways: [],
+  giveawayOnly: false,
+  cancelled: o.status === 'cancelled',
+  hideable: o.status === 'cancelled',
+  parcel: null,
+  readyMarked: false,
+  mayMarkReady: tabOf(o) === 'review' && o.status !== 'cancelled',
+  tier: null,
+  shows: 2,
+  ...over,
+})
+const giveaway = (id: number, buyer: string, product: Giveaway['product'] = null): Giveaway => ({ id, buyer, title: 'Mystery gift', quantity: 1, showId: 3, showDate: '2026-11-07', wonAt: '2026-11-08T03:40:00Z', cancelled: false, product })
+
+function mount(permissions = ['orders.view', 'orders.fulfill', 'review.act', 'inventory.view'], path = '/app/orders?view=review', list: Order[] = orders, extra: BoardBuyer[] = []) {
   const posts: { url: string; body: unknown }[] = []
+  const buyers = [...list.map((o) => buyerOf(o)), ...extra]
+  const showsOf = [...new Set(buyers.map((b) => b.order?.showId ?? 3))].sort((a, b) => b - a)
+  const onShow = (id: number) => buyers.filter((b) => (b.order?.showId ?? 3) === id)
+  const tally = (bs: BoardBuyer[]) => ({ review: bs.filter((b) => b.tab === 'review').length, pack: bs.filter((b) => b.tab === 'pack').length, shipped: bs.filter((b) => b.tab === 'shipped').length, cancelled: bs.filter((b) => b.tab === 'review' && b.hideable).length })
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method === 'POST') {
         posts.push({ url, body: JSON.parse(String(init.body)) })
         const also = (JSON.parse(String(init.body)) as { applyToSimilar?: boolean }).applyToSimilar ? 2 : 0
-        return new Response(JSON.stringify({ alsoResolved: also }), { status: 200 })
+        return new Response(JSON.stringify({ alsoResolved: also, changed: true }), { status: 200 })
       }
-      if (url === '/api/shows') return new Response(JSON.stringify({ shows: [SHOW] }), { status: 200 })
-      if (url.startsWith('/api/orders')) return new Response(JSON.stringify({ orders: list }), { status: 200 })
+      if (url === '/api/orders/board')
+        return new Response(JSON.stringify({ shows: showsOf.map((id) => ({ showId: id, showDate: id === 3 ? '2026-11-07' : '2026-11-05', title: id === 3 ? 'Friday pulls' : null, ...tally(onShow(id)) })) }), { status: 200 })
+      const one = /^\/api\/orders\/shows\/(\d+)\/board$/.exec(url)
+      if (one) {
+        const id = Number(one[1])
+        return new Response(JSON.stringify({ showId: id, showDate: '2026-11-07', title: null, counts: tally(onShow(id)), buyers: onShow(id) }), { status: 200 })
+      }
+      if (url === '/api/giveaways') return new Response(JSON.stringify({ giveaways: [], waiting: 0 }), { status: 200 })
       if (url === '/api/products') return new Response(JSON.stringify({ products }), { status: 200 })
       if (url === '/api/auth/csrf') return new Response(JSON.stringify({ token: 't' }), { status: 200 })
       return new Response('{}', { status: 404 })
@@ -145,6 +176,7 @@ function mount(permissions = ['orders.view', 'orders.fulfill', 'review.act', 'in
   )
   return posts
 }
+const fetched = () => (globalThis.fetch as unknown as { mock: { calls: [string, RequestInit?][] } }).mock.calls.map(([url]) => url)
 
 async function pickBeautyPulls(dialog: HTMLElement) {
   const box = within(dialog).getByRole('combobox')
@@ -168,17 +200,21 @@ test('every row names its state and the one verb that moves it on', async () => 
   const amy = screen.getByTestId('order-amyshopsalot')
   expect(amy).toHaveTextContent('Ready to pick')
   expect(amy).toHaveTextContent('2 × $1 Beauty Pulls')
-  expect(within(amy).getByRole('button', { name: 'Start picking' })).toBeInTheDocument()
-  expect(within(screen.getByTestId('order-kels.finds')).getByRole('button', { name: 'Mark packed' })).toBeInTheDocument()
+  // Held in Need review (two winners on a lot, a card declined on the stream): the box is not
+  // moved on from here, whatever its own state.
+  expect(within(amy).queryByRole('button', { name: 'Start picking' })).toBeNull()
+  expect(within(screen.getByTestId('order-kels.finds')).queryByRole('button', { name: 'Mark packed' })).toBeNull()
   // the stream showed this buyer's card declined; the sale stands until Whatnot's order says
   expect(screen.getByTestId('decline-seen-kels.finds')).toHaveTextContent('card declined on the stream, waiting for Whatnot')
   expect(screen.queryByTestId('decline-seen-amyshopsalot')).toBeNull()
   // a lot the banner showed won by two buyers: said on the row, settled in Review
   expect(screen.getByTestId('lot-won-twice-amyshopsalot')).toHaveTextContent('a lot here has two winners, see Review')
   expect(within(screen.getByTestId('order-scrollstoppers')).getByRole('button', { name: 'Resolve decline' })).toBeInTheDocument()
-  // the oldest win comes first within a state; ready orders come before stuck ones
+  // one show, every buyer of it waiting here, oldest win first; nothing from another tab
   const rows = screen.getAllByTestId(/^order-/).map((r) => r.getAttribute('data-testid'))
-  expect(rows).toEqual(['order-amyshopsalot', 'order-kels.finds', 'order-pinkpony_22', 'order-moonlove3', 'order-taravat08', 'order-scrollstoppers'])
+  expect(rows).toEqual(['order-moonlove3', 'order-scrollstoppers', 'order-amyshopsalot', 'order-taravat08', 'order-kels.finds', 'order-pinkpony_22'])
+  expect(screen.getByTestId('tab-review')).toHaveTextContent('Need review6')
+  expect(screen.getByTestId('tab-pack')).toHaveTextContent('Ready to pack0')
   // a decline while picking: the order is no longer fully paid, so no step forward is offered
   const pink = screen.getByTestId('order-pinkpony_22')
   expect(pink).toHaveTextContent('Picking')
@@ -233,7 +269,9 @@ test('the banner names the item once for every lot with that title, and says so'
 })
 
 test('the next step posts the status; the menu offers the one step back', async () => {
-  const posts = mount()
+  // The same two orders with nothing in doubt: in Ready to pack.
+  const settle = (o: Order): Order => ({ ...o, sales: (o.sales ?? []).map((x) => ({ ...x, review: null })) })
+  const posts = mount(undefined, '/app/orders?view=pack', [settle(orders[2]!), settle(orders[3]!)])
   fireEvent.click(within(await screen.findByTestId('order-amyshopsalot')).getByRole('button', { name: 'Start picking' }))
   await waitFor(() => expect(posts).toHaveLength(1))
   expect(posts[0]).toEqual({ url: '/api/orders/4/status', body: { status: 'picking' } })
@@ -263,44 +301,41 @@ test('without the review permission the stuck rows and the banner offer nothing 
   const moon = await screen.findByTestId('order-moonlove3')
   expect(within(moon).queryByRole('button', { name: 'Name the product' })).toBeNull()
   expect(screen.queryByTestId('stuck-banner')).toBeNull()
-  expect(within(screen.getByTestId('order-amyshopsalot')).getByRole('button', { name: 'Start picking' })).toBeInTheDocument()
+  // nor can they mark a box ready to pack
+  fireEvent.click(within(moon).getByRole('button', { name: 'More for moonlove3' }))
+  expect(screen.queryByRole('menuitem', { name: 'Mark ready to pack' })).toBeNull()
 })
 
-test('"Print ready slips" opens the show’s slips for the orders that are ready to pick', async () => {
-  mount()
-  await screen.findByTestId('order-moonlove3')
-  // one order is ready (amyshopsalot), so the button goes straight to its show
-  const print = screen.getByTestId('print-ready')
-  expect(print).toHaveTextContent('Print 1 ready slip')
-  expect(print).toHaveAttribute('href', '/app/orders/slips/3?only=ready')
+test('Ready to pack prints the show’s pick list, each buyer’s slip, and leads to its labels', async () => {
+  const ready = order({ id: 41, buyer: 'made_up_ready', status: 'paid', verified: true, sales: [sale({ buyer: 'made_up_ready', orderId: 41, sku: RED, status: 'paid', paidAt: '2026-11-08T03:14:00Z' })] })
+  mount(undefined, '/app/orders?view=pack', [...orders, ready])
+  const row = await screen.findByTestId('order-made_up_ready')
+  expect(screen.getAllByTestId(/^order-/)).toHaveLength(1) // only the box ready to pack
+  expect(screen.getByTestId('print-pick-list-3')).toHaveAttribute('href', '/app/orders/slips/3?only=pack')
+  expect(screen.getByTestId('labels-3')).toHaveAttribute('href', '/app/orders/shipping/3')
+  expect(within(row).getByTestId('print-slip-made_up_ready')).toHaveAttribute('href', '/app/orders/slips/3?buyer=made_up_ready')
+  expect(within(row).getByRole('button', { name: 'Start picking' })).toBeInTheDocument()
 })
 
-test('with ready orders in several shows, the button lists each show, newest first', async () => {
-  const late = order({
-    id: 9,
-    buyer: 'late_bird',
-    showId: 4,
-    showDate: '2026-11-05',
-    status: 'paid',
-    verified: true,
-    sales: [sale({ buyer: 'late_bird', orderId: 9, showId: 4, showDate: '2026-11-05', sku: RED, status: 'paid', wonAt: '2026-11-06T03:00:00Z' })],
-  })
-  mount(undefined, '/app/orders', [...orders, late])
-  await screen.findByTestId('order-late_bird')
-  fireEvent.click(screen.getByRole('button', { name: 'Print 2 ready slips' }))
-  const menu = screen.getByRole('menu', { name: 'Print ready slips, by show' })
-  const items = within(menu).getAllByRole('menuitem')
-  expect(items.map((i) => i.getAttribute('href'))).toEqual(['/app/orders/slips/3?only=ready', '/app/orders/slips/4?only=ready'])
-  expect(items[0]).toHaveTextContent('Nov 7, 2026 · 1 order')
-  expect(items[1]).toHaveTextContent('Nov 5, 2026 · 1 order')
+test('each show is its own section; only the open one is read', async () => {
+  const older = order({ id: 9, buyer: 'late_bird', showId: 2, showDate: '2026-11-05', status: 'paid', verified: true, sales: [sale({ buyer: 'late_bird', orderId: 9, showId: 2, showDate: '2026-11-05', sku: RED, status: 'paid' })] })
+  const ready = order({ id: 41, buyer: 'made_up_ready', status: 'paid', verified: true, sales: [sale({ buyer: 'made_up_ready', orderId: 41, sku: RED, status: 'paid' })] })
+  mount(undefined, '/app/orders?view=pack', [ready, older])
+  await screen.findByTestId('order-made_up_ready')
+  const toggles = screen.getAllByRole('button', { expanded: true }).concat(screen.getAllByRole('button', { expanded: false })).filter((b) => b.classList.contains('show-block-toggle'))
+  expect(toggles.map((t) => [t.textContent, t.getAttribute('aria-expanded')])).toEqual([
+    ['Sat, Nov 7, 2026Friday pulls1 buyer', 'true'],
+    ['Thu, Nov 5, 20261 buyer', 'false'],
+  ])
+  expect(fetched()).not.toContain('/api/orders/shows/2/board')
+  fireEvent.click(toggles[1]!)
+  expect(await screen.findByTestId('order-late_bird')).toBeInTheDocument()
+  expect(fetched()).toContain('/api/orders/shows/2/board')
 })
 
-test('with nothing ready to pick the print button waits', async () => {
-  mount(undefined, '/app/orders?view=all', orders.filter((o) => o.status !== 'paid'))
-  await screen.findByTestId('order-moonlove3')
-  const print = screen.getByTestId('print-ready')
-  expect(print).toHaveTextContent('Print ready slips')
-  expect(print).toBeDisabled()
+test('links from before the three tabs land on the tab that holds those orders', async () => {
+  mount(undefined, '/app/orders?view=queue')
+  expect(await screen.findByTestId('tab-pack')).toHaveAttribute('aria-selected', 'true')
 })
 
 // ---------- Shipped: where each parcel is, as Whatnot last said (buyers are made up) ----------
@@ -343,7 +378,7 @@ test('the Shipped tab says where each parcel is, and narrows to the ones that ne
   expect(screen.getByTestId('order-buyer_e')).toHaveTextContent('typed by hand 123')
 
   const filters = screen.getByTestId('parcel-filters')
-  expect(within(filters).getAllByRole('button').map((b) => b.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['All shipped 5', 'Not with the carrier yet 1', 'On its way 1', 'Delivery failed 1', 'Delivered 1'])
+  expect(within(filters).getAllByRole('button').map((b) => b.textContent)).toEqual(['All shipped', 'Not with the carrier yet', 'On its way', 'Delivery failed', 'Delivered'])
   expect(within(filters).getByRole('button', { name: /All shipped/ })).toHaveAttribute('aria-pressed', 'true')
 
   fireEvent.click(within(filters).getByRole('button', { name: /Delivery failed/ }))
@@ -363,34 +398,26 @@ test('a buyer with two parcels reads each one', async () => {
   expect(a).toHaveTextContent('In transit · USPS')
 })
 
-test('with nothing known about any parcel the Shipped tab is as before: no filters', async () => {
-  mount(undefined, '/app/orders?view=shipped', [shippedOrder(25, 'buyer_e', null, { tracking: 'typed by hand 123' })])
-  expect(await screen.findByTestId('order-buyer_e')).toHaveTextContent('typed by hand 123')
-  expect(screen.queryByTestId('parcel-filters')).toBeNull()
-})
-
 test('every tab says where the parcel is: an order not marked shipped shows it too', async () => {
   // Still open here (its product was never named), yet Whatnot says the parcel is on its way.
   const open = order({ id: 31, buyer: 'buyer_f', status: 'open', parcel: parcel('moving', [box('in_transit', '9400F')]), sales: [sale({ buyer: 'buyer_f', orderId: 31 })] })
   const fresh = order({ id: 32, buyer: 'buyer_g', status: 'paid', verified: true, parcel: parcel('nolabel', [box('created', null)]), sales: [sale({ buyer: 'buyer_g', orderId: 32, sku: RED, status: 'paid' })] })
-  mount(undefined, '/app/orders?view=all', [...SHIPPED, open, fresh])
+  mount(undefined, '/app/orders?view=review', [...SHIPPED, open, fresh])
   const f = await screen.findByTestId('parcel-buyer_f')
   expect(within(f).getByText('On its way')).toHaveClass('pill', 'moving')
   fireEvent.click(screen.getByRole('button', { name: 'Details for buyer_f' }))
   expect(screen.getByTestId('details-buyer_f')).toHaveTextContent('USPS 9400F')
-  expect(within(screen.getByTestId('parcel-buyer_g')).getByText('No label yet')).toHaveClass('pill', 'nolabel')
-
-  const filters = screen.getByTestId('parcel-filters')
-  expect(within(filters).getAllByRole('button').map((b) => b.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['All 7', 'No label yet 1', 'Not with the carrier yet 1', 'On its way 2', 'Delivery failed 1', 'Delivered 1'])
-  fireEvent.click(within(filters).getByRole('button', { name: /On its way/ }))
-  await waitFor(() => expect(screen.getAllByTestId(/^order-/).map((r) => r.getAttribute('data-testid')).sort()).toEqual(['order-buyer_a', 'order-buyer_f']))
+  // the parcel filters are the Shipped tab's own
+  expect(screen.queryByTestId('parcel-filters')).toBeNull()
+  fireEvent.click(screen.getByTestId('tab-pack'))
+  expect(within(await screen.findByTestId('parcel-buyer_g')).getByText('No label yet')).toHaveClass('pill', 'nolabel')
 })
 
 test('the row shows the first lots of a product; its details show every one', async () => {
   // Eight wins of one product (made-up buyer): the row reads the first three and "+5 more".
   const lots = [601, 602, 603, 604, 605, 606, 607, 608]
   const many = order({ id: 40, buyer: 'made_up_many', status: 'paid', verified: true, sales: lots.map((lot, i) => sale({ id: 900 + i, buyer: 'made_up_many', orderId: 40, sku: RED, item: `$1 BEAUTY PULLS #${lot}`, lot, status: 'paid', paidAt: '2026-11-08T03:50:00Z', wonAt: '2026-11-08T03:50:00Z' })) })
-  mount(undefined, '/app/orders?view=all', [many])
+  mount(undefined, '/app/orders?view=pack', [many])
   const row = await screen.findByTestId('order-made_up_many')
   expect(row).toHaveTextContent('8 × $1 Beauty Pulls')
   expect(row).toHaveTextContent('#603')
@@ -446,7 +473,7 @@ test('a win with two products lists both, and each can be changed or taken off; 
   const two = sale({ buyer: 'made_up_two', orderId: 30, sku: RED, item: '$1 BEAUTY PULLS #540', lot: 540, status: 'paid', paidAt: '2026-11-08T03:50:00Z', wonAt: '2026-11-08T03:50:00Z', products: [{ rowId: 61, quantity: 1, shareCents: 350, sku: RED }, { rowId: 62, quantity: 2, shareCents: 350, sku: bag }] })
   orders.push(order({ id: 30, buyer: 'made_up_two', status: 'paid', verified: true, sales: [two] }))
   try {
-    mount()
+    mount(undefined, '/app/orders?view=pack')
     const row = await screen.findByTestId('order-made_up_two')
     expect(row).toHaveTextContent('1 × $1 Beauty Pulls')
     expect(row).toHaveTextContent('2 × Beauty Blind Bag')
@@ -498,7 +525,7 @@ test("a lot whose title says the winner chooses is never offered as 'name it onc
       toPick: 1,
       sales: [sale({ buyer, orderId: id, item: `CHOOSE ANY PRODUCT YOU WANT #${lot}`, itemTitle: 'CHOOSE ANY PRODUCT YOU WANT', lot, choiceTitle: true, toPick: true, externalOrderId: `9${lot}`, review: { id: 100 + id, reason: 'unmatched_item' } })],
     })
-  mount(undefined, '/app/orders?view=all', [choose(21, 'made_up_ann', 1), choose(22, 'made_up_bo', 2), choose(23, 'made_up_cy', 3)])
+  mount(undefined, '/app/orders?view=review', [choose(21, 'made_up_ann', 1), choose(22, 'made_up_bo', 2), choose(23, 'made_up_cy', 3)])
   const row = await screen.findByTestId('order-made_up_ann')
   expect(screen.queryByTestId('stuck-banner')).toBeNull()
   // The order is open, but it is paid: it waits for the winner's pick, not for money.
@@ -511,11 +538,100 @@ test("a lot whose title says the winner chooses is never offered as 'name it onc
 test('a paid win on a listing that is not one of ours, its question ignored, reads so and lets the order be picked', async () => {
   const off = sale({ buyer: 'made_up_zed', orderId: 9, item: 'Mystery thing', itemTitle: 'Mystery thing', lot: null, externalOrderId: 'WN-9', notOurs: true })
   const named = sale({ buyer: 'made_up_zed', orderId: 9, sku: RED, item: 'Red bundle', itemTitle: 'Red bundle', lot: null, status: 'paid', paidAt: '2026-11-08T03:14:00Z', notOurs: false })
-  mount(undefined, '/app/orders?view=all', [order({ id: 9, buyer: 'made_up_zed', status: 'paid', verified: true, sales: [named, off] })])
+  mount(undefined, '/app/orders?view=pack', [order({ id: 9, buyer: 'made_up_zed', status: 'paid', verified: true, sales: [named, off] })])
   const zed = await screen.findByTestId('order-made_up_zed')
   expect(zed).toHaveTextContent('Ready to pick')
   expect(within(zed).getByTestId('not-ours')).toHaveTextContent('Paid on Whatnot · not one of our products')
   expect(zed).not.toHaveTextContent('“Mystery thing”') // not shown as an item nobody recognised
   expect(within(zed).getByRole('button', { name: 'Start picking' })).toBeInTheDocument()
   expect(within(zed).queryByRole('button', { name: 'Name the product' })).toBeNull()
+})
+
+// ---------- Giveaways, badges, a manager's mark, cancelled orders (buyers are made up) ----------
+
+test("a buyer's giveaway sits with their wins, marked; one who only won a giveaway is apart, as an order", async () => {
+  const both = order({ id: 50, buyer: 'made_up_both', status: 'paid', verified: true, sales: [sale({ buyer: 'made_up_both', orderId: 50, sku: RED, status: 'paid' })] })
+  const giftOnly: BoardBuyer = { ...buyerOf(both), username: 'made_up_gift', orderId: null, order: null, giveawayOnly: true, giveaways: [giveaway(71, 'made_up_gift')], tab: 'review', shows: 0 }
+  mount(undefined, '/app/orders?view=review', [], [buyerOf(both, { tab: 'review', giveaways: [giveaway(70, 'made_up_both')] }), giftOnly])
+  const row = await screen.findByTestId('order-made_up_both')
+  const line = within(row).getByTestId('giveaway-line-70')
+  expect(line).toHaveTextContent('Giveaway 1 × needs a product')
+  expect(within(line).getByText('Giveaway')).toHaveClass('pill', 'giveaway')
+  expect(row).toHaveTextContent('1 × $1 Beauty Pulls') // the wins beside it
+  // A box waiting for its giveaway's product is not moved on: naming it is the row's verb.
+  expect(within(row).queryByRole('button', { name: 'Start picking' })).toBeNull()
+  fireEvent.click(within(row).getByTestId('name-giveaway'))
+  expect(await screen.findByRole('dialog', { name: /Name the giveaway's product/ })).toHaveTextContent('made_up_both')
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  // The buyer who bought nothing comes last, under its own heading, and reads as a giveaway.
+  const rows = screen.getAllByRole('row').map((r) => r.textContent ?? '')
+  expect(rows.findIndex((t) => t.includes('Won a giveaway, bought nothing'))).toBeGreaterThan(rows.findIndex((t) => t.includes('made_up_both')))
+  const gift = screen.getByTestId('order-made_up_gift')
+  expect(gift).toHaveTextContent('Giveaway only')
+  expect(gift).toHaveTextContent('no charge')
+  expect(within(gift).getByTestId('name-giveaway')).toBeInTheDocument()
+})
+
+test('new and returning buyers share the list; each carries a small badge', async () => {
+  const mk = (id: number, buyer: string) => order({ id, buyer, status: 'paid', verified: true, sales: [sale({ buyer, orderId: id, sku: RED, status: 'paid' })] })
+  mount(undefined, '/app/orders?view=pack', [], [buyerOf(mk(60, 'made_up_gold'), { tier: 'gold', shows: 12 }), buyerOf(mk(61, 'made_up_copper'), { tier: 'copper', shows: 2 }), buyerOf(mk(62, 'made_up_first'), { tier: null, shows: 1 })])
+  const gold = await screen.findByTestId('order-made_up_gold')
+  expect(within(gold).getByTestId('tier-gold')).toHaveAttribute('title', expect.stringContaining('12 shows'))
+  expect(within(gold).getByTestId('tier-gold')).toHaveTextContent('Gold buyer')
+  expect(within(screen.getByTestId('order-made_up_copper')).getByTestId('tier-copper')).toBeInTheDocument()
+  expect(screen.getByTestId('order-made_up_first')).toHaveTextContent('new')
+})
+
+test('a manager marks a box ready to pack from Need review, and can take it back', async () => {
+  const posts = mount(undefined, '/app/orders?view=review', [orders[0]!], [])
+  const moon = await screen.findByTestId('order-moonlove3')
+  fireEvent.click(within(moon).getByRole('button', { name: 'More for moonlove3' }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Mark ready to pack' }))
+  await waitFor(() => expect(posts).toEqual([{ url: '/api/orders/shows/3/ready', body: { buyer: 'moonlove3', ready: true } }]))
+  expect(await screen.findByRole('status')).toHaveTextContent("moonlove3's box is marked ready to pack.")
+})
+
+test('a marked box says so in Ready to pack and offers the way back', async () => {
+  const posts = mount(undefined, '/app/orders?view=pack', [], [buyerOf(orders[0]!, { tab: 'pack', readyMarked: true, mayMarkReady: false })])
+  const moon = await screen.findByTestId('order-moonlove3')
+  expect(within(moon).getByTestId('marked-ready-moonlove3')).toHaveTextContent('marked ready to pack by a manager')
+  fireEvent.click(within(moon).getByRole('button', { name: 'More for moonlove3' }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Back to Need review' }))
+  await waitFor(() => expect(posts).toEqual([{ url: '/api/orders/shows/3/ready', body: { buyer: 'moonlove3', ready: false } }]))
+})
+
+test('cancelled orders wait in Need review, marked, and can be hidden', async () => {
+  localStorage.removeItem('wn.ordersHideCancelled')
+  mount()
+  const scroll = await screen.findByTestId('order-scrollstoppers')
+  expect(within(scroll).getByTestId('cancelled-scrollstoppers')).toHaveTextContent('cancelled on Whatnot')
+  const hide = screen.getByTestId('hide-cancelled')
+  expect(hide).toHaveTextContent('Hide cancelled orders 1')
+  fireEvent.click(hide)
+  expect(hide).toHaveAttribute('aria-pressed', 'true')
+  await waitFor(() => expect(screen.queryByTestId('order-scrollstoppers')).toBeNull())
+  expect(screen.getByTestId('tab-review')).toHaveTextContent('Need review5')
+  expect(localStorage.getItem('wn.ordersHideCancelled')).toBe('yes')
+  fireEvent.click(hide)
+  expect(await screen.findByTestId('order-scrollstoppers')).toBeInTheDocument()
+})
+
+test('with no tab asked for, the page opens on the first one with someone in it', async () => {
+  const ready = order({ id: 41, buyer: 'made_up_ready', status: 'paid', verified: true, sales: [sale({ buyer: 'made_up_ready', orderId: 41, sku: RED, status: 'paid' })] })
+  mount(undefined, '/app/orders', [ready])
+  expect(await screen.findByTestId('order-made_up_ready')).toBeInTheDocument()
+  expect(screen.getByTestId('tab-pack')).toHaveAttribute('aria-selected', 'true')
+})
+
+test('"Hide cancelled orders" keeps a cancelled buyer whose giveaway still needs a product', async () => {
+  localStorage.setItem('wn.ordersHideCancelled', 'yes')
+  try {
+    const gone = orders[5]! // scrollstoppers: cancelled, nothing else to do
+    const stays = order({ id: 52, buyer: 'made_up_kept', status: 'cancelled', sales: [sale({ buyer: 'made_up_kept', orderId: 52, status: 'cancelled' })] })
+    mount(undefined, '/app/orders?view=review', [gone], [buyerOf(stays, { hideable: false, giveaways: [giveaway(80, 'made_up_kept')] })])
+    expect(await screen.findByTestId('order-made_up_kept')).toBeInTheDocument()
+    expect(screen.queryByTestId('order-scrollstoppers')).toBeNull()
+  } finally {
+    localStorage.removeItem('wn.ordersHideCancelled')
+  }
 })

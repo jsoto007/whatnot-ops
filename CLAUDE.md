@@ -281,6 +281,26 @@ commands.
   its show. A viewer's line never sets an offer (`tests/test_offers.py`). The pick worker
   takes up to that many spots from the winner (`picks._final`, `add_extras` through
   `sale_items.add`); fewer than allowed is left for a person ("picked 1 of 2").
+- **The Orders page by show** (`services/order_board.py`, Javier's calls 2026-11-24). Three
+  tabs, one section per show: every buyer of a show is in exactly one, all their wins and
+  Whatnot giveaways of the show together (one box, one label). ONE rule places them,
+  `order_board.tab_of`: the box left (order shipped, or a giveaway-only buyer's parcel with
+  the carrier) is Shipped and done, whatever is still open on it (a product can be named later
+  or the count fixed by hand); an order Whatnot cancelled, an open order, an open `HOLDS`
+  question (no product, a declined or in-doubt card, two winners) or a giveaway with no product
+  is Need review (cancelled ones can be hidden on the page, never by the server); the rest is
+  Ready to pack. A buyer who won only a giveaway is a row like an order, marked "Giveaway", with
+  no Order row and no sale. A manager's "Mark ready to pack" (`pack_overrides`, `review.act`,
+  audited) moves a held box to Ready to pack. It stores the keys of what held the box
+  (`covered`: question, waiting win, cancel and giveaway ids); any other key, however old or
+  late-read, puts the box back. It never covers `DOUBT` (a card in doubt, a lot two buyers won:
+  Whatnot decides; a box packed past one is restocked behind the packer's back) and changes no
+  order, sale, stock or gate. The tab counts, the per-show list and the slips' `only=pack`
+  printout all read `tab_of`; that printout also holds back an unmarked box whose slip fails
+  `order_slips._packable` (a "No Pick" row, a sale Whatnot does not list). The page lists the
+  shows of the last 60 days and any older one with work left (a cancelled order counts while a
+  question on it is open), and reads a show's giveaways with no window (`giveaways.of_shows`). The
+  copper/silver/gold badge is `buyers.tier_of` (paid and show dates, both; no money on screen).
 - **Giveaways** (`services/giveaways.py`, `/app/orders/giveaways`). A giveaway in
   Whatnot's orders is never a sale: no price, not in any sales count or revenue, untouched
   by the pick worker. It waits in "Giveaways to assign" until a person names its product

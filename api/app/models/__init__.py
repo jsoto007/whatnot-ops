@@ -14,7 +14,7 @@ from .core import (
     ShowShelf,
 )
 from .inventory import InventoryMovement, MovementKind, Product, ProductAlias, Sku
-from .orders import Order, OrderStatus
+from .orders import Order, OrderStatus, PackOverride
 from .sales import (
     EventKind,
     GiveawayItem,
@@ -59,6 +59,7 @@ __all__ = [
     "MovementKind",
     "Order",
     "OrderStatus",
+    "PackOverride",
     "Organization",
     "RateLimit",
     "ParsedEvent",

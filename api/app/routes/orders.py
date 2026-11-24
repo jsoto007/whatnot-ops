@@ -24,6 +24,7 @@ from ..services import (
     catalog,
     dashboard,
     offers,
+    order_board,
     order_slips,
     orders,
     pipeline,
@@ -50,6 +51,7 @@ ORDER_LIST_LIMIT = 500
 @bp.errorhandler(OrderError)
 @bp.errorhandler(ReconcileError)
 @bp.errorhandler(InventoryError)
+@bp.errorhandler(order_board.BoardError)
 def order_error(e):
     db.session.rollback()
     return jsonify({"error": str(e)}), e.status
@@ -140,7 +142,11 @@ def list_orders():
     ).all()
     truncated = len(rows) > ORDER_LIST_LIMIT
     rows = rows[:ORDER_LIST_LIMIT]
-    with_sales = status != "all"
+    return jsonify({"orders": _listed(rows, with_sales=status != "all"), "truncated": truncated})
+
+
+def _listed(rows: list[Order], *, with_sales: bool = True) -> list[dict]:
+    """Orders as the Orders page lists them, in a fixed number of queries however many."""
     reviews = _open_reviews(rows) if with_sales else {}
     if with_sales:
         sale_mode.prime({o.show_id for o in rows})  # each sale says how its show sells
@@ -151,20 +157,46 @@ def list_orders():
     parcels = _parcels(rows)
     to_pick = orders.to_pick_ids(s.id for o in rows for s in o.sales)
     settled = orders.settled_unnamed_ids([s for o in rows for s in o.sales])
+    return [
+        serializers.order(
+            o,
+            with_sales=with_sales,
+            reviews=reviews,
+            parcel=parcels.get(o.id),
+            to_pick=to_pick,
+            settled=settled,
+        )
+        for o in rows
+    ]
+
+
+@bp.get("/board")
+@require("orders.view", heavy=True)
+def board_shows():
+    """The Orders page's shows, newest first, with how many buyers wait in each tab."""
+    return jsonify({"shows": order_board.summary(g.u.organization_id)})
+
+
+@bp.get("/shows/<int:show_id>/board")
+@require("orders.view", heavy=True)
+def show_board(show_id: int):
+    """One show's buyers, each in its tab (`order_board.tab_of`), with its order (as the
+    orders list serializes it) and Whatnot's giveaways for it."""
+    show = db.session.get(Show, show_id)
+    if show is None or show.organization_id != g.u.organization_id:
+        return jsonify({"error": "show not found"}), 404
+    placed = order_board.board(show)
+    ids = [b["orderId"] for b in placed["buyers"] if b["orderId"] is not None]
+    rows = db.session.scalars(_loaded().where(Order.id.in_(ids))).all() if ids else []
+    listed = dict(zip((o.id for o in rows), _listed(rows), strict=True))
+    title = show.whatnot_show.title if show.whatnot_show is not None else None
     return jsonify(
         {
-            "orders": [
-                serializers.order(
-                    o,
-                    with_sales=with_sales,
-                    reviews=reviews,
-                    parcel=parcels.get(o.id),
-                    to_pick=to_pick,
-                    settled=settled,
-                )
-                for o in rows
-            ],
-            "truncated": truncated,
+            "showId": show.id,
+            "showDate": show.show_date.isoformat(),
+            "title": title,
+            "counts": placed["counts"],
+            "buyers": [{**b, "order": listed.get(b["orderId"])} for b in placed["buyers"]],
         }
     )
 
@@ -303,6 +335,26 @@ def pick_list(show_id: int):
     return jsonify({"items": orders.pick_list(show), "toPick": orders.to_pick(show)})
 
 
+@bp.post("/shows/<int:show_id>/ready")
+@require("review.act")
+def mark_ready(show_id: int):
+    """A manager's "Mark ready to pack" for one buyer of the show (`order_board.mark_ready`).
+    `{"buyer": name, "ready": false}` takes it back."""
+    show = db.session.get(Show, show_id)
+    if show is None or show.organization_id != g.u.organization_id:
+        return jsonify({"error": "show not found"}), 404
+    body = _body()
+    buyer = body.get("buyer")
+    if not isinstance(buyer, str) or not buyer.strip():
+        return jsonify({"error": "Say which buyer."}), 400
+    if body.get("ready", True) is False:
+        changed = order_board.unmark_ready(show, buyer, user=g.u)
+    else:
+        changed = order_board.mark_ready(show, buyer, user=g.u)
+    db.session.commit()
+    return jsonify({"changed": changed})
+
+
 @bp.get("/shows/<int:show_id>/order-slips")
 @require("orders.view", heavy=True)
 def show_order_slips(show_id: int):
@@ -312,7 +364,8 @@ def show_order_slips(show_id: int):
     only = request.args.get("only") or None
     if only is not None and only not in order_slips.FILTERS:
         return jsonify({"error": "unknown filter"}), 400
-    return jsonify(order_slips.build(show, only=only))
+    buyer = (request.args.get("buyer") or "").strip() or None
+    return jsonify(order_slips.build(show, only=only, one=buyer))
 
 
 @bp.patch("/sales/<int:sale_id>/gifts")

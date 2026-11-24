@@ -78,6 +78,10 @@ def measure(client, count_statements, url):
         "/api/shows/{show}/sales",
         "/api/review",
         "/api/dashboard",
+        # The Orders page: its shows, and one show's buyers in their tabs.
+        "/api/orders/board",
+        "/api/orders/shows/{show}/board",
+        "/api/orders/shows/{show}/order-slips?only=pack",
     ],
 )
 def test_pages_do_not_cost_a_statement_per_row(app, world, client, sign_in, count_statements, url):

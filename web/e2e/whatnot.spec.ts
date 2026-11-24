@@ -163,25 +163,24 @@ test("connect the shop, compare Whatnot's orders with the show's sales, apply th
   await page.getByRole('link', { name: 'Inventory' }).click()
   await expect(cell(page, 'RED', 'on-hand')).toHaveText('2')
   await page.getByRole('link', { name: /^Orders/ }).click()
-  await page.getByRole('tab', { name: /Shipped/ }).click()
+  await page.getByTestId('tab-shipped').click()
   await expect(page.getByTestId('order-lani808')).toBeVisible()
   // Shipped: where the parcel is, as Whatnot last said. The carrier has it.
   await expect(page.getByTestId('parcel-lani808')).toContainText('On its way')
   // The tracking number is in the details under the row.
   await page.getByRole('button', { name: 'Details for lani808' }).click()
   await expect(page.getByTestId('details-lani808')).toContainText('9400111899223344556677')
-  await expect(page.getByTestId('parcel-filters').getByRole('button', { name: /On its way/ })).toContainText('1')
+  await expect(page.getByTestId('parcel-lani808').locator('.pill.parcel.moving')).toHaveText(/On its way/)
+  await page.getByTestId('parcel-filters').getByRole('button', { name: 'On its way' }).click()
+  await expect(page.getByTestId('order-lani808')).toBeVisible()
   await shot(page, '4c-orders-shipped-parcel')
   // Every tab says it at a glance, on the buyer's row: an order not marked shipped too.
-  await page.getByRole('tab', { name: 'All' }).click()
-  await expect(page.getByTestId('parcel-lani808').locator('.pill.parcel.moving')).toHaveText(/On its way/)
+  await page.getByTestId('tab-pack').click()
   await expect(page.getByTestId('parcel-splitsy').locator('.pill.parcel')).toBeVisible()
-  await expect(page.getByTestId('parcel-filters').getByRole('button', { name: /^All/ })).toBeVisible()
   await shot(page, '4d-orders-all-parcels')
-  await page.getByRole('link', { name: /^Orders/ }).click()
-  await page.getByRole('tab', { name: /Needs review/ }).click()
+  // Need review: the winner's pick still to name, and the declined card (Whatnot cancelled it).
+  await page.getByTestId('tab-review').click()
   await expect(page.getByTestId('order-newbie')).toContainText('CHOOSE ANY PRODUCT YOU WANT')
-  await page.getByRole('tab', { name: /Payment declined/ }).click()
   await expect(page.getByTestId('order-kat.c')).toBeVisible()
 
   // The show's Analytics tab: Whatnot's own results for it.
@@ -308,8 +307,9 @@ test('a show nobody records: from the first order to the slip, with listings lin
   await expect(page.getByTestId('no-laptop-needed')).toContainText('Your shows need no laptop.')
 
   // The listing with the product's code named its sale. The other one waits: "listing not linked".
-  await page.goto('/app/orders?view=all')
+  await page.goto('/app/orders?view=pack')
   await expect(page.getByTestId('order-lani_b')).toContainText('Ruby set')
+  await page.goto('/app/orders?view=review')
   const kat = page.getByTestId('order-kat_b')
   await expect(kat).toContainText('listing not linked')
   await kat.getByTestId('name-product').click()
@@ -322,6 +322,7 @@ test('a show nobody records: from the first order to the slip, with listings lin
   }
   await pick('Sky set')
   await expect(page.getByRole('status')).toContainText('now always uses it')
+  await page.getByTestId('tab-pack').click()
   await expect(page.getByTestId('order-kat_b')).toContainText('Sky set')
 
   // A listing made during the show, with two wins: the app has never seen it.
@@ -338,12 +339,13 @@ test('a show nobody records: from the first order to the slip, with listings lin
   const moss = ((await second.json()) as { products: { id: string; variantId: string }[] }).products[0]
   await page.getByRole('link', { name: 'Settings' }).click()
   await readNow()
-  await page.goto('/app/orders?view=all')
+  await page.goto('/app/orders?view=review')
   await expect(page.getByTestId('order-nia_b')).toContainText('listing not linked')
   await page.getByTestId('order-moe_b').getByTestId('name-product').click()
   await pick('Moss set')
   // Naming one win linked the listing and named its other win in the show.
   await expect(page.getByRole('status')).toContainText('and 1 other lot')
+  await page.getByTestId('tab-pack').click()
   await expect(page.getByTestId('order-nia_b')).toContainText('Moss set')
 
   // The listing's next order names itself.
@@ -353,9 +355,12 @@ test('a show nobody records: from the first order to the slip, with listings lin
   expect(third.status()).toBe(201)
   await page.getByRole('link', { name: 'Settings' }).click()
   await readNow()
-  await page.goto('/app/orders?view=all')
+  await page.goto('/app/orders?view=pack')
   await expect(page.getByTestId('order-ola_b')).toContainText('Moss set')
+  await page.goto('/app/orders?view=review')
+  await expect(page.getByTestId('tab-review')).toBeVisible()
   await expect(page.getByText('listing not linked')).toHaveCount(0)
+  await page.goto('/app/orders?view=pack')
 
   // One product is changed on the order's own page: the old one goes back, the new one leaves.
   await page.getByTestId('order-kat_b').getByRole('button', { name: 'More for kat_b' }).click()

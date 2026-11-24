@@ -462,6 +462,20 @@ ACTIONS: dict[str, tuple[str, Describe | None]] = {
             f"product{'' if (d.get('after') or 1) == 1 else 's'}"
         ),
     ),
+    "orders.marked_ready": (
+        "Marked a box ready to pack",
+        lambda d, t: (
+            f"Marked {d.get('buyer') or 'a buyer'}'s box ready to pack"
+            + (f" (show of {d['showDate']})" if d.get("showDate") else "")
+        ),
+    ),
+    "orders.unmarked_ready": (
+        "Took back a box marked ready to pack",
+        lambda d, t: (
+            f"Took back {d.get('buyer') or 'a buyer'}'s box marked ready to pack"
+            + (f" (show of {d['showDate']})" if d.get("showDate") else "")
+        ),
+    ),
     "giveaway.product_set": (
         "Named a giveaway's product",
         lambda d, t: (

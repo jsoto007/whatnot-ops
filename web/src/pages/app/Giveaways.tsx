@@ -124,7 +124,7 @@ export function Giveaways() {
   )
 }
 
-function NameGiveaway({ giveaway: g, onClose, onDone }: { giveaway: Giveaway; onClose: () => void; onDone: (msg: string) => void | Promise<void> }) {
+export function NameGiveaway({ giveaway: g, onClose, onDone }: { giveaway: Giveaway; onClose: () => void; onDone: (msg: string) => void | Promise<void> }) {
   const products = useQuery({ queryKey: ['products'], queryFn: () => apiGet<{ products: Product[] }>('/api/products') })
   const skus = (products.data?.products ?? []).flatMap((p) => p.skus.map((s): Sku & { productName: string } => ({ ...s, productName: p.name })))
   const [skuId, setSkuId] = useState('')

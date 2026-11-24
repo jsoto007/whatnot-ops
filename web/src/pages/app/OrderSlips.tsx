@@ -19,14 +19,21 @@ const GIFT_CHOICES = [0, 1, 2, 3, 4, 5]
 export function OrderSlips() {
   const { showId = '' } = useParams()
   const [params, setParams] = useSearchParams()
-  // `?only=ready`: the Orders page's "Print ready slips" lands here with just the orders that are ready to pick.
-  const only = params.get('only') === 'ready' ? 'ready' : null
+  // `?only=ready`: just the orders that are ready to pick. `?only=pack`: the Orders page's Ready to
+  // pack tab ("Print pick list"). `?buyer=`: one buyer's slip, from their row ("Print slip").
+  const raw = params.get('only')
+  const only = raw === 'ready' || raw === 'pack' ? raw : null
+  const buyer = params.get('buyer')?.trim() || null
   const { can } = useAuth()
-  const q = useQuery({ queryKey: ['order-slips', showId, only], queryFn: () => apiGet<Doc>(`/api/orders/shows/${showId}/order-slips${only ? '?only=' + only : ''}`) })
-  const setOnly = (v: 'ready' | null) => {
+  const query = new URLSearchParams()
+  if (only) query.set('only', only)
+  if (buyer) query.set('buyer', buyer)
+  const q = useQuery({ queryKey: ['order-slips', showId, only, buyer], queryFn: () => apiGet<Doc>(`/api/orders/shows/${showId}/order-slips${query.size ? '?' + query.toString() : ''}`) })
+  const setOnly = (v: 'ready' | 'pack' | null) => {
     const next = new URLSearchParams(params)
     if (v) next.set('only', v)
     else next.delete('only')
+    next.delete('buyer')
     setParams(next)
   }
   if (q.isPending) return <p className="muted">Loading…</p>
@@ -34,19 +41,28 @@ export function OrderSlips() {
   const doc = q.data
   const review = doc.slips.filter((b) => b.needsReview).length
   // The server decides what is ready: the order's state alone misses a lot that still needs its product.
-  const ready = only ? doc.slips.length : (doc.ready ?? doc.slips.filter((b) => b.orderStatus === 'paid').length)
-  const everyone = only ? doc.slips.length + doc.leftOut : doc.slips.length
+  const ready = only === 'ready' && !buyer ? doc.slips.length : (doc.ready ?? doc.slips.filter((b) => b.orderStatus === 'paid').length)
+  const everyone = only || buyer ? doc.slips.length + doc.leftOut : doc.slips.length
   return (
     <section className="order-slips">
       <div className="no-print">
         <p>
-          <Link to={`/app/orders?view=${only ? 'queue' : 'all'}&show=${showId}`}>← Orders</Link>
+          <Link to={`/app/orders?view=pack&show=${showId}`}>← Orders</Link>
         </p>
         <div className="page-head">
           <div>
-            <h2>Order slips · {fmtLongDate(doc.showDate)}</h2>
+            <h2>
+              {buyer ? `Order slip · ${buyer}` : 'Order slips'} · {fmtLongDate(doc.showDate)}
+            </h2>
             <div className="sub" data-testid="slips-sub">
-              {only ? (
+              {buyer ? (
+                'Just this buyer’s slip: every win and giveaway of the show in one box.'
+              ) : only === 'pack' ? (
+                <>
+                  Everyone in Ready to pack, one slip per buyer.
+                  {doc.leftOut > 0 && ` ${count(doc.leftOut, 'other buyer')} of this show ${doc.leftOut === 1 ? 'is' : 'are'} left out: waiting in Need review, or shipped.`}
+                </>
+              ) : only ? (
                 <>
                   Only the orders that are ready to pick: every item paid and named, picking not started.
                   {doc.leftOut > 0 && ` ${count(doc.leftOut, 'other buyer')} of this show ${doc.leftOut === 1 ? 'is' : 'are'} left out: in progress, shipped, waiting in Review, a gift alone, or a slip with a lot that still needs a person.`}
@@ -62,13 +78,17 @@ export function OrderSlips() {
           </button>
         </div>
         <div className="tabs" role="tablist" aria-label="Which buyers">
-          <button type="button" role="tab" aria-selected={!only} className={only ? '' : 'active'} onClick={() => setOnly(null)}>
+          <button type="button" role="tab" aria-selected={!only && !buyer} className={only || buyer ? '' : 'active'} onClick={() => setOnly(null)}>
             Everyone
             <span className="tab-count">{everyone}</span>
           </button>
-          <button type="button" role="tab" aria-selected={!!only} className={only ? 'active' : ''} onClick={() => setOnly('ready')}>
+          <button type="button" role="tab" aria-selected={only === 'ready'} className={only === 'ready' ? 'active' : ''} onClick={() => setOnly('ready')}>
             Ready to pick
             <span className="tab-count">{ready}</span>
+          </button>
+          <button type="button" role="tab" aria-selected={only === 'pack'} className={only === 'pack' ? 'active' : ''} onClick={() => setOnly('pack')} data-testid="slips-pack-tab">
+            Ready to pack
+            {only === 'pack' && !buyer && <span className="tab-count">{doc.slips.length}</span>}
           </button>
         </div>
         <OrdersRead read={doc.ordersRead ?? null} />
@@ -88,12 +108,12 @@ export function OrderSlips() {
       </div>
       {doc.slips.length === 0 ? (
         <div className="empty">
-          <b>{only ? 'Nothing ready to pick' : 'No order slips yet'}</b>
+          <b>{buyer ? 'No slip for this buyer' : only === 'pack' ? 'Nothing ready to pack' : only ? 'Nothing ready to pick' : 'No order slips yet'}</b>
           {only ? 'An order is ready as soon as every item in it is paid and named.' : 'Slips appear as soon as this show has a sale.'}
         </div>
       ) : (
         <>
-          <Cover doc={doc} />
+          {!buyer && <Cover doc={doc} />}
           {doc.slips.map((b) => (
             <Slip key={b.username} b={b} date={sheetDate(doc.showDate)} canEdit={can('orders.fulfill')} />
           ))}
@@ -202,6 +222,7 @@ function Cover({ doc }: { doc: Doc }) {
       <h3 className="slips-cover-title">Order Slips</h3>
       <div>Auction Date: {sheetDate(doc.showDate)}</div>
       {doc.only === 'ready' && <div>Ready to pick only</div>}
+      {doc.only === 'pack' && <div>Ready to pack only</div>}
       <div className="slips-totals" data-testid="slips-totals">
         <div>Total Buyers: {doc.totals.buyers}</div>
         <div>Total Items: {doc.totals.items}</div>
