@@ -496,8 +496,8 @@ export interface BuyerSlip {
 export interface OrderSlips {
   showId: number
   showDate: string
-  /** 'ready': only the buyers whose order is Ready to pick; null: everyone in the show. */
-  only: 'ready' | null
+  /** 'ready': only the buyers whose order is Ready to pick; 'pack': the Orders page's Ready to pack tab; null: everyone in the show. */
+  only: 'ready' | 'pack' | null
   /** Buyers of the show the filter left out (in progress, shipped, in Review, gift only, or a slip that still needs a person). */
   leftOut: number
   /** How many of the show's slips are ready to pick: the order is, and nothing on the slip waits for a person. */
@@ -1070,6 +1070,52 @@ export interface WhatnotCatalog {
 }
 
 /** A giveaway Whatnot lists for a show, and the product a person said it was (null: waiting). */
+/** The Orders page's three tabs: every buyer of a show is in one (`services/order_board.py`). */
+export type BoardTab = 'review' | 'pack' | 'shipped'
+/** A buyer's badge: what they have paid and on how many show dates, both (`buyers.tier_of`). */
+export type BuyerTier = 'gold' | 'silver' | 'copper'
+export interface BoardCounts {
+  review: number
+  pack: number
+  shipped: number
+  /** Of `review`: orders Whatnot cancelled with nothing else to do (the page can leave them out). */
+  cancelled: number
+}
+/** One show on the Orders page, with how many buyers wait in each tab. */
+export interface BoardShow extends BoardCounts {
+  showId: number
+  showDate: string
+  /** The show's title on Whatnot, once matched. */
+  title: string | null
+}
+/** One buyer of one show: every win (the order) and every Whatnot giveaway, in one tab. */
+export interface BoardBuyer {
+  username: string
+  tab: BoardTab
+  orderId: number | null
+  /** Null for a buyer who won only giveaways: handled like an order, marked as a giveaway. */
+  order: Order | null
+  giveaways: Giveaway[]
+  giveawayOnly: boolean
+  cancelled: boolean
+  /** A cancelled order with nothing else of theirs to do: "Hide cancelled orders" leaves it out. */
+  hideable: boolean
+  /** Giveaway-only buyers: where Whatnot says the parcel is. */
+  parcel: ParcelState | null
+  /** A manager marked the box ready to pack although something still waited. */
+  readyMarked: boolean
+  mayMarkReady: boolean
+  tier: BuyerTier | null
+  /** Show dates the buyer has bought on, this one included. */
+  shows: number
+}
+export interface ShowBoard {
+  showId: number
+  showDate: string
+  title: string | null
+  counts: BoardCounts
+  buyers: BoardBuyer[]
+}
 export interface Giveaway {
   id: number
   buyer: string

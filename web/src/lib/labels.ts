@@ -1,4 +1,4 @@
-import { money, type OrderStatus, type Role, type Sale, type SaleMode, type SaleStatus, type WhatnotSales } from './api'
+import { money, type BoardTab, type BuyerTier, type OrderStatus, type Role, type Sale, type SaleMode, type SaleStatus, type WhatnotSales } from './api'
 import { plural } from './format'
 
 /**
@@ -406,4 +406,17 @@ export function salesLineUpWords(s: Pick<WhatnotSales, 'paidCents' | 'grossCents
 export function salesShippingWords(s: Pick<WhatnotSales, 'shippingCents' | 'withShippingCents'>): string {
   if (!s.shippingCents || s.withShippingCents == null) return ''
   return `Shipping buyers paid ${money(s.shippingCents)} · Sales with shipping ${money(s.withShippingCents)}`
+}
+
+/** The Orders page's tabs (`order_board`), in the order work moves through them. */
+export const BOARD_TAB_LABEL: Record<BoardTab, string> = {
+  review: 'Need review',
+  pack: 'Ready to pack',
+  shipped: 'Shipped',
+}
+/** The badge beside a buyer's name: how much and how often they buy, both (`buyers.TIERS`). */
+export const TIER_LABEL: Record<BuyerTier, string> = {
+  gold: 'Gold buyer: among the shop’s biggest and most regular',
+  silver: 'Silver buyer: buys often and spends well',
+  copper: 'Copper buyer: has come back and bought again',
 }

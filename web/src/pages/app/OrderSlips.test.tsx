@@ -106,7 +106,7 @@ test('the cover and each buyer slip read like the shop sheet', async () => {
   expect(cover).not.toHaveTextContent('Ready to pick only')
   expect(screen.getByRole('tab', { name: /Everyone/ })).toHaveAttribute('aria-selected', 'true')
   expect(screen.getByRole('tab', { name: /Ready to pick/ })).toHaveTextContent('1') // Tinalou13699's order is paid
-  expect(screen.getByRole('link', { name: '← Orders' })).toHaveAttribute('href', '/app/orders?view=all&show=3')
+  expect(screen.getByRole('link', { name: '← Orders' })).toHaveAttribute('href', '/app/orders?view=pack&show=3')
   expect(screen.getByTestId('slips-totals')).toHaveTextContent('Total Buyers: 2Total Items: 4Total Gifts: 2')
 
   const jess = screen.getByTestId('slip-Jessica88aguirre')
@@ -218,7 +218,7 @@ test('"ready to pick only" asks the server for just those slips and says who is 
   expect(screen.getByTestId('slip-Tinalou13699')).toBeInTheDocument()
   expect(screen.getByRole('tab', { name: /Ready to pick/ })).toHaveAttribute('aria-selected', 'true')
   expect(screen.getByRole('tab', { name: /Everyone/ })).toHaveTextContent('2')
-  expect(screen.getByRole('link', { name: '← Orders' })).toHaveAttribute('href', '/app/orders?view=queue&show=3')
+  expect(screen.getByRole('link', { name: '← Orders' })).toHaveAttribute('href', '/app/orders?view=pack&show=3')
   // the switch is screen-only; the print button prints what is shown
   expect(screen.getByRole('tablist').closest('.no-print')).not.toBeNull()
   expect(screen.getByRole('button', { name: 'Print order slips' })).toBeEnabled()
@@ -261,4 +261,24 @@ test('a show read in full after it ended says nothing is missing', async () => {
   const at = new Date(Date.now() - 5 * 60_000).toISOString()
   mount(['orders.view'], { ...doc, ordersRead: { at, final: true, live: false } })
   expect(await screen.findByTestId('orders-read')).toHaveTextContent('read in full after the show ended')
+})
+
+test('"Ready to pack" asks the server for the Orders tab’s buyers, and says who is left out', async () => {
+  const [, tina] = doc.slips
+  const fetch = mount(['orders.view'], { ...doc, only: 'pack', leftOut: 1, slips: [tina!] }, '/app/orders/slips/3?only=pack')
+  await screen.findByTestId('slip-Tinalou13699')
+  expect(fetch.mock.calls.map((c) => c[0])).toContain('/api/orders/shows/3/order-slips?only=pack')
+  expect(screen.getByTestId('slips-sub')).toHaveTextContent('Everyone in Ready to pack, one slip per buyer. 1 other buyer of this show is left out: waiting in Need review, or shipped.')
+  expect(screen.getByTestId('slips-pack-tab')).toHaveAttribute('aria-selected', 'true')
+  expect(screen.getByTestId('slips-cover')).toBeInTheDocument()
+})
+
+test("one buyer's slip prints alone, with no cover", async () => {
+  const [, tina] = doc.slips
+  const fetch = mount(['orders.view'], { ...doc, leftOut: 1, slips: [tina!] }, '/app/orders/slips/3?buyer=Tinalou13699')
+  expect(await screen.findByRole('heading', { level: 2 })).toHaveTextContent('Order slip · Tinalou13699')
+  expect(fetch.mock.calls.map((c) => c[0])).toContain('/api/orders/shows/3/order-slips?buyer=Tinalou13699')
+  expect(screen.getByTestId('slip-Tinalou13699')).toBeInTheDocument()
+  expect(screen.queryByTestId('slips-cover')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Print order slips' })).toBeEnabled()
 })

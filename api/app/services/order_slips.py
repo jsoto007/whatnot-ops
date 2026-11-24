@@ -53,7 +53,7 @@ from ..models import (
     WhatnotLot,
     WhatnotShow,
 )
-from . import giveaways, rules, sale_chat, sale_items, shipments
+from . import giveaways, order_board, rules, sale_chat, sale_items, shipments
 from .orders import STANDING, settled_unnamed_ids
 from .whatnot import connection, watch
 
@@ -62,9 +62,12 @@ NO_PICK = "No Pick"
 # after its order was picked or packed.
 CLOSED_AFTER_PICKING = "closed_after_picking"
 CLOSED = {SaleStatus.cancelled: "cancelled", SaleStatus.payment_failed: "declined"}
-# `only=`: which buyers to keep. "ready" = the order is Ready to pick (the Orders page's queue).
+# `only=`: which buyers to keep. "ready" = the order is Ready to pick (picking not begun);
+# "pack" = the buyers the Orders page puts in Ready to pack (`order_board`), gift-only
+# buyers whose giveaway has its product included.
 READY = "ready"
-FILTERS = frozenset({READY})
+PACK = "pack"
+FILTERS = frozenset({READY, PACK})
 # One printed line per unit of a lot, up to this many; past it the buyer is flagged.
 MAX_UNIT_ROWS = 50
 
@@ -221,7 +224,18 @@ def _ready(b: dict) -> bool:
     )
 
 
-def build(show: Show, *, only: str | None = None) -> dict:
+def _packable(b: dict) -> bool:
+    """`_ready` without the order's own step: a slip that can be packed as it is, whether its
+    picking has begun or not (and a giveaway alone, whose order is None)."""
+    return (
+        not b["needsReview"]
+        and not b.get("cardInDoubt")
+        and all(r["onWhatnot"] for r in b["rows"] if r["kind"] == "sale")
+    )
+
+
+def build(show: Show, *, only: str | None = None, one: str | None = None) -> dict:
+    """`one`: just that buyer's slip (any spelling of the name), inside `only`."""
     if only is not None and only not in FILTERS:
         raise ValueError("unknown filter")
     sales = db.session.scalars(
@@ -493,12 +507,25 @@ def build(show: Show, *, only: str | None = None) -> dict:
         )
         slips.append(b)
     slips.sort(key=lambda b: (-b["items"], b["username"].lower()))
-    left_out = 0
     ready = sum(1 for b in slips if _ready(b))
+    kept = slips
     if only == READY:
         kept = [b for b in slips if _ready(b)]
-        left_out = len(slips) - len(kept)
-        slips = kept
+    elif only == PACK:
+        # The Orders page's Ready to pack tab, as it places each buyer. A box nobody marked must
+        # also pass the slip's own checks (every row named, every sale one Whatnot lists, no card
+        # in doubt), so the printout never carries a unit the old "ready" slips held back; a box a
+        # manager marked prints as it is (their call, recorded).
+        names = order_board.names_in(show, order_board.PACK)
+        kept = [
+            b
+            for b in slips
+            if (k := order_board.key(b["username"])) in names and (names[k] or _packable(b))
+        ]
+    if one is not None:
+        kept = [b for b in kept if order_board.key(b["username"]) == order_board.key(one)]
+    left_out = len(slips) - len(kept)
+    slips = kept
     return {
         "only": only,
         # Buyers of the show the filter skipped (in progress, shipped, in Review, gift only,

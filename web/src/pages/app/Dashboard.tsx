@@ -419,7 +419,7 @@ function attentionRows(a: Attention, can: (p: string) => boolean, lowStock: Over
       tone: 'blue',
       title: `${plural(a.toFulfil, 'paid order', 'paid orders')} to pick and ship`,
       sub: `${plural(a.fulfilItems, 'item', 'items')}${a.fulfilOldestShow ? ` · oldest from the ${fmtDate(a.fulfilOldestShow)} show` : ''}`,
-      to: '/app/orders?view=queue',
+      to: '/app/orders?view=pack',
       verb: 'Start picking',
       primary: true,
     })

@@ -57,14 +57,14 @@ test('wins are paid orders at once; a declined card comes off the queue; pick �
   // Whatnot charges at the win: both orders are ready to pick at once, nothing awaits payment.
   await page.getByRole('link', { name: /^Orders/ }).click()
   await expect(page.getByRole('tab', { name: /Awaiting payment/ })).toHaveCount(0)
+  await page.getByTestId('tab-pack').click()
   await expect(page.getByTestId('order-lani808')).toContainText('3 × Red bundle')
   await expect(page.getByTestId('order-lani808')).toContainText('Ready to pick')
   await expect(page.getByTestId('order-kat.c')).toContainText('1 × Red bundle')
-  // "Print ready slips": both orders are ready and in one show, so the button opens that show's slips.
-  await expect(page.getByTestId('print-ready')).toContainText('Print 2 ready slips')
-  await page.getByTestId('print-ready').click()
-  await expect(page).toHaveURL(/\/app\/orders\/slips\/\d+\?only=ready$/)
-  await expect(page.getByTestId('slips-cover')).toContainText('Ready to pick only')
+  // "Print pick list": the show's slips for everyone in Ready to pack, one page per buyer.
+  await page.getByRole('link', { name: 'Print pick list' }).click()
+  await expect(page).toHaveURL(/\/app\/orders\/slips\/\d+\?only=pack$/)
+  await expect(page.getByTestId('slips-cover')).toContainText('Ready to pack only')
   await expect(page.getByTestId('slips-cover')).toContainText('Total Buyers: 2')
   // Printed, the pick list is the shop's own sheet: every page a 4×6 label (288 × 432 pt),
   // Comfortaa, black on white (no pink header).
@@ -92,8 +92,10 @@ test('wins are paid orders at once; a declined card comes off the queue; pick �
   await page.reload()
   await expect(cell(page, 'RED', 'on-hand')).toHaveText('2')
   await page.getByRole('link', { name: /^Orders/ }).click()
-  await expect(page.getByTestId('order-kat.c')).toHaveCount(0) // not ready to pick any more
-  await page.getByRole('tab', { name: /Payment declined/ }).click()
+  await page.getByTestId('tab-pack').click()
+  await expect(page.getByTestId('order-lani808')).toBeVisible()
+  await expect(page.getByTestId('order-kat.c')).toHaveCount(0) // not ready to pack any more
+  await page.getByTestId('tab-review').click()
   await expect(page.getByTestId('declined-kat.c')).toContainText('payment declined')
 
   // The payment file only confirms: lani808's two lots are already paid, kat.c's stays declined.
@@ -118,17 +120,17 @@ test('wins are paid orders at once; a declined card comes off the queue; pick �
 
   // Queue: lani808's order is verified; pick list shows 3 × RED; pick → pack → ship.
   await page.getByRole('link', { name: /^Orders/ }).click()
+  await page.getByTestId('tab-pack').click()
   await expect(page.getByTestId('order-lani808')).toContainText('Ready to pick')
   await expect(page.getByTestId('order-kat.c')).toHaveCount(0)
-  await page.getByRole('combobox', { name: 'Show' }).selectOption({ index: 1 })
-  await page.getByRole('link', { name: 'Pick list' }).click()
+  await page.getByRole('link', { name: 'Products to pull' }).click()
   await expect(page.getByTestId('pick-list')).toContainText('RED')
   await expect(page.getByTestId('pick-list').locator('td').nth(2)).toHaveText('3')
   await page.goBack()
   await page.getByTestId('order-lani808').getByRole('button', { name: 'Start picking' }).click()
-  await page.getByRole('tab', { name: 'In progress' }).click()
+  // Picking and packed stay in Ready to pack until the box ships.
   await expect(page.getByTestId('order-lani808')).toContainText('Picking')
-  await page.getByTestId('order-lani808').getByRole('link').click()
+  await page.getByTestId('order-lani808').getByRole('link', { name: 'lani808', exact: true }).click()
   // the slip reads like the shop's paper sheet: header, a tick box per unit, footer lines
   await expect(page.getByTestId('slip-title')).toHaveText(/Username: lani808 – 3 Items/)
   await expect(page.getByTestId('packing-slip')).toContainText('Product checklist')
@@ -161,7 +163,7 @@ test('a lot nobody recognised is named from its row: that lot alone, or every lo
   expect(res.ok()).toBe(true)
 
   await page.getByRole('link', { name: /^Orders/ }).click()
-  await page.getByRole('tab', { name: /Needs review/ }).click()
+  await page.getByTestId('tab-review').click()
   const moon = page.getByTestId('order-moonlove3')
   await expect(moon).toContainText('Needs review')
   await expect(moon).toContainText('1 × “$1 BEAUTY PULLS”')
@@ -196,7 +198,7 @@ test('a lot nobody recognised is named from its row: that lot alone, or every lo
   await dialog.getByTestId('use-product').click()
   await expect(page.getByRole('status')).toContainText("set for taravat08's lot #521 and 1 other lot.")
   await expect(page.getByTestId('stuck-banner')).toHaveCount(0)
-  await page.getByRole('tab', { name: /Ready to pick/ }).click()
+  await page.getByTestId('tab-pack').click()
   await expect(page.getByTestId('order-moonlove3')).toContainText('Ready to pick')
   await expect(page.getByTestId('order-taravat08')).toContainText('Ready to pick')
   await expect(page.getByTestId('order-amyshopsalot')).toContainText('$9.00')

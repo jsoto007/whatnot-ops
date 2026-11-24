@@ -59,6 +59,14 @@
   --slip-head: #ffd6ea;
   --slip-gift: #fff2c2;
   --slip-rule: #111111;
+  /* The Orders page: a Whatnot giveaway beside a buyer's wins (always with the word "Giveaway",
+     so it reads in black and white too), and the small buyer badges (how much and how often). */
+  --giveaway: rgba(255, 45, 146, 0.12);
+  --giveaway-ink: #a3165f;
+  --tier-gold: #d4a017;
+  --tier-silver: #a7afb8;
+  --tier-copper: #b8733a;
+  --tier-ink: #ffffff;
 
   --radius-s: 10px;
   --radius-m: 16px;

@@ -132,7 +132,7 @@ export function Shipping() {
   return (
     <section className="shipping">
       <p>
-        <Link to={`/app/orders?view=all&show=${showId}`}>← Orders</Link>
+        <Link to={`/app/orders?view=pack&show=${showId}`}>← Orders</Link>
       </p>
       <div className="page-head">
         <div>

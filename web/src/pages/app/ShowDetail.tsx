@@ -411,7 +411,7 @@ function NextSteps({ t, counts, walkaways, showId, canReconcile, canReview, onTa
   // reserved) wait for the payment file.
   const open = counts.reserved?.n ?? 0
   if (canReconcile && open && !t.live) steps.push(<li key="p">{open} older sale{open === 1 ? '' : 's'} still wait{open === 1 ? 's' : ''} for the payment file — <a href="#payments" onClick={(e) => { e.preventDefault(); onTab('payments') }}>reconcile payments</a></li>)
-  if (t.toFulfil) steps.push(<li key="f">{t.toFulfil} paid order{t.toFulfil === 1 ? '' : 's'} ready to pick — <Link to={`/app/orders?view=queue&show=${showId}`}>open the queue</Link></li>)
+  if (t.toFulfil) steps.push(<li key="f">{t.toFulfil} paid order{t.toFulfil === 1 ? '' : 's'} ready to pick — <Link to={`/app/orders?view=pack&show=${showId}`}>open Ready to pack</Link></li>)
   if (!steps.length) return null
   return (
     <div className="card next-steps" data-testid="next-steps">
